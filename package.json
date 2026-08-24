@@ -1,0 +1,33 @@
+{
+  "name": "runguild",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A verifiable mission control plane for humans and persistent AI agent teams.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b && npm run bundle --workspace @runguild/web",
+    "clean": "tsc -b --clean",
+    "api:start": "node apps/api/dist/server.js",
+    "api:local": "node --env-file-if-exists=.env apps/api/dist/server.js",
+    "db:migrate": "node packages/database/dist/cli.js",
+    "worker:start": "node apps/worker/dist/main.js",
+    "agent:start": "node apps/worker/dist/agent-main.js",
+    "integration:start": "node apps/worker/dist/integration-main.js",
+    "evaluation:start": "node apps/worker/dist/evaluation-main.js",
+    "web:start": "npm run dev --workspace @runguild/web",
+    "web:preview": "npm run preview --workspace @runguild/web",
+    "typecheck": "tsc -b --pretty false",
+    "test": "npm run build && node --test packages/*/test/*.test.mjs apps/*/test/*.test.mjs",
+    "test:integration": "npm run build && REQUIRE_POSTGRES=1 node --test packages/database/test/postgres.integration.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

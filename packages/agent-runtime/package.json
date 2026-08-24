@@ -1,0 +1,18 @@
+{
+  "name": "@runguild/agent-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@runguild/protocol": "0.0.1",
+    "openai": "^7.5.0"
+  }
+}

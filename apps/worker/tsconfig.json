@@ -1,0 +1,41 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": [
+      "node"
+    ]
+  },
+  "references": [
+    {
+      "path": "../../packages/protocol"
+    },
+    {
+      "path": "../../packages/database"
+    },
+    {
+      "path": "../../packages/evaluation"
+    },
+    {
+      "path": "../../packages/collaboration"
+    },
+    {
+      "path": "../../packages/agent-runtime"
+    },
+    {
+      "path": "../../packages/tool-gateway"
+    },
+    {
+      "path": "../../packages/workspace-tools"
+    }
+  ],
+  "include": [
+    "src/**/*.ts"
+  ]
+}

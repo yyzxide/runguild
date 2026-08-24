@@ -1,0 +1,99 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import test from 'node:test'
+
+import { PGlite } from '@electric-sql/pglite'
+
+import {
+  WorkerAlreadyActiveError,
+  WorkerInstanceRepository,
+} from '../dist/index.js'
+
+function poolAdapter(database) {
+  const client = {
+    async query(statement, params = []) {
+      const result = await database.query(statement, params)
+      return { ...result, rowCount: result.affectedRows ?? result.rows.length }
+    },
+    release() {},
+  }
+  return { async connect() { return client }, query: client.query }
+}
+
+async function setup(database) {
+  await database.exec(await readFile(new URL('../migrations/0001_core.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
+  await database.exec(
+    "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace');" +
+    "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
+    "('agent', 'ws', 'Builder', 'builder', 'openai', 'gpt-test');",
+  )
+}
+
+const registration = {
+  kind: 'agent',
+  agentId: 'agent',
+  hostname: 'worker-host',
+  processId: 42,
+  heartbeatIntervalSeconds: 5,
+  heartbeatTimeoutSeconds: 15,
+}
+
+test('Worker Instance Repository fences Agent processes and recovers an expired owner', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new WorkerInstanceRepository(poolAdapter(database))
+    const first = await repository.register({ id: 'worker_first', ...registration })
+    assert.equal(first.workspaceId, 'ws')
+    assert.equal(first.agentId, 'agent')
+    assert.equal(await repository.hasActive('agent', 'agent'), true)
+    assert.equal(await repository.hasActive('scheduler'), false)
+
+    await assert.rejects(
+      repository.register({ id: 'worker_duplicate', ...registration, processId: 43 }),
+      WorkerAlreadyActiveError,
+    )
+
+    assert.equal(await repository.heartbeat('worker_first'), true)
+    await database.exec(
+      "UPDATE worker_instances SET expires_at = NOW() - INTERVAL '1 second' WHERE id = 'worker_first'",
+    )
+    const replacement = await repository.register({ id: 'worker_replacement', ...registration, processId: 44 })
+    assert.equal(replacement.id, 'worker_replacement')
+
+    const prior = await database.query(
+      "SELECT status, stopped_at IS NOT NULL AS stopped FROM worker_instances WHERE id = 'worker_first'",
+    )
+    assert.deepEqual(prior.rows[0], { status: 'stale', stopped: true })
+    assert.equal(await repository.heartbeat('worker_first'), false)
+    assert.equal(await repository.markStopped('worker_replacement'), true)
+    assert.equal(await repository.hasActive('agent', 'agent'), false)
+    assert.equal(await repository.markStopped('worker_replacement'), false)
+  } finally {
+    await database.close()
+  }
+})
+
+test('Worker Instance Repository allows independent control-plane processes', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new WorkerInstanceRepository(poolAdapter(database))
+    await repository.register({
+      id: 'scheduler_one', kind: 'scheduler', hostname: 'one', processId: 1,
+      heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 15,
+    })
+    assert.equal(await repository.hasActive('scheduler'), true)
+    await repository.register({
+      id: 'scheduler_two', kind: 'scheduler', hostname: 'two', processId: 2,
+      heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 15,
+    })
+    const result = await database.query(
+      "SELECT COUNT(*)::int AS count FROM worker_instances WHERE kind = 'scheduler' AND status = 'running'",
+    )
+    assert.equal(result.rows[0].count, 2)
+  } finally {
+    await database.close()
+  }
+})

@@ -1,0 +1,459 @@
+# Architecture
+
+## 1. System shape
+
+The product is separated into four planes:
+
+~~~text
+Conversation plane  -> natural discussion, mentions, progress, steering
+Execution plane     -> mission, DAG, scheduler, leases, runs, tools
+Artifact plane      -> Yjs collaboration, snapshots, immutable versions
+Observation plane   -> events, traces, usage, replay, evaluation
+~~~
+
+These planes share identifiers and events, but each has one clear source of
+truth.
+
+## 2. Components
+
+~~~text
+React Web
+  |-- Team Room + Agent routing rail
+  |-- Mission dependency cockpit + Evidence Spine
+  |-- collaborative Artifact and immutable Version surface
+  |-- paired Evaluation Lab
+  |-- Run trace waterfall
+  +-- command palette and responsive application shell
+          |
+          v
+API and WebSocket Gateway
+  |-- Command API
+  |-- Query API
+  |-- Inbox stream
+  +-- Yjs sync
+          |
+          +-------------------- PostgreSQL
+          |                       durable facts
+          |
+          +-------------------- Redis
+                                  wake, fan-out, presence
+                                          |
+                                          v
+                                      Scheduler
+                                          |
+                                          v
+                                    Runtime Worker
+                                      |-- Model adapter
+                                      |-- Tool loop
+                                      |-- Steering
+                                      +-- Context builder
+                                          |
+                                          v
+                                      Tool Gateway
+                                      |-- task
+                                      |-- artifact
+                                      |-- conversation
+                                      |-- repository
+                                      +-- shell/test sandbox
+                                          ^
+                                          |
+                                  Evaluation Worker
+                                  |-- paired Trial materializer
+                                  |-- Mission driver
+                                  +-- ledger metric collector
+~~~
+
+## 3. Service ownership
+
+### API
+
+Owns synchronous commands, authorization, plan approval, human approval, and
+read models. It never runs a long model turn inside an HTTP request.
+
+### Scheduler
+
+Finds runnable work from durable state. Redis wake events reduce latency, but
+periodic scanning guarantees eventual progress. It decides what can run, not
+what the model should say.
+
+### Worker
+
+Executes one Run at a time, renews its task lease, drains durable inbox input,
+invokes the model, executes tools, and writes structured events.
+
+The executable slice currently deploys one process per Agent identity. Each
+process receives a bounded `REPOSITORY_ROOT` and a distinct `WORKTREE_ROOT`.
+It provisions the claimed Task's isolated Worktree before constructing that
+Task's Tool Gateway. Path resolution rejects lexical and symlink escapes, and
+test execution accepts only exact argv allowlist entries. Multiple Agent
+identities may run concurrently. Every Scheduler, Agent, Integration, and
+Evaluation process registers a durable Worker Instance and renews its expiry.
+Agent registration locks the Agent row and rejects a second non-expired process;
+after a crash, a replacement marks the expired owner stale before taking over.
+
+### Evaluation Worker
+
+Owns benchmark orchestration, not a second execution engine. It reserves a
+Trial with a fencing token, materializes the frozen single-Agent or multi-Agent
+plan through the ordinary Mission repository, and later derives metrics from
+the same durable ledgers used by production Runs. A deterministic Mission id
+makes a crash between Mission creation and Trial attachment recoverable.
+
+### Collaboration service
+
+Owns in-memory Y.Doc rooms, update persistence, cross-instance fan-out,
+awareness, snapshot compaction, and immutable version creation.
+
+The executable service currently hosts rooms in the API process. PostgreSQL is
+still the document source of truth: a received Update is appended successfully
+before any peer sees it. Rooms accelerate propagation only. State Vector sync
+restores clients after disconnect or process restart, while heartbeat,
+backpressure limits, and disconnect cleanup bound ephemeral room state.
+Cross-instance room fan-out remains part of horizontal API scaling.
+
+The Conversation Plane is durable rather than WebSocket-dependent. A project
+room has explicit Workspace-scoped members; messages have a stable sequence,
+structured entity references, replies, mentions, and per-Agent delivery rows.
+If a mentioned Agent owns an active Run in the referenced Mission, the same
+transaction creates a Steering control, Inbox wake, and Outbox event. If no
+matching Run exists, delivery remains `context_pending`. The next Run freezes
+recent Mission-room messages into its execution context and advances those
+delivery rows to `context_loaded`. Redis may reduce wake latency, but it is not
+message truth.
+
+Before a Mission exists, a human can select an ordered subset of Conversation
+messages and promote them into a planning request. One transaction validates
+membership and source-message scope, creates the Mission with immutable source
+identifiers, stores the Planning Request, appends domain events, and writes the
+Planner Inbox plus Outbox wake. The Planner model is invoked asynchronously by
+the Agent worker under a fenced lease. Its exact input, structured DAG output,
+usage, and retry state are durable; a crash after the model call resumes from
+the stored plan without paying for the model twice. The Planner can propose the
+plan and report back to the room, but only a human can approve and materialize
+the DAG.
+
+The current Planner contract represents independent approval as
+`reviewRequired=true` on the producing Task. It must not generate a downstream
+Reviewer Task solely to approve that parent: the parent cannot complete until
+its Submission is approved, so such a DAG edge would be circular. Durable
+automatic dispatch now creates a separate Reviewer execution and Inbox request
+for an eligible Mission-room Reviewer; a Workspace human can still review or
+take over a pending automatic request.
+
+### Tool gateway
+
+Is the only supported side-effect boundary. It authenticates the actor,
+authorizes the action, reserves the idempotency key, performs the operation,
+and records typed effects.
+
+### Agent Runtime
+
+The Runtime is a bounded state machine rather than an unbounded chat loop. It
+loads the durable transcript, applies pending Steering or Cancel controls,
+reconciles Tool Calls that do not yet have a terminal result, spends one model
+hop, and persists the response before executing tools. A provider adapter can
+change without changing Run semantics.
+
+The complete transcript remains immutable durable history, but it is not sent
+unbounded to every model call. At the start of a Run, Mission, Task, acceptance
+criteria, Agent model policy, and exact assigned Skill Versions are frozen into
+`agent_runs.context_snapshot`. Before each model call, the Context Builder
+retains the frozen prefix, accounts for Tool definitions, selects recent
+assistant/tool exchanges atomically, and replaces older history with a bounded
+hash ledger. A conservative UTF-8 estimator keeps the result below the
+configured input budget. It never silently truncates mandatory instructions.
+
+The exact model-visible message view, Skill references, strategy, estimates,
+and content hash are stored as an immutable per-hop Context Snapshot. The LLM
+ledger row references that Snapshot directly. Provider continuation may reduce
+transport size, but it does not replace the local Context Snapshot as the
+auditable request plan.
+
+`run.set_status(done)` is a request, not authority. The completion verifier
+checks evidence and review gates before the Runtime writes `succeeded`. A
+normal model stop, text such as "done", or an empty response only produces a
+nudge and consumes another bounded hop.
+
+## 4. Source-of-truth boundaries
+
+| Concern | Durable truth | Acceleration only |
+|---|---|---|
+| Mission and Task state | PostgreSQL | Redis wake |
+| Conversation messages, membership, and mention delivery | PostgreSQL | Web polling / future stream |
+| Inbox and read cursor | PostgreSQL | SSE or WebSocket |
+| Task ownership and lease | PostgreSQL | Worker memory |
+| Worker process presence and expiry | PostgreSQL Worker Instance heartbeat | Web five-second projection |
+| Project launch inputs | PostgreSQL Project Runtime Configuration (never API keys) | API-owned local child-process map |
+| Mission working deliverable | PostgreSQL primary `mission_deliverable` Artifact and immutable Versions | Model prompt projection |
+| Task Worktree, reviewed HEAD, and integration state | PostgreSQL plus Git object database | Worker path cache |
+| Frozen Run instructions and per-hop model context | PostgreSQL Context Snapshots | Provider continuation cache |
+| Yjs content | PostgreSQL update log and snapshot | Y.Doc room and Redis fan-out |
+| Presence and carets | None | Awareness and Redis |
+| Tool side effects | PostgreSQL tool execution record plus target system | Event stream |
+| Run trace and cost | PostgreSQL | In-memory telemetry buffer |
+| Evaluation Scenario, Trial, and report inputs | PostgreSQL immutable Scenario Version plus Run ledgers | Report projection |
+
+## 5. Mission execution flow
+
+1. Plan approval atomically changes Mission to running and creates ready Task
+   records for dependency-free nodes.
+2. Scheduler selects ready tasks and publishes wake hints.
+3. A Worker atomically validates a Dispatch Token, claims the Task, creates a
+   Run, and acquires its Task Lease.
+4. The Worker reserves a deterministic per-Task Worktree under a fencing lease,
+   creates or reconciles its branch, and binds all repository tools to that
+   exact canonical path.
+5. After the idempotent Task claim succeeds, the Worker advances its Inbox cursor
+   with optimistic concurrency. A crash between these operations safely
+   replays the Inbox message and discovers the already-created runnable Run.
+6. The bounded model/tool loop executes until explicit completion, failure,
+   cancellation, or human wait.
+7. Tool requests reserve an idempotency key before any side effect.
+8. Every Mission has a deterministic primary deliverable Artifact. Its exact id
+   and the Task review policy are frozen into the Run context. The Builder
+   updates it, freezes an Artifact Version, and commits its Worktree. Code
+   submission requires Evidence for both the exact Version and exact HEAD.
+9. Independent approval admits that HEAD to the integration worker, which
+   accepts only a clean fast-forward onto the recorded base branch.
+10. Task completion evaluates evidence, review, and integration gates; the model cannot write
+   the terminal Task state directly.
+11. Completing a task unlocks dependents in the same transaction. The
+   integration worker then removes the clean Worktree and merged branch.
+12. Once every Task completes, the Mission exposes the latest independently
+   approved Artifact Version as the final-delivery candidate (or the latest
+   Mission Version when no Task review was required). A Workspace human must
+   approve that exact id; a stale id is rejected, and only then does the Mission
+   become `completed`.
+
+## 6. Yjs and immutable versions
+
+Yjs solves live convergence. It does not define a reviewable release.
+
+The collaboration service persists an append-only sequence of Yjs updates and
+periodically compacts them into a state update. To request review, the service:
+
+1. loads the latest durable Y.Doc state;
+2. encodes a full snapshot;
+3. derives a stable content representation;
+4. stores an immutable Artifact Version with a content hash;
+5. binds Evidence and Review to that version id.
+
+Later edits continue in the living document and cannot mutate the reviewed
+version.
+
+Agent edits use semantic operations such as insert section or replace block.
+The server translates them into one Yjs transaction with an origin containing
+agentId, runId, taskId, and toolCallId.
+
+Before editing, an Agent reads the canonical ProseMirror projection and stable
+top-level `blockId` values. Semantic operations never replace the entire
+document. Legacy top-level blocks receive deterministic ids; operation-derived
+blocks and comments receive Tool-Call-derived ids, making replay detectable.
+
+The implemented persistence layer uses Yjs v13 binary Update payloads as the
+durable source of truth. Updates are content-hash deduplicated and may be
+replayed in any order. A client can provide its State Vector to receive only
+the missing Update. Snapshot compaction locks the Artifact while rebuilding
+the latest state, records the exact update sequence covered, and never treats
+the JSON projection as collaboration history.
+
+An Artifact Version stores both canonical ProseMirror JSON for review and the
+exact full Yjs state that produced it. Its content hash and Yjs state hash are
+independent, and a database trigger rejects updates to a frozen Version.
+Subsequent live Updates therefore cannot change a previously reviewed value.
+User origins are checked against Workspace membership; Agent origins must
+match the Artifact Mission and their durable Run, Task, and Agent identity.
+
+HTTP endpoints expose Update and State Vector exchange for non-realtime
+clients. The WebSocket room accepts explicit `sync`, `update`, and `awareness`
+messages. Persisted Updates are acknowledged to the sender and broadcast to
+peers only after the append commits. Awareness is schema-bounded, broadcast as
+a snapshot/update/removal lifecycle, and never enters Artifact history.
+
+Review is bound to exact state rather than the living room. The producing Run
+creates a Version, records `artifact_version` Evidence with the same content
+hash, and submits that Version. Submission computes a deterministic Evidence
+bundle hash. When the Mission Conversation contains an active Reviewer Agent,
+the same transaction creates a requested Review, a separate durable
+`review_executions` record, and a deduplicated Reviewer Inbox message. A
+Workspace human remains able to decide directly or take over a pending automatic
+Review; a Mission without an eligible Reviewer stays on the human path instead
+of selecting an unrelated Agent.
+
+Reviewer execution is deliberately not represented as another Task Run: it has
+its own fenced lease, retry budget, frozen material snapshot, prompt/response,
+model identity, provider request id, Token/cost/latency usage, error, and hashed
+decision. Its material snapshot contains the exact immutable Artifact Version,
+Task criteria, Evidence bundle inputs, relevant successful tool/test results,
+Worktree state, and cumulative `base_commit -> HEAD` diff. The model must call
+`review.submit_decision` exactly once. A crash after decision persistence resumes
+database finalization without another model call. Approval reuses the Task
+completion gate and dependency unlock transaction; `changes_requested` returns
+the Task to `ready`, while a terminal rejection fails it.
+
+## 7. Coordination invariants
+
+- A Task has at most one active lease.
+- A Run belongs to one Task attempt and one Agent.
+- A terminal Run cannot transition again.
+- A Task cannot complete without all required evidence gates.
+- A Reviewer cannot approve work from the same Agent identity.
+- An automatically assigned Agent reviewer must be active, have the `reviewer`
+  role, and belong to the Mission Conversation; a human reviewer must be a
+  Workspace member.
+- A Submission must reference a Version created by the submitting Run and
+  exact-hash durable Evidence from that Run.
+- When a Task has changed code, its Submission must also reference `file_diff`
+  Evidence whose commit is the recorded Worktree HEAD and whose exact diff spans
+  the Task Worktree base through that HEAD; approval cannot complete the Task
+  until that same commit is integrated. A verified unchanged baseline is already
+  integrated and needs no invented diff or empty commit.
+- A dependent Task cannot become ready before all required parents complete.
+- A side-effecting Tool Request with the same idempotency key returns the same
+  recorded result.
+- The model-provided risk label must match the server-owned Tool Handler policy.
+- Only the holder of the current Tool execution fencing token may record its
+  result.
+- An expired Tool lease is retried only for read-only operations or when the
+  target offers native idempotency; otherwise it becomes an explicit
+  ambiguous-effect failure.
+- External and destructive tools execute zero side effects before approval.
+- A model stop reason never changes a Run to succeeded.
+- Redis delivery never changes durable state by itself.
+- Awareness never grants permission.
+- Artifact Versions are append-only.
+
+## 8. Repository execution
+
+Each Builder task receives an isolated Git worktree and sandbox identity:
+
+~~~text
+project repository
+  |-- baseline commit
+  |-- worktree/task-A
+  |-- worktree/task-B
+  +-- integration worktree
+~~~
+
+File tools are path-scoped to the assigned worktree. Shell commands run with
+time, output, environment, and resource limits. Integration happens only after
+tests and review gates pass.
+
+The Agent Worker normally resolves the Project's default branch in
+`REPOSITORY_ROOT`, derives a stable path and `agent/task-*` branch under
+`WORKTREE_ROOT`, and reserves the database record before invoking Git. An
+Evaluation Trial instead receives a deterministic `evaluation/trial-*` base
+ref. The ref is created only from the Scenario Version's frozen commit and may
+advance only to its descendants. Thus tasks within one Trial share their own
+integration history while variants and repetitions cannot contaminate one
+another. Provisioning, integration, and cleanup each use expiring fencing
+tokens, so a restart can reconcile a partially completed filesystem operation
+without trusting stale process state.
+
+`repo.commit` stages the complete Task change, creates a commit with fixed
+server-owned identity and hooks/signing disabled, records the exact tree and
+binary diff hash, and persists `file_diff` Evidence. A retry can reconstruct
+Evidence whether the crash happened before or after the Worktree row advanced.
+For a clean Worktree that still points at its baseline, the same tool records a
+no-change integration fact without creating an empty commit. This lets
+Researcher and other evidence-only Tasks complete and enter ordinary safe
+cleanup while a dirty or advanced Worktree can never bypass Integration.
+
+The independent integration worker selects only approved Submissions with a
+`committed` Worktree. It verifies that the clean Worktree HEAD is the reviewed
+HEAD and that the current base is an ancestor. For the checked-out project
+branch it additionally requires a clean matching checkout and performs a
+hooks-disabled fast-forward merge. For an isolated Evaluation ref it performs
+an atomic compare-and-swap ref update without changing the checkout. Diverged
+state is visible as a failed integration and is never auto-resolved. Cleanup
+removes only a clean integrated Worktree and deletes a Task branch only after
+proving its HEAD is contained by the recorded base ref.
+
+The runtime exposes no general shell tool. `test.run` spawns an argv array
+without a shell and only when it exactly matches the configured allowlist.
+The development-only local Worker supervisor follows the same boundary. Its
+routes exist only when `ENABLE_LOCAL_RUNTIME_CONTROL=true`; child processes
+receive an explicit environment allowlist, model credentials come only from the
+API environment, duplicate live heartbeats prevent another launch, and stop
+requests affect only processes owned by that API instance.
+
+## 9. Reproducible strategy evaluation
+
+An Evaluation Scenario separates the benchmark definition from an execution:
+
+1. a human creates Scenario metadata;
+2. an immutable Scenario Version freezes the goal, constraints, acceptance
+   criteria, full Git commit, one-task single-Agent plan, and multi-task
+   multi-Agent plan;
+3. an Experiment creates paired Trials for each repetition, with both variants
+   sharing the same deterministic pair seed;
+4. each Trial materializes as a normal approved Mission and runs through the
+   same Scheduler, Runtime, Tool, Review, and integration gates;
+5. its Git ref starts at the frozen commit and remains isolated from every
+   other Trial;
+6. the collector computes success, completion rate, wall time, attempts,
+   tokens, estimated cost, Tool failures, review churn, and context statistics
+   from durable facts;
+7. the report exposes per-variant aggregates and paired deltas (`multi -
+   single`) only for repetitions where both results exist.
+
+Scenario Version immutability prevents a benchmark from changing after Trials
+start. Trial materialization uses expiring leases and fencing tokens; a stale
+worker cannot attach a different Mission. Reports are projections and can be
+rebuilt from the Trial metrics and underlying ledgers.
+
+## 10. Current model execution
+
+The production provider is OpenAI Responses. Every successful response id is
+stored in the LLM ledger and reused as `previous_response_id` after a durable
+resume. System instructions are sent again on each continued request. Tool
+Calls and Tool Results remain in the local durable transcript, so provider
+continuation is an optimization rather than the source of truth.
+
+Workspace Skills are immutable versioned instruction bodies. Assignments may
+track the latest version or pin one exact version and have a deterministic
+priority. Skill changes affect only Runs whose execution context has not yet
+been frozen. Existing Runs keep their original Skill content and hash through
+pause, restart, or reassignment.
+
+## 11. Reliability model
+
+Delivery is at least once; effects are effectively once where an idempotent
+boundary exists.
+
+Expected failures include:
+
+- duplicate Redis wake;
+- worker crash before or after a tool side effect;
+- expired task lease;
+- stale Agent context;
+- Yjs reconnect and duplicate update;
+- model timeout or malformed tool request;
+- reviewer rejection;
+- database or model provider transient error.
+
+Every failure must either retry safely, transition to a visible terminal state,
+or wait for explicit human action.
+
+## 12. Crash-safe Runtime sequence
+
+~~~text
+load durable Run + transcript
+  -> apply pending Steering / Cancel
+  -> reconcile assistant Tool Calls without Tool Results
+  -> atomically increment bounded hop
+  -> build and persist the exact token-budgeted Context Snapshot
+  -> write running LLM ledger record
+  -> call provider
+  -> write redacted response + usage
+  -> persist assistant message
+  -> reserve Tool idempotency key + fencing lease
+  -> execute or wait for human approval
+  -> persist terminal Tool Result
+  -> verify explicit run.set_status(done)
+~~~
+
+If a process dies after the assistant message but before the Tool Result, the
+next worker finds the unanswered Tool Call and reuses `runId:toolCallId` as its
+idempotency key. The Tool repository then replays, safely reacquires, waits, or
+reports ambiguity according to durable state.
