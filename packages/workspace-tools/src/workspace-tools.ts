@@ -190,6 +190,44 @@ function patchPaths(diff: string): readonly string[] {
   return [...paths]
 }
 
+function normalizeUnifiedDiffHunkCounts(diff: string): {
+  readonly diff: string
+  readonly changed: boolean
+} {
+  const lines = diff.split('\n')
+  let changed = false
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index]
+    if (header === undefined) continue
+    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header)
+    if (!match) continue
+    let oldCount = 0
+    let newCount = 0
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      const line = lines[bodyIndex]
+      if (line === undefined || line.startsWith('@@ ') || line.startsWith('diff --git ')) break
+      if (line === '\\ No newline at end of file') continue
+      if (line.startsWith(' ')) {
+        oldCount += 1
+        newCount += 1
+      } else if (line.startsWith('-')) {
+        oldCount += 1
+      } else if (line.startsWith('+')) {
+        newCount += 1
+      } else {
+        break
+      }
+    }
+    const normalized = '@@ -' + match[1] + ',' + oldCount +
+      ' +' + match[2] + ',' + newCount + ' @@' + match[3]
+    if (normalized !== header) {
+      lines[index] = normalized
+      changed = true
+    }
+  }
+  return { diff: lines.join('\n'), changed }
+}
+
 function exactCommandAllowed(
   command: readonly string[],
   allowlist: readonly (readonly string[])[],
@@ -381,7 +419,8 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!input.unifiedDiff || Buffer.byteLength(input.unifiedDiff) > MAX_PATCH_BYTES) {
         throw new Error('Patch must be non-empty and no larger than 1 MiB')
       }
-      const paths = patchPaths(input.unifiedDiff)
+      const normalized = normalizeUnifiedDiffHunkCounts(input.unifiedDiff)
+      const paths = patchPaths(normalized.diff)
       if (!paths.includes(input.path)) {
         throw new Error('Patch intent path is not present in the unified diff')
       }
@@ -390,7 +429,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         command: ['git', 'apply', '--check', '--whitespace=nowarn', '-'],
         cwd: boundary.root,
         timeoutMs: 30_000,
-        stdin: input.unifiedDiff,
+        stdin: normalized.diff,
         ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
       })
       let alreadyApplied = false
@@ -399,7 +438,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           command: ['git', 'apply', '--reverse', '--check', '--whitespace=nowarn', '-'],
           cwd: boundary.root,
           timeoutMs: 30_000,
-          stdin: input.unifiedDiff,
+          stdin: normalized.diff,
           ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
         })
         if (reverse.exitCode !== 0) throw new Error('Patch does not apply cleanly: ' + check.stderr)
@@ -410,17 +449,17 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           command: ['git', 'apply', '--whitespace=nowarn', '-'],
           cwd: boundary.root,
           timeoutMs: 30_000,
-          stdin: input.unifiedDiff,
+          stdin: normalized.diff,
           ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
         })
         if (applied.exitCode !== 0) throw new Error('Patch application failed: ' + applied.stderr)
       }
-      const diffHash = hash(input.unifiedDiff)
+      const diffHash = hash(normalized.diff)
       const evidence = await options.evidence.record(context, {
         kind: 'file_diff',
         uri: 'workspace://' + paths.join(',') + '#' + diffHash,
         contentHash: diffHash,
-        metadata: { paths, alreadyApplied },
+        metadata: { paths, alreadyApplied, normalizedHunkCounts: normalized.changed },
       })
       if (evidence.length === 0) throw new Error('Patch evidence was not persisted')
       const sideEffects: TypedSideEffect[] = paths.map((path) => ({

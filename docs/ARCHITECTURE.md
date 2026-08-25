@@ -421,6 +421,13 @@ and allowlisted tests emit both `test_run` and `command_result`. This keeps
 Planner-visible Evidence kinds aligned with what the Tool Gateway can actually
 produce; the completion gate never treats model prose as Evidence.
 
+`file.patch` accepts only bounded unified diffs and still delegates path,
+context, and application validation to `git apply --check`. Before that check,
+it deterministically recalculates only each hunk header's old/new line counts;
+this repairs a common model formatting error without changing file paths,
+starting lines, context, or patch content, and the normalization is recorded in
+the resulting `file_diff` Evidence.
+
 Each Scheduler tick reaps expired Task leases before dispatching ready work.
 A terminal or abandoned Run therefore releases its lease durably and moves the
 Task to `ready` for the next bounded attempt, or to `failed` after its maximum

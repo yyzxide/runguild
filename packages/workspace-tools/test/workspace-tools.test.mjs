@@ -163,6 +163,23 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
     assert.equal(setup.evidence[0].draft.metadata.alreadyApplied, false)
     assert.equal(setup.evidence[1].draft.metadata.alreadyApplied, true)
 
+    const wrongCounts = [
+      'diff --git a/sample.txt b/sample.txt',
+      '--- a/sample.txt',
+      '+++ b/sample.txt',
+      '@@ -1,99 +1,101 @@',
+      '-beta',
+      '+gamma',
+      ' second line',
+      '',
+    ].join('\n')
+    await patch.execute(
+      { path: 'sample.txt', unifiedDiff: wrongCounts },
+      { request: request('file.patch', { path: 'sample.txt', unifiedDiff: wrongCounts }, 'call_counts') },
+    )
+    assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'gamma\nsecond line\n')
+    assert.equal(setup.evidence[2].draft.metadata.normalizedHunkCounts, true)
+
     await assert.rejects(
       patch.execute(
         { path: '../outside.txt', unifiedDiff: unifiedDiff.replaceAll('sample.txt', '../outside.txt') },
