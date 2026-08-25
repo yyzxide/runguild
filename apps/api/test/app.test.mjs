@@ -265,6 +265,19 @@ function fakeRuntimeServices() {
   }
 }
 
+function fakeTaskControls() {
+  const calls = []
+  return {
+    calls,
+    service: {
+      async retryFailedTask(input) {
+        calls.push(input)
+        return { retried: true, maxAttempts: 4 }
+      },
+    },
+  }
+}
+
 function fakeArtifacts() {
   const calls = []
   return {
@@ -468,6 +481,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   const projectRuntimeConfigs = fakeProjectRuntimeConfigs()
   const localRuntimeControl = fakeLocalRuntimeControl()
   const runtime = fakeRuntimeServices()
+  const taskControls = fakeTaskControls()
   const artifacts = fakeArtifacts()
   const reviews = fakeReviews()
   const skills = fakeSkills()
@@ -482,6 +496,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     conversations: conversations.service,
     conversationPlanning: conversationPlanning.service,
     runControls: runtime.runControls,
+    taskControls: taskControls.service,
     toolApprovals: runtime.toolApprovals,
     artifacts: artifacts.service,
     reviews: reviews.service,
@@ -685,6 +700,33 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     })
     assert.equal(mission.status, 200)
     assert.equal((await mission.json()).id, 'mission_created')
+
+    const agentRetry = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/missions/mission_created/tasks/task_failed/retry',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-actor-id': 'builder_api',
+          'x-actor-kind': 'agent',
+        },
+        body: JSON.stringify({ reason: 'Agent cannot expand its own retry budget.' }),
+      },
+    )
+    assert.equal(agentRetry.status, 403)
+
+    const retried = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/missions/mission_created/tasks/task_failed/retry',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api' },
+        body: JSON.stringify({ reason: 'Runtime repair was deployed.' }),
+      },
+    )
+    assert.equal(retried.status, 200)
+    assert.deepEqual(await retried.json(), { retried: true, maxAttempts: 4 })
+    assert.equal(taskControls.calls[0].requestedBy, 'user_api')
+    assert.equal(taskControls.calls[0].reason, 'Runtime repair was deployed.')
 
     const steered = await fetch(baseUrl + '/api/v1/workspaces/ws/runs/run_api/controls', {
       method: 'POST',

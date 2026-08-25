@@ -84,3 +84,41 @@ test('invalid lease duration fails before opening a transaction', async () => {
   )
   assert.equal(scripted.statements.length, 0)
 })
+
+test('human retry preserves attempts, adds one bounded attempt, and records an event', async () => {
+  const statements = []
+  const client = {
+    async query(statement) {
+      statements.push(statement)
+      if (statement.startsWith('SELECT m.project_id, m.status AS mission_status')) {
+        return {
+          rows: [{
+            project_id: 'project_test',
+            mission_status: 'running',
+            task_status: 'failed',
+            max_attempts: 3,
+            dependencies_complete: true,
+          }],
+          rowCount: 1,
+        }
+      }
+      return { rows: [], rowCount: 1 }
+    },
+    release() {},
+  }
+  const repository = new TaskRepository({ async connect() { return client } })
+  const result = await repository.retryFailedTask({
+    workspaceId: 'ws_test',
+    missionId: 'mission_test',
+    taskId: 'task_test',
+    requestedBy: 'user_test',
+    reason: 'Runtime repair was deployed.',
+    correlationId: 'correlation_retry',
+  })
+
+  assert.deepEqual(result, { retried: true, maxAttempts: 4 })
+  assert.equal(statements.some((sql) =>
+    sql.startsWith("UPDATE tasks SET status = 'ready', max_attempts = $2")), true)
+  assert.equal(statements.filter((sql) => sql.startsWith('INSERT INTO domain_events')).length, 1)
+  assert.equal(statements.filter((sql) => sql.startsWith('INSERT INTO outbox_events')).length, 1)
+})

@@ -11,6 +11,7 @@ import {
   type RunStatus,
   type TaskId,
   type TaskStatus,
+  type UserId,
   type WorkspaceId,
 } from '@runguild/protocol'
 import type { Pool } from 'pg'
@@ -104,6 +105,23 @@ export type CompleteTaskResult =
       readonly reason: 'not_completable' | 'missing_evidence' | 'missing_review' | 'missing_integration'
     }
 
+export interface RetryFailedTaskInput {
+  readonly workspaceId: WorkspaceId
+  readonly missionId: MissionId
+  readonly taskId: TaskId
+  readonly requestedBy: UserId
+  readonly reason: string
+  readonly correlationId: CorrelationId
+}
+
+export type RetryFailedTaskResult =
+  | { readonly retried: true; readonly maxAttempts: number }
+  | {
+      readonly retried: false
+      readonly reason: 'not_found_or_forbidden' | 'mission_not_running' | 'task_not_failed'
+        | 'dependencies_incomplete' | 'retry_limit'
+    }
+
 interface ClaimableTaskRow {
   readonly project_id: string
   readonly attempt_count: number
@@ -130,6 +148,60 @@ function assertLeaseSeconds(seconds: number): void {
 
 export class TaskRepository {
   constructor(private readonly pool: Pool) {}
+
+  async retryFailedTask(input: RetryFailedTaskInput): Promise<RetryFailedTaskResult> {
+    const reason = input.reason.trim()
+    if (!reason || reason.length > 2_000) {
+      throw new Error('Task retry reason must be between 1 and 2000 characters')
+    }
+    return withTransaction(this.pool, async (client) => {
+      const result = await client.query<{
+        readonly project_id: string
+        readonly mission_status: string
+        readonly task_status: TaskStatus
+        readonly max_attempts: number
+        readonly dependencies_complete: boolean
+      }>(
+        'SELECT m.project_id, m.status AS mission_status, t.status AS task_status, t.max_attempts, ' +
+        'NOT EXISTS (' +
+        '  SELECT 1 FROM task_dependencies d JOIN tasks parent ON parent.id = d.depends_on_task_id ' +
+        '  WHERE d.task_id = t.id AND d.required AND parent.status <> $5' +
+        ') AS dependencies_complete ' +
+        'FROM tasks t JOIN missions m ON m.id = t.mission_id ' +
+        'JOIN users u ON u.id = $4 AND u.workspace_id = m.workspace_id ' +
+        'WHERE t.id = $1 AND t.mission_id = $2 AND m.workspace_id = $3 FOR UPDATE OF t',
+        [input.taskId, input.missionId, input.workspaceId, input.requestedBy, 'completed'],
+      )
+      const row = result.rows[0]
+      if (!row) return { retried: false, reason: 'not_found_or_forbidden' }
+      if (row.mission_status !== 'running') return { retried: false, reason: 'mission_not_running' }
+      if (row.task_status !== 'failed') return { retried: false, reason: 'task_not_failed' }
+      if (!row.dependencies_complete) return { retried: false, reason: 'dependencies_incomplete' }
+      if (row.max_attempts >= 1_000) return { retried: false, reason: 'retry_limit' }
+
+      const maxAttempts = row.max_attempts + 1
+      await client.query(
+        "UPDATE tasks SET status = 'ready', max_attempts = $2, updated_at = NOW() " +
+        "WHERE id = $1 AND status = 'failed'",
+        [input.taskId, maxAttempts],
+      )
+      await appendDomainEvent(client, {
+        type: 'task.status_changed',
+        workspaceId: input.workspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: input.missionId,
+        actor: { kind: 'user', id: input.requestedBy },
+        correlationId: input.correlationId,
+        payload: {
+          taskId: input.taskId,
+          from: 'failed',
+          to: 'ready',
+          reason,
+        },
+      })
+      return { retried: true, maxAttempts }
+    })
+  }
 
   async claimTask(input: ClaimTaskInput): Promise<ClaimTaskResult> {
     assertLeaseSeconds(input.leaseSeconds)

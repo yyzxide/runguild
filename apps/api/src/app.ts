@@ -53,6 +53,7 @@ import {
   type RuntimeRepository,
   type ReviewRepository,
   type SkillRepository,
+  type TaskRepository,
   type ToolExecutionRepository,
 } from '@runguild/database'
 import { buildEvaluationReport } from '@runguild/evaluation'
@@ -77,6 +78,7 @@ type ConversationService = Pick<
 type ConversationPlanningService = Pick<ConversationPlanningRepository, 'create' | 'get'>
 
 type RunControlService = Pick<RuntimeRepository, 'createControl'>
+type TaskControlService = Pick<TaskRepository, 'retryFailedTask'>
 type ToolApprovalService = Pick<ToolExecutionRepository, 'resolveApproval'>
 type ReviewService = Pick<ReviewRepository, 'submitArtifactVersion' | 'reviewSubmission' | 'getSubmission'>
 type SkillService = Pick<SkillRepository, 'create' | 'createVersion' | 'assign' | 'listForAgent'>
@@ -96,6 +98,7 @@ export interface ApiDependencies {
   readonly conversations: ConversationService
   readonly conversationPlanning: ConversationPlanningService
   readonly runControls: RunControlService
+  readonly taskControls: TaskControlService
   readonly toolApprovals: ToolApprovalService
   readonly artifacts: ArtifactService
   readonly reviews: ReviewService
@@ -144,6 +147,10 @@ const createMissionSchema = z.object({
   goal: z.string().min(1).max(20_000),
   constraints: z.array(z.string().max(2_000)).max(100).default([]),
   acceptanceCriteria: z.array(z.string().max(2_000)).max(100).default([]),
+})
+
+const retryTaskSchema = z.object({
+  reason: z.string().trim().min(1).max(2_000),
 })
 
 const createConversationSchema = z.object({
@@ -806,6 +813,34 @@ export function createApiApp(dependencies: ApiDependencies) {
       return
     }
     res.json(mission)
+  }))
+
+  app.post('/api/v1/workspaces/:workspaceId/missions/:missionId/tasks/:taskId/retry', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_task_retry_required' } })
+      return
+    }
+    const body = retryTaskSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const result = await dependencies.taskControls.retryFailedTask({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      missionId: idSchema.parse(req.params.missionId) as MissionId,
+      taskId: idSchema.parse(req.params.taskId) as TaskId,
+      requestedBy: actorRef.id,
+      reason: body.data.reason,
+      correlationId: ('task_retry_' + randomUUID()) as CorrelationId,
+    })
+    if (!result.retried) {
+      const status = result.reason === 'not_found_or_forbidden' ? 404 : 409
+      res.status(status).json({ error: { code: 'task_retry_rejected', reason: result.reason } })
+      return
+    }
+    res.json(result)
   }))
 
   app.post('/api/v1/workspaces/:workspaceId/runs/:runId/controls', route(async (req, res) => {

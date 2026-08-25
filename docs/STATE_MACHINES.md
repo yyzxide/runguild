@@ -59,6 +59,7 @@ blocked -> ready -> claimed -> running -> reviewing -> completed
                     +----------+----------+-> failed
 
 claimed or running -> ready       when a safe lease recovery succeeds
+failed -> ready                   one explicit human retry adds one attempt
 running -> waiting_human -> running
 reviewing -> ready                 when review requests changes and retries remain
 reviewing -> failed                when review rejects or retries are exhausted
@@ -74,6 +75,9 @@ Guards:
   task declares them;
 - completed requires review policy to pass;
 - failed dependencies keep downstream tasks blocked.
+- a human retry preserves every terminal Run, increments `max_attempts` by
+  exactly one, requires a running Mission with completed dependencies, and
+  records the intervention as a durable domain event.
 
 ## Run
 
