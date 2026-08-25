@@ -414,6 +414,13 @@ System instructions are sent again on each continued request. Tool Calls and
 Tool Results remain in the local durable transcript, so provider continuation
 is an optimization rather than the source of truth.
 
+Read-only repository tools also persist verifiable Evidence: repository search
+emits both a bounded source `citation` and its exact `command_result`, file
+reads emit line-addressed citations, repository status emits a command result,
+and allowlisted tests emit both `test_run` and `command_result`. This keeps
+Planner-visible Evidence kinds aligned with what the Tool Gateway can actually
+produce; the completion gate never treats model prose as Evidence.
+
 Each Scheduler tick reaps expired Task leases before dispatching ready work.
 A terminal or abandoned Run therefore releases its lease durably and moves the
 Task to `ready` for the next bounded attempt, or to `failed` after its maximum

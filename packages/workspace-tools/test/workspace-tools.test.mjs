@@ -110,12 +110,21 @@ test('workspace read/search tools stay inside the assigned root', async () => {
       { request: request('repo.search', { query: 'second line' }) },
     )
     assert.equal(found.output.matches.some((match) => match.path.endsWith('sample.txt') && match.line === 2), true)
+    assert.deepEqual(found.evidence.map((item) => item.kind), ['citation', 'command_result'])
 
     const content = await read.execute(
       { path: 'sample.txt', startLine: 2, endLine: 2 },
       { request: request('file.read', { path: 'sample.txt' }) },
     )
     assert.deepEqual(content.output, { path: 'sample.txt', content: 'second line', truncated: true })
+    assert.deepEqual(content.evidence.map((item) => item.kind), ['citation'])
+
+    const status = await setup.handlers.get('repo.status').execute(
+      {},
+      { request: request('repo.status', {}) },
+    )
+    assert.equal(status.output.clean, true)
+    assert.deepEqual(status.evidence.map((item) => item.kind), ['command_result'])
 
     await symlink('/etc/passwd', join(setup.root, 'escape.txt'))
     await assert.rejects(
@@ -177,6 +186,7 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
     assert.equal(result.output.passed, true)
     assert.equal(result.output.stdout, 'tests ok\n')
     assert.equal(result.evidence[0].kind, 'test_run')
+    assert.deepEqual(result.evidence.map((item) => item.kind), ['test_run', 'command_result'])
 
     await assert.rejects(
       run.execute(

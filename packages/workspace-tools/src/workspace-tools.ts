@@ -225,8 +225,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (requested.length > 50) throw new Error('Search accepts at most 50 paths')
       const paths: string[] = []
       for (const item of requested) paths.push((await boundary.existing(item)).relative)
+      const command = ['rg', '--json', '--max-count', '100', '--glob', '!.git', '--', input.query, ...paths]
       const result = await runCommand({
-        command: ['rg', '--json', '--max-count', '100', '--glob', '!.git', '--', input.query, ...paths],
+        command,
         cwd: boundary.root,
         timeoutMs: 30_000,
         ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
@@ -254,7 +255,20 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           preview: (record.data.lines?.text ?? '').trimEnd().slice(0, 500),
         })
       }
-      return { output: { matches } }
+      const contentHash = hash(JSON.stringify({ query: input.query, paths, matches }))
+      const citation = await options.evidence.record(context, {
+        kind: 'citation',
+        uri: 'repo-search://' + contentHash,
+        contentHash,
+        metadata: { query: input.query, paths, matches },
+      })
+      const commandResult = await options.evidence.record(context, {
+        kind: 'command_result',
+        uri: 'command-result://' + context.request.id + '#' + contentHash,
+        contentHash,
+        metadata: { command, exitCode: result.exitCode, truncated: result.truncated },
+      })
+      return { output: { matches }, evidence: [...citation, ...commandResult] }
     },
   }
 
@@ -285,14 +299,20 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         throw new Error('Repository status is unavailable: ' + (status.stderr || branch.stderr || head.stderr))
       }
       const entries = status.stdout.split('\n').filter(Boolean)
-      return {
-        output: {
-          branch: branch.stdout.trim(),
-          headCommit: head.stdout.trim(),
-          clean: entries.length === 0,
-          entries,
-        },
+      const output = {
+        branch: branch.stdout.trim(),
+        headCommit: head.stdout.trim(),
+        clean: entries.length === 0,
+        entries,
       }
+      const contentHash = hash(JSON.stringify(output))
+      const evidence = await options.evidence.record(context, {
+        kind: 'command_result',
+        uri: 'git-status://' + output.headCommit + '#' + contentHash,
+        contentHash,
+        metadata: output,
+      })
+      return { output, evidence }
     },
   }
 
@@ -323,7 +343,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     action: 'file.read',
     risk: 'read_only',
     retryMode: 'read_only',
-    async execute(input) {
+    async execute(input, context) {
       const target = await boundary.existing(input.path)
       const info = await stat(target.absolute)
       if (!info.isFile()) throw new Error('Path is not a file: ' + input.path)
@@ -336,13 +356,19 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start > 2_000) {
         throw new Error('Invalid line range')
       }
-      return {
-        output: {
-          path: target.relative,
-          content: lines.slice(start - 1, end).join('\n'),
-          truncated: end < lines.length,
-        },
+      const output = {
+        path: target.relative,
+        content: lines.slice(start - 1, end).join('\n'),
+        truncated: end < lines.length,
       }
+      const contentHash = hash(output.content)
+      const evidence = await options.evidence.record(context, {
+        kind: 'citation',
+        uri: 'workspace://' + target.relative + '#L' + start + '-L' + end,
+        contentHash,
+        metadata: { path: target.relative, startLine: start, endLine: end, truncated: output.truncated },
+      })
+      return { output, evidence }
     },
   }
 
@@ -596,13 +622,26 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       })
       const passed = result.exitCode === 0 && !result.timedOut
       const contentHash = hash(result.stdout + '\n---stderr---\n' + result.stderr)
-      const evidence = await options.evidence.record(context, {
+      const testEvidence = await options.evidence.record(context, {
         kind: 'test_run',
         uri: 'test-run://' + context.request.id + '#' + contentHash,
         contentHash,
         metadata: { command: input.command, exitCode: result.exitCode, passed, timedOut: result.timedOut },
       })
-      const evidenceId = evidence[0]?.id
+      const commandEvidence = await options.evidence.record(context, {
+        kind: 'command_result',
+        uri: 'command-result://' + context.request.id + '#' + contentHash,
+        contentHash,
+        metadata: {
+          command: input.command,
+          exitCode: result.exitCode,
+          passed,
+          timedOut: result.timedOut,
+          truncated: result.truncated,
+        },
+      })
+      const evidence = [...testEvidence, ...commandEvidence]
+      const evidenceId = testEvidence[0]?.id
       if (!evidenceId) throw new Error('Test evidence was not persisted')
       return {
         output: {
