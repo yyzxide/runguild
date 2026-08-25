@@ -221,6 +221,12 @@ runtime configuration table and are never returned to the browser. The API can
 stop only child processes it launched itself; an externally managed Worker is
 shown as external and left untouched.
 
+When `OPENAI_BASE_URL` points at an OpenAI-compatible endpoint, Agent Workers
+replay the complete durable transcript on every model hop instead of assuming
+that endpoint implements stateful `previous_response_id` continuation. The
+official OpenAI endpoint keeps the response-id optimization; Tool Calls and
+Tool Results remain persisted locally in both modes.
+
 Run the API and scheduler worker:
 
 ~~~bash

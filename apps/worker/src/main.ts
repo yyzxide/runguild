@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import {
   OutboxRepository,
   SchedulerRepository,
+  TaskRepository,
   WorkerInstanceRepository,
   createDatabasePool,
   runMigrations,
@@ -37,6 +38,7 @@ const redis = new Redis(redisUrl, {
 await redis.connect()
 
 const scheduler = new SchedulerRepository(pool)
+const tasks = new TaskRepository(pool)
 const outbox = new OutboxRepository(pool)
 let stopping = false
 const heartbeat = await startWorkerHeartbeat({
@@ -60,6 +62,7 @@ try {
     try {
       const result = await runWorkerTick({
         scheduler,
+        tasks,
         outbox,
         publisher: {
           async publish(topic, payload) {
@@ -67,12 +70,14 @@ try {
           },
         },
       }, {
+        recoveryLimit: 50,
         dispatchLimit: 50,
         dispatchSeconds: 60,
         outboxLimit: 100,
         outboxClaimSeconds: 30,
       })
-      if (result.dispatched > 0 || result.published > 0 || result.publishFailed > 0) {
+      if (result.recovered > 0 || result.dispatched > 0
+          || result.published > 0 || result.publishFailed > 0) {
         process.stdout.write(JSON.stringify({
           type: 'worker.tick',
           ...result,

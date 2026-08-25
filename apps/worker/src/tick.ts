@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto'
 import type {
   OutboxRepository,
   SchedulerRepository,
+  TaskRepository,
 } from '@runguild/database'
 import type { CorrelationId } from '@runguild/protocol'
 
 type Scheduler = Pick<SchedulerRepository, 'dispatchReadyTasks'>
+type Tasks = Pick<TaskRepository, 'recoverExpiredLeases'>
 type Outbox = Pick<OutboxRepository, 'claimBatch' | 'markPublished' | 'markFailed'>
 
 export interface EventPublisher {
@@ -15,11 +17,13 @@ export interface EventPublisher {
 
 export interface WorkerTickDependencies {
   readonly scheduler: Scheduler
+  readonly tasks: Tasks
   readonly outbox: Outbox
   readonly publisher: EventPublisher
 }
 
 export interface WorkerTickOptions {
+  readonly recoveryLimit: number
   readonly dispatchLimit: number
   readonly dispatchSeconds: number
   readonly outboxLimit: number
@@ -27,6 +31,7 @@ export interface WorkerTickOptions {
 }
 
 export interface WorkerTickResult {
+  readonly recovered: number
   readonly dispatched: number
   readonly published: number
   readonly publishFailed: number
@@ -40,10 +45,15 @@ export async function runWorkerTick(
   dependencies: WorkerTickDependencies,
   options: WorkerTickOptions,
 ): Promise<WorkerTickResult> {
+  const correlationId = ('scheduler_' + randomUUID()) as CorrelationId
+  const recovered = await dependencies.tasks.recoverExpiredLeases(
+    options.recoveryLimit,
+    correlationId,
+  )
   const dispatches = await dependencies.scheduler.dispatchReadyTasks({
     limit: options.dispatchLimit,
     dispatchSeconds: options.dispatchSeconds,
-    correlationId: ('scheduler_' + randomUUID()) as CorrelationId,
+    correlationId,
   })
   const events = await dependencies.outbox.claimBatch({
     limit: options.outboxLimit,
@@ -71,6 +81,7 @@ export async function runWorkerTick(
   }
 
   return {
+    recovered: recovered.length,
     dispatched: dispatches.length,
     published,
     publishFailed,

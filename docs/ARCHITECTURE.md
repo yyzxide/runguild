@@ -405,10 +405,19 @@ rebuilt from the Trial metrics and underlying ledgers.
 ## 10. Current model execution
 
 The production provider is OpenAI Responses. Every successful response id is
-stored in the LLM ledger and reused as `previous_response_id` after a durable
-resume. System instructions are sent again on each continued request. Tool
-Calls and Tool Results remain in the local durable transcript, so provider
-continuation is an optimization rather than the source of truth.
+stored in the LLM ledger. The default OpenAI endpoint reuses it as
+`previous_response_id` after a durable resume, while a configured custom
+`OPENAI_BASE_URL` conservatively replays the complete local transcript because
+OpenAI-compatible endpoints are not guaranteed to persist responses. A
+stateful custom proxy can opt back into response-id continuation explicitly.
+System instructions are sent again on each continued request. Tool Calls and
+Tool Results remain in the local durable transcript, so provider continuation
+is an optimization rather than the source of truth.
+
+Each Scheduler tick reaps expired Task leases before dispatching ready work.
+A terminal or abandoned Run therefore releases its lease durably and moves the
+Task to `ready` for the next bounded attempt, or to `failed` after its maximum
+attempt count; Redis delivery is not required for this recovery path.
 
 RunGuild's typed Tool Actions keep their protocol names such as `repo.search`
 in PostgreSQL, prompts, policy checks, and audit records. The provider adapter

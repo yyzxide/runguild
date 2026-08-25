@@ -31,6 +31,7 @@ export interface OpenAIResponsesAdapterOptions {
   readonly baseURL?: string
   readonly maxOutputTokens?: number
   readonly reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh'
+  readonly usePreviousResponseId?: boolean
   readonly client?: ResponsesClient
 }
 
@@ -177,7 +178,8 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const actionsByProviderName = providerToolActions(request)
     const continuation = request.continuation
-    const useContinuation = continuation?.provider === this.provider
+    const useContinuation = (this.options.usePreviousResponseId ?? this.options.baseURL === undefined)
+      && continuation?.provider === this.provider
       && continuation.model === this.model
     const instructions = systemInstructions(request.messages)
     const body: ResponseCreateParamsNonStreaming = {

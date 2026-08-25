@@ -123,6 +123,99 @@ test('OpenAI continuation sends only post-response tool outputs and repeats inst
   ])
 })
 
+test('OpenAI-compatible custom endpoints replay complete tool history instead of assuming stateful responses', async () => {
+  const fake = fakeClient([response({ id: 'resp_second', output_text: 'Continuing.' })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '',
+    model: 'compatible-model',
+    baseURL: 'https://compatible.example.test',
+    client: fake.client,
+  })
+
+  await adapter.complete({
+    messages: [
+      { role: 'system', content: 'Persistent system instruction.', hop: 0 },
+      { role: 'user', content: 'Original request.', hop: 0 },
+      {
+        role: 'assistant',
+        content: '',
+        hop: 1,
+        toolCalls: [
+          { id: 'call_one', action: 'repo.search', input: { query: 'one' } },
+          { id: 'call_two', action: 'repo.status', input: {} },
+        ],
+      },
+      { role: 'tool', toolCallId: 'call_one', content: '{"matches":[]}', hop: 1 },
+      { role: 'tool', toolCallId: 'call_two', content: '{"clean":true}', hop: 1 },
+    ],
+    tools: [
+      { action: 'repo.search', description: 'Search.', inputSchema: { type: 'object' } },
+      { action: 'repo.status', description: 'Status.', inputSchema: { type: 'object' } },
+    ],
+    continuation: {
+      provider: 'openai',
+      model: 'compatible-model',
+      responseId: 'resp_first',
+      hop: 1,
+    },
+  })
+
+  assert.equal(fake.requests[0].body.previous_response_id, undefined)
+  assert.deepEqual(fake.requests[0].body.input, [
+    { role: 'user', content: 'Original request.' },
+    {
+      type: 'function_call',
+      call_id: 'call_one',
+      name: 'repo__search',
+      arguments: '{"query":"one"}',
+    },
+    {
+      type: 'function_call',
+      call_id: 'call_two',
+      name: 'repo__status',
+      arguments: '{}',
+    },
+    { type: 'function_call_output', call_id: 'call_one', output: '{"matches":[]}' },
+    { type: 'function_call_output', call_id: 'call_two', output: '{"clean":true}' },
+  ])
+})
+
+test('custom endpoint continuation can be explicitly enabled for a stateful proxy', async () => {
+  const fake = fakeClient([response({ id: 'resp_second', output_text: 'Continuing.' })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '',
+    model: 'proxy-model',
+    baseURL: 'https://stateful-proxy.example.test',
+    usePreviousResponseId: true,
+    client: fake.client,
+  })
+
+  await adapter.complete({
+    messages: [
+      { role: 'user', content: 'Original request.', hop: 0 },
+      {
+        role: 'assistant',
+        content: '',
+        hop: 1,
+        toolCalls: [{ id: 'call_one', action: 'repo.search', input: { query: 'one' } }],
+      },
+      { role: 'tool', toolCallId: 'call_one', content: '{"matches":[]}', hop: 1 },
+    ],
+    tools: [],
+    continuation: {
+      provider: 'openai',
+      model: 'proxy-model',
+      responseId: 'resp_first',
+      hop: 1,
+    },
+  })
+
+  assert.equal(fake.requests[0].body.previous_response_id, 'resp_first')
+  assert.deepEqual(fake.requests[0].body.input, [
+    { type: 'function_call_output', call_id: 'call_one', output: '{"matches":[]}' },
+  ])
+})
+
 test('OpenAI adapter rejects malformed function arguments before the Runtime sees them', async () => {
   const fake = fakeClient([response({
     output: [{
