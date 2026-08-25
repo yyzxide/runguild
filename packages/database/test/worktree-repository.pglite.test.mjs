@@ -88,6 +88,12 @@ test('Task Worktree reservation is fenced, replay-safe, and records commits', as
     const replay = await repository.reserve(reservation('task_tree'))
     assert.equal(replay.kind, 'ready')
 
+    const replayAfterBaseAdvance = await repository.reserve(reservation('task_tree', {
+      baseCommit: 'c'.repeat(40),
+    }))
+    assert.equal(replayAfterBaseAdvance.kind, 'ready')
+    assert.equal(replayAfterBaseAdvance.worktree.baseCommit, 'a'.repeat(40))
+
     await assert.rejects(repository.recordUnchangedIntegration({
       taskId: 'task_tree', headCommit: 'b'.repeat(40),
     }), /unchanged baseline/)

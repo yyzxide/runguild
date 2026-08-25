@@ -161,7 +161,9 @@ Provision, integration, and cleanup transitions each require their current
 expiring fencing token. `committed` records the exact reviewable HEAD;
 integration accepts only a clean fast-forward of that HEAD. A Task with a
 Worktree cannot complete before `integrated`, and cleanup never deletes a dirty
-Worktree.
+Worktree. A new Run attempt for the same Task reuses the Worktree row's
+persisted `base_commit` even if its named base branch has advanced; a retry
+cannot silently rebase or change the evidence baseline.
 
 ## Submission
 

@@ -135,7 +135,6 @@ function sameSemantics(row: WorktreeRow, input: ReserveTaskWorktreeInput): boole
     && row.worktree_path === input.worktreePath
     && row.branch_name === input.branchName
     && row.base_ref === input.baseRef
-    && row.base_commit === input.baseCommit
 }
 
 export class TaskWorktreeRepository {
@@ -183,6 +182,10 @@ export class TaskWorktreeRepository {
       if (!sameSemantics(row, input)) {
         throw new Error('Task Worktree was reserved with different repository semantics')
       }
+      // The branch named by baseRef may advance between Run attempts. The
+      // persisted Worktree row owns the immutable Task baseline; replay must
+      // reconcile that exact baseCommit instead of treating the moving ref as
+      // a new reservation.
       if (['ready', 'committed', 'integrated'].includes(row.status)) {
         return { kind: 'ready', worktree: asWorktree(row) }
       }
