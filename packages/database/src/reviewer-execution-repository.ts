@@ -398,8 +398,7 @@ export class ReviewerExecutionRepository {
     )
     const item = scope.rows[0]
     if (!item) throw new Error('Review materials are outside the Submission scope')
-    const [criteria, evidence, tools, worktree] = await Promise.all([
-      client.query<{
+    const criteria = await client.query<{
         criterion_key: string
         description: string
         required: boolean
@@ -408,8 +407,8 @@ export class ReviewerExecutionRepository {
         'SELECT criterion_key, description, required, required_evidence_kinds ' +
         'FROM task_acceptance_criteria WHERE task_id = $1 ORDER BY criterion_key, id',
         [row.task_id],
-      ),
-      client.query<{
+      )
+    const evidence = await client.query<{
         id: string
         kind: string
         uri: string
@@ -419,14 +418,14 @@ export class ReviewerExecutionRepository {
         'SELECT id, kind, uri, content_hash, metadata FROM evidence ' +
         'WHERE task_id = $1 AND run_id = $2 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY kind, id',
         [row.task_id, item.run_id],
-      ),
-      client.query<{ action: string; result: unknown }>(
+      )
+    const tools = await client.query<{ action: string; result: unknown }>(
         "SELECT action, result FROM tool_executions WHERE run_id = $1 AND status = 'succeeded' " +
         "AND action IN ('repo.status', 'repo.diff', 'repo.commit', 'test.run', 'shell.run') " +
         'ORDER BY created_at, id',
         [item.run_id],
-      ),
-      client.query<{
+      )
+    const worktree = await client.query<{
         base_commit: string
         head_commit: string | null
         integrated_commit: string | null
@@ -434,8 +433,7 @@ export class ReviewerExecutionRepository {
       }>(
         'SELECT base_commit, head_commit, integrated_commit, status FROM task_worktrees WHERE task_id = $1',
         [row.task_id],
-      ),
-    ])
+      )
     const tree = worktree.rows[0]
     return {
       schemaVersion: 1,

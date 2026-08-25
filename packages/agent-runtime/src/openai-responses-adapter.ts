@@ -34,6 +34,32 @@ export interface OpenAIResponsesAdapterOptions {
   readonly client?: ResponsesClient
 }
 
+const PROVIDER_TOOL_NAME = /^[a-zA-Z0-9_-]+$/
+const MAX_PROVIDER_TOOL_NAME_LENGTH = 64
+
+function providerToolName(action: ToolAction): string {
+  const name = action.replaceAll('.', '__')
+  if (!PROVIDER_TOOL_NAME.test(name) || name.length > MAX_PROVIDER_TOOL_NAME_LENGTH) {
+    throw new Error('Tool action cannot be represented as an OpenAI function name: ' + action)
+  }
+  return name
+}
+
+function providerToolActions(request: ModelRequest): ReadonlyMap<string, ToolAction> {
+  const actions = new Map<string, ToolAction>()
+  for (const tool of request.tools) {
+    const name = providerToolName(tool.action)
+    const existing = actions.get(name)
+    if (existing !== undefined && existing !== tool.action) {
+      throw new Error(
+        'Tool actions collide after OpenAI function-name encoding: ' + existing + ' and ' + tool.action,
+      )
+    }
+    actions.set(name, tool.action)
+  }
+  return actions
+}
+
 function assertOptions(options: OpenAIResponsesAdapterOptions): void {
   if (!options.apiKey.trim() && !options.client) {
     throw new Error('OPENAI_API_KEY is required for the OpenAI model adapter')
@@ -94,7 +120,7 @@ function toResponseInput(request: ModelRequest, useContinuation: boolean): Respo
         input.push({
           type: 'function_call',
           call_id: call.id,
-          name: call.action,
+          name: providerToolName(call.action),
           arguments: JSON.stringify(call.input),
         } satisfies ResponseFunctionToolCall)
       }
@@ -103,7 +129,10 @@ function toResponseInput(request: ModelRequest, useContinuation: boolean): Respo
   return input
 }
 
-function parseToolCall(item: ResponseFunctionToolCall): ModelToolCall {
+function parseToolCall(
+  item: ResponseFunctionToolCall,
+  actionsByProviderName: ReadonlyMap<string, ToolAction>,
+): ModelToolCall {
   let input: unknown
   try {
     input = JSON.parse(item.arguments)
@@ -113,9 +142,13 @@ function parseToolCall(item: ResponseFunctionToolCall): ModelToolCall {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('OpenAI tool arguments must be a JSON object for ' + item.name)
   }
+  const action = actionsByProviderName.get(item.name)
+  if (action === undefined) {
+    throw new Error('OpenAI returned an unknown function name: ' + item.name)
+  }
   return {
     id: item.call_id as ToolCallId,
-    action: item.name as ToolAction,
+    action,
     input: input as never,
   }
 }
@@ -142,6 +175,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    const actionsByProviderName = providerToolActions(request)
     const continuation = request.continuation
     const useContinuation = continuation?.provider === this.provider
       && continuation.model === this.model
@@ -151,7 +185,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
       input: toResponseInput(request, useContinuation),
       tools: request.tools.map((tool) => ({
         type: 'function' as const,
-        name: tool.action,
+        name: providerToolName(tool.action),
         description: tool.description,
         parameters: tool.inputSchema,
         strict: false,
@@ -174,7 +208,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
     )
     const toolCalls = response.output
       .filter((item): item is ResponseFunctionToolCall => item.type === 'function_call')
-      .map(parseToolCall)
+      .map((item) => parseToolCall(item, actionsByProviderName))
     return {
       content: response.output_text,
       toolCalls,

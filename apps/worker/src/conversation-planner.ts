@@ -4,8 +4,11 @@ import {
 } from '@runguild/database'
 import type { ConversationRepository } from '@runguild/database'
 import {
+  AGENT_ROLES,
+  EVIDENCE_KINDS,
   validateMissionPlan,
   type AgentId,
+  type AgentRole,
   type ConversationPlanRequestedInboxPayload,
   type CorrelationId,
   type MissionPlanDraft,
@@ -14,63 +17,64 @@ import {
   type ModelToolDefinition,
 } from '@runguild/protocol'
 
-export const MISSION_PLAN_TOOL_DEFINITION: ModelToolDefinition = {
-  action: 'mission.propose_plan',
-  description: 'Return the executable Mission plan as a validated dependency graph for human approval.',
-  inputSchema: {
-    type: 'object',
-    required: ['summary', 'tasks'],
-    properties: {
-      summary: { type: 'string', minLength: 1, maxLength: 20_000 },
-      tasks: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 100,
-        items: {
-          type: 'object',
-          required: [
-            'key', 'title', 'description', 'role', 'priority', 'dependsOn',
-            'reviewRequired', 'acceptanceCriteria',
-          ],
-          properties: {
-            key: { type: 'string', minLength: 1, maxLength: 64 },
-            title: { type: 'string', minLength: 1, maxLength: 200 },
-            description: { type: 'string', maxLength: 20_000 },
-            role: { enum: ['planner', 'researcher', 'builder', 'reviewer', 'custom'] },
-            priority: { type: 'integer', minimum: 0, maximum: 1_000 },
-            dependsOn: { type: 'array', maxItems: 100, items: { type: 'string' } },
-            reviewRequired: { type: 'boolean' },
-            acceptanceCriteria: {
-              type: 'array',
-              maxItems: 100,
-              items: {
-                type: 'object',
-                required: ['key', 'description', 'required', 'evidenceKinds'],
-                properties: {
-                  key: { type: 'string', minLength: 1, maxLength: 64 },
-                  description: { type: 'string', minLength: 1, maxLength: 2_000 },
-                  required: { type: 'boolean' },
-                  evidenceKinds: {
-                    type: 'array',
-                    maxItems: 20,
-                    items: {
-                      enum: [
-                        'artifact_version', 'file_diff', 'git_commit', 'test_run',
-                        'command_output', 'review', 'external_reference',
-                      ],
+export function missionPlanToolDefinition(availableRoles: readonly AgentRole[]): ModelToolDefinition {
+  const roles = [...new Set(availableRoles)]
+  if (roles.length === 0 || roles.some((role) => !AGENT_ROLES.includes(role))) {
+    throw new Error('Planner requires at least one valid active Agent role')
+  }
+  return {
+    action: 'mission.propose_plan',
+    description: 'Return the executable Mission plan as a validated dependency graph for human approval.',
+    inputSchema: {
+      type: 'object',
+      required: ['summary', 'tasks'],
+      properties: {
+        summary: { type: 'string', minLength: 1, maxLength: 20_000 },
+        tasks: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            required: [
+              'key', 'title', 'description', 'role', 'priority', 'dependsOn',
+              'reviewRequired', 'acceptanceCriteria',
+            ],
+            properties: {
+              key: { type: 'string', minLength: 1, maxLength: 64 },
+              title: { type: 'string', minLength: 1, maxLength: 200 },
+              description: { type: 'string', maxLength: 20_000 },
+              role: { enum: roles },
+              priority: { type: 'integer', minimum: 0, maximum: 1_000 },
+              dependsOn: { type: 'array', maxItems: 100, items: { type: 'string' } },
+              reviewRequired: { type: 'boolean' },
+              acceptanceCriteria: {
+                type: 'array',
+                maxItems: 100,
+                items: {
+                  type: 'object',
+                  required: ['key', 'description', 'required', 'evidenceKinds'],
+                  properties: {
+                    key: { type: 'string', minLength: 1, maxLength: 64 },
+                    description: { type: 'string', minLength: 1, maxLength: 2_000 },
+                    required: { type: 'boolean' },
+                    evidenceKinds: {
+                      type: 'array',
+                      maxItems: 20,
+                      items: { enum: EVIDENCE_KINDS },
                     },
                   },
+                  additionalProperties: false,
                 },
-                additionalProperties: false,
               },
             },
+            additionalProperties: false,
           },
-          additionalProperties: false,
         },
       },
+      additionalProperties: false,
     },
-    additionalProperties: false,
-  },
+  }
 }
 
 type PlanningStore = Pick<
@@ -99,6 +103,7 @@ export function planningMessages(input: {
     readonly authorName: string
     readonly body: string
   }[]
+  readonly availableRoles: readonly AgentRole[]
 }): readonly ModelMessage[] {
   return [
     {
@@ -108,6 +113,7 @@ export function planningMessages(input: {
         'Turn the selected conversation into a small but complete executable DAG, not a prose-only answer.',
         'Every Task must have one specialist role, explicit dependencies, and evidence-based acceptance criteria.',
         'Use researcher only when uncertainty requires investigation and builder for implementation.',
+        'Only assign these active project Agent roles: ' + input.availableRoles.join(', ') + '.',
         'Represent independent approval of a producing Task with reviewRequired=true. Do not create a reviewer-role DAG Task solely to approve its dependency; Submission review is a separate gate.',
         'Do not claim work is complete. Call mission.propose_plan exactly once with the proposed graph.',
       ].join('\n'),
@@ -130,7 +136,10 @@ export function planningMessages(input: {
   ]
 }
 
-function planFromResponse(response: Awaited<ReturnType<ModelAdapter['complete']>>): MissionPlanDraft {
+function planFromResponse(
+  response: Awaited<ReturnType<ModelAdapter['complete']>>,
+  availableRoles: readonly AgentRole[],
+): MissionPlanDraft {
   const calls = response.toolCalls.filter((call) => call.action === 'mission.propose_plan')
   if (calls.length !== 1 || response.toolCalls.length !== 1) {
     throw new Error('Planner must call mission.propose_plan exactly once')
@@ -139,6 +148,12 @@ function planFromResponse(response: Awaited<ReturnType<ModelAdapter['complete']>
   const validation = validateMissionPlan(plan)
   if (!validation.valid) {
     throw new Error('Planner returned an invalid DAG: ' + validation.errors.map((error) => error.path + ' ' + error.message).join('; '))
+  }
+  const unavailable = [...new Set(plan.tasks
+    .map((task) => task.role)
+    .filter((role) => !availableRoles.includes(role)))]
+  if (unavailable.length > 0) {
+    throw new Error('Planner assigned unavailable project Agent roles: ' + unavailable.join(', '))
   }
   return plan
 }
@@ -165,19 +180,20 @@ export class ConversationPlanner {
     try {
       if (plan === undefined) {
         const messages = planningMessages(work)
+        const toolDefinition = missionPlanToolDefinition(work.availableRoles)
         const model = this.dependencies.modelFor(work.modelProvider, work.modelName)
         const startedAt = Date.now()
         const response = await model.complete({
           messages,
-          tools: [MISSION_PLAN_TOOL_DEFINITION],
+          tools: [toolDefinition],
         })
-        plan = planFromResponse(response)
+        plan = planFromResponse(response, work.availableRoles)
         await this.dependencies.planning.completeModel({
           requestId: work.request.id,
           plannerAgentId,
           leaseToken: work.leaseToken,
           plan,
-          promptSnapshot: { schemaVersion: 1, messages, tools: [MISSION_PLAN_TOOL_DEFINITION] },
+          promptSnapshot: { schemaVersion: 1, messages, tools: [toolDefinition] },
           responseSnapshot: {
             finishReason: response.finishReason,
             content: response.content,

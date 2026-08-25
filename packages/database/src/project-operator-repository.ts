@@ -90,9 +90,8 @@ export class ProjectOperatorRepository {
       const projectRow = project.rows[0]
       if (!projectRow) return null
 
-      const [agents, missions, agentWorkers, systemWorkers] = await Promise.all([
-        projectRow.conversation_id
-          ? client.query<{
+      const agents = projectRow.conversation_id
+        ? await client.query<{
               readonly id: string
               readonly name: string
               readonly role: AgentRole
@@ -117,8 +116,8 @@ export class ProjectOperatorRepository {
               "WHEN 'builder' THEN 3 WHEN 'reviewer' THEN 4 ELSE 5 END, agent.name, agent.id",
               [projectRow.conversation_id, workspaceId, projectId],
             )
-          : Promise.resolve({ rows: [] }),
-        client.query<{
+        : { rows: [] }
+      const missions = await client.query<{
           readonly id: string
           readonly title: string
           readonly status: MissionStatus
@@ -139,9 +138,9 @@ export class ProjectOperatorRepository {
           'WHERE mission.workspace_id = $1 AND mission.project_id = $2 ' +
           'GROUP BY mission.id ORDER BY mission.updated_at DESC, mission.id LIMIT 50',
           [workspaceId, projectId],
-        ),
-        projectRow.conversation_id
-          ? client.query<{
+        )
+      const agentWorkers = projectRow.conversation_id
+        ? await client.query<{
               readonly agent_id: string
               readonly status: 'running' | 'stopped' | 'stale'
               readonly started_at: Date
@@ -157,8 +156,8 @@ export class ProjectOperatorRepository {
               'ORDER BY worker.agent_id, worker.started_at DESC, worker.id DESC',
               [projectRow.conversation_id, workspaceId],
             )
-          : Promise.resolve({ rows: [] }),
-        client.query<{
+        : { rows: [] }
+      const systemWorkers = await client.query<{
           readonly kind: 'scheduler' | 'integration' | 'evaluation'
           readonly status: 'running' | 'stopped' | 'stale'
           readonly last_heartbeat_at: Date
@@ -171,8 +170,7 @@ export class ProjectOperatorRepository {
           'FROM (SELECT DISTINCT ON (kind) kind, status, last_heartbeat_at, expires_at, started_at, id ' +
           "FROM worker_instances WHERE kind <> 'agent' ORDER BY kind, started_at DESC, id DESC) latest " +
           'ORDER BY latest.kind',
-        ),
-      ])
+        )
 
       const latestAgentWorkers = new Map(agentWorkers.rows.map((worker) => [worker.agent_id, worker]))
       const latestSystemWorkers = new Map(systemWorkers.rows.map((worker) => [worker.kind, worker]))

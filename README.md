@@ -200,6 +200,11 @@ npm run api:local
 npm run web:start
 ~~~
 
+The published database ports are configurable with `POSTGRES_PORT` and
+`REDIS_PORT`. If another local Redis already owns port 6379, for example, set
+`REDIS_PORT=6380` and `REDIS_URL=redis://localhost:6380` in `.env` before
+running Compose. Container-side ports remain the standard 5432 and 6379.
+
 The Web home page is an operator workflow, not a presentation dashboard: check
 the API, initialize the local Project once, enter the Team Room, select durable
 messages for the Planner, approve the proposed DAG, and then inspect or switch

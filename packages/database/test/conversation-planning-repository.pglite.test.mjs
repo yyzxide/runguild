@@ -111,24 +111,39 @@ test('selected Conversation messages atomically create a leased Planner request 
     assert.equal(claimed.kind, 'work')
     assert.equal(claimed.work.request.attempt, 1)
     assert.deepEqual(claimed.work.sourceMessages.map((message) => message.id), ['message_1', 'message_2'])
+    assert.deepEqual(claimed.work.availableRoles, ['builder', 'planner'])
     const busy = await repository.claim({
       requestId: 'planning_request', plannerAgentId: 'planner', leaseSeconds: 60,
     })
     assert.equal(busy.kind, 'busy')
 
+    const transient = await repository.fail({
+      requestId: 'planning_request', plannerAgentId: 'planner',
+      leaseToken: claimed.work.leaseToken, message: 'temporary provider failure',
+    })
+    assert.equal(transient.retryable, true)
+    assert.equal(transient.request.error, 'temporary provider failure')
+    const retried = await repository.claim({
+      requestId: 'planning_request', plannerAgentId: 'planner', leaseSeconds: 60,
+    })
+    assert.equal(retried.kind, 'work')
+    assert.equal(retried.work.request.attempt, 2)
+    assert.equal('error' in retried.work.request, false)
+
     await repository.completeModel({
       requestId: 'planning_request', plannerAgentId: 'planner',
-      leaseToken: claimed.work.leaseToken, plan,
+      leaseToken: retried.work.leaseToken, plan,
       promptSnapshot: { messages: 2 }, responseSnapshot: { toolCalls: 1 },
       modelProvider: 'test', modelName: 'planner-model', providerRequestId: 'response_1',
       inputTokens: 120, outputTokens: 80, estimatedCostUsd: 0.01, latencyMs: 25,
     })
     const awaiting = await repository.markAwaitingApproval({
       requestId: 'planning_request', plannerAgentId: 'planner',
-      leaseToken: claimed.work.leaseToken, planVersion: 1,
+      leaseToken: retried.work.leaseToken, planVersion: 1,
     })
     assert.equal(awaiting.status, 'awaiting_approval')
     assert.equal(awaiting.planVersion, 1)
+    assert.equal('error' in awaiting, false)
     assert.equal(await repository.get('ws', 'planning_request', { kind: 'user', id: 'outsider' }), null)
     await database.query(
       "UPDATE missions SET status = 'running', approved_by = 'user', approved_at = NOW() " +

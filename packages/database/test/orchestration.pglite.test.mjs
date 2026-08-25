@@ -23,12 +23,19 @@ const migrationUrls = [
 ]
 
 function poolAdapter(database) {
+  let queryInFlight = false
   const client = {
     async query(statement, params = []) {
-      const result = await database.query(statement, params)
-      return {
-        ...result,
-        rowCount: result.affectedRows ?? result.rows.length,
+      if (queryInFlight) throw new Error('Concurrent queries on one transaction client are forbidden')
+      queryInFlight = true
+      try {
+        const result = await database.query(statement, params)
+        return {
+          ...result,
+          rowCount: result.affectedRows ?? result.rows.length,
+        }
+      } finally {
+        queryInFlight = false
       }
     },
     release() {},

@@ -4,6 +4,7 @@ import {
   EVENT_TOPICS,
   validateMissionPlan,
   type AgentId,
+  type AgentRole,
   type ConversationId,
   type ConversationPlanningRequestId,
   type ConversationPlanningRequestSnapshot,
@@ -96,6 +97,7 @@ export interface ConversationPlanningWork {
   readonly missionConstraints: readonly unknown[]
   readonly conversationTitle: string
   readonly sourceMessages: readonly PlanningSourceMessage[]
+  readonly availableRoles: readonly AgentRole[]
   readonly modelProvider: string
   readonly modelName: string
   readonly storedPlan?: MissionPlanDraft
@@ -437,6 +439,7 @@ export class ConversationPlanningRepository {
       const claimed = await client.query<PlanningScopeRow>(
         "UPDATE conversation_planning_requests SET status = CASE WHEN plan IS NULL THEN 'running' ELSE 'model_complete' END, " +
         'attempt = CASE WHEN plan IS NULL THEN attempt + 1 ELSE attempt END, lease_token = $2, ' +
+        'error = NULL, ' +
         "lease_expires_at = NOW() + ($3::double precision * INTERVAL '1 second'), " +
         'started_at = COALESCE(started_at, NOW()), updated_at = NOW() WHERE id = $1 RETURNING *',
         [row.id, leaseToken, input.leaseSeconds],
@@ -446,6 +449,13 @@ export class ConversationPlanningRepository {
         client,
         row.conversation_id as ConversationId,
         row.source_message_ids as readonly MessageId[],
+      )
+      const roles = await client.query<{ readonly role: AgentRole }>(
+        'SELECT DISTINCT agent.role FROM conversation_members member ' +
+        'JOIN agents agent ON agent.id = member.participant_id AND agent.workspace_id = member.workspace_id ' +
+        "WHERE member.conversation_id = $1 AND member.workspace_id = $2 AND member.participant_kind = 'agent' " +
+        "AND agent.status = 'active' ORDER BY agent.role",
+        [row.conversation_id, row.workspace_id],
       )
       return {
         kind: 'work',
@@ -457,6 +467,7 @@ export class ConversationPlanningRepository {
           missionConstraints: row.mission_constraints,
           conversationTitle: row.conversation_title,
           sourceMessages: sources,
+          availableRoles: roles.rows.map((agent) => agent.role),
           modelProvider: row.model_provider,
           modelName: row.model_name,
           ...(row.plan === null ? {} : { storedPlan: row.plan }),
@@ -473,7 +484,8 @@ export class ConversationPlanningRepository {
     const planJson = canonicalJson(input.plan)
     const planHash = createHash('sha256').update(planJson).digest('hex')
     const result = await this.pool.query(
-      "UPDATE conversation_planning_requests SET status = 'model_complete', plan = $4::jsonb, plan_hash = $5, " +
+      "UPDATE conversation_planning_requests SET status = 'model_complete', error = NULL, " +
+      'plan = $4::jsonb, plan_hash = $5, ' +
       'prompt_snapshot = $6::jsonb, response_snapshot = $7::jsonb, model_provider = $8, model_name = $9, ' +
       'provider_request_id = $10, input_tokens = $11, output_tokens = $12, estimated_cost_usd = $13, ' +
       'latency_ms = $14, updated_at = NOW() WHERE id = $1 AND planner_agent_id = $2 ' +
@@ -505,7 +517,7 @@ export class ConversationPlanningRepository {
     readonly planVersion: number
   }): Promise<ConversationPlanningRequestSnapshot> {
     const result = await this.pool.query<PlanningRow>(
-      "UPDATE conversation_planning_requests SET status = 'awaiting_approval', plan_version = $4, " +
+      "UPDATE conversation_planning_requests SET status = 'awaiting_approval', error = NULL, plan_version = $4, " +
       'lease_token = NULL, lease_expires_at = NULL, finished_at = NOW(), updated_at = NOW() ' +
       "WHERE id = $1 AND planner_agent_id = $2 AND status = 'model_complete' AND lease_token = $3 RETURNING *",
       [input.requestId, input.plannerAgentId, input.leaseToken, input.planVersion],

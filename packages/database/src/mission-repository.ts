@@ -598,8 +598,7 @@ export class MissionRepository {
       const row = mission.rows[0]
       if (!row) return null
 
-      const [plan, tasks, approvedDelivery] = await Promise.all([
-        client.query<{
+      const plan = await client.query<{
           readonly version: number
           readonly status: string
           readonly summary: string
@@ -609,8 +608,8 @@ export class MissionRepository {
           'SELECT version, status, summary, plan_hash, plan FROM mission_plan_revisions ' +
           'WHERE mission_id = $1 ORDER BY version DESC LIMIT 1',
           [missionId],
-        ),
-        client.query<{
+        )
+      const tasks = await client.query<{
           readonly id: string
           readonly title: string
           readonly status: TaskStatus
@@ -624,8 +623,8 @@ export class MissionRepository {
           'FROM tasks t LEFT JOIN task_dependencies d ON d.task_id = t.id ' +
           'WHERE t.mission_id = $1 GROUP BY t.id ORDER BY t.position, t.created_at',
           [missionId],
-        ),
-        client.query<{
+        )
+      const approvedDelivery = await client.query<{
           readonly artifact_version_id: string
           readonly artifact_id: string
           readonly version: number
@@ -639,8 +638,7 @@ export class MissionRepository {
           "WHERE approval.mission_id = $1 AND approval.kind = 'mission_delivery' " +
           "AND approval.status = 'approved' ORDER BY approval.resolved_at DESC LIMIT 1",
           [missionId],
-        ),
-      ])
+        )
       const planRow = plan.rows[0]
       const approvedDeliveryRow = approvedDelivery.rows[0]
       const finalDelivery = approvedDeliveryRow

@@ -44,7 +44,7 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
     output: [{
       type: 'function_call',
       call_id: 'call_search',
-      name: 'repo.search',
+      name: 'repo__search',
       arguments: '{"query":"runtime"}',
       status: 'completed',
     }],
@@ -72,7 +72,8 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
   assert.deepEqual(fake.requests[0].body.input, [
     { role: 'user', content: 'Search the repository.' },
   ])
-  assert.equal(fake.requests[0].body.tools[0].name, 'repo.search')
+  assert.equal(fake.requests[0].body.tools[0].name, 'repo__search')
+  assert.match(fake.requests[0].body.tools[0].name, /^[a-zA-Z0-9_-]+$/)
   assert.equal(fake.requests[0].body.store, true)
   assert.equal(result.providerRequestId, 'resp_first')
   assert.equal(result.finishReason, 'tool_calls')
@@ -127,7 +128,7 @@ test('OpenAI adapter rejects malformed function arguments before the Runtime see
     output: [{
       type: 'function_call',
       call_id: 'call_bad',
-      name: 'repo.search',
+      name: 'repo__search',
       arguments: '{bad json',
       status: 'completed',
     }],
@@ -135,7 +136,49 @@ test('OpenAI adapter rejects malformed function arguments before the Runtime see
   const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
 
   await assert.rejects(
-    adapter.complete({ messages: [], tools: [] }),
+    adapter.complete({
+      messages: [],
+      tools: [{
+        action: 'repo.search',
+        description: 'Search repository text.',
+        inputSchema: { type: 'object' },
+      }],
+    }),
     /invalid JSON arguments/,
   )
+})
+
+test('OpenAI adapter rejects provider function names that are not declared by the Runtime', async () => {
+  const fake = fakeClient([response({
+    output: [{
+      type: 'function_call',
+      call_id: 'call_unknown',
+      name: 'unknown_tool',
+      arguments: '{}',
+      status: 'completed',
+    }],
+  })])
+  const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+
+  await assert.rejects(
+    adapter.complete({ messages: [], tools: [] }),
+    /unknown function name/,
+  )
+})
+
+test('OpenAI adapter rejects ambiguous function-name encodings before calling the provider', async () => {
+  const fake = fakeClient([])
+  const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+
+  await assert.rejects(
+    adapter.complete({
+      messages: [],
+      tools: [
+        { action: 'repo.search', description: 'First.', inputSchema: { type: 'object' } },
+        { action: 'repo__search', description: 'Second.', inputSchema: { type: 'object' } },
+      ],
+    }),
+    /collide after OpenAI function-name encoding/,
+  )
+  assert.equal(fake.requests.length, 0)
 })

@@ -410,6 +410,19 @@ resume. System instructions are sent again on each continued request. Tool
 Calls and Tool Results remain in the local durable transcript, so provider
 continuation is an optimization rather than the source of truth.
 
+RunGuild's typed Tool Actions keep their protocol names such as `repo.search`
+in PostgreSQL, prompts, policy checks, and audit records. The provider adapter
+encodes those names into the restricted Responses function-name alphabet and
+maps returned calls back to the exact declared Action. It rejects encoding
+collisions and undeclared provider function names before the Runtime can
+execute a tool.
+Planner tool schemas also consume the protocol package's canonical Evidence
+kind list directly, so model-visible acceptance criteria cannot drift from the
+validator and database execution contract.
+The planning lease snapshots the active Agent roles in the selected project
+room; both the model-visible role enum and the server-side returned-plan check
+reject Tasks that no current project Agent can execute.
+
 Workspace Skills are immutable versioned instruction bodies. Assignments may
 track the latest version or pin one exact version and have a deterministic
 priority. Skill changes affect only Runs whose execution context has not yet
