@@ -336,5 +336,10 @@ PostgreSQL integration tests are opt-in:
 ~~~bash
 docker compose up -d postgres
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control npm run db:migrate
-TEST_DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control npm run test:integration
+docker compose exec postgres createdb -U mission mission_control_test
+TEST_DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control_test npm run test:integration
 ~~~
+
+The external integration suite truncates its fixtures between cases and
+therefore refuses to run unless `current_database()` ends in `_test`. Never
+point `TEST_DATABASE_URL` at the development or production RunGuild database.

@@ -16,6 +16,27 @@ if (!databaseUrl && process.env.REQUIRE_POSTGRES === '1') {
   throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
 }
 
+function isDedicatedTestDatabaseName(name) {
+  return typeof name === 'string' && name.endsWith('_test')
+}
+
+async function assertDedicatedTestDatabase(pool) {
+  const result = await pool.query('SELECT current_database() AS name')
+  const name = result.rows[0]?.name
+  if (!isDedicatedTestDatabaseName(name)) {
+    throw new Error(
+      'Refusing destructive PostgreSQL integration tests outside a database whose name ends in _test',
+    )
+  }
+}
+
+test('PostgreSQL integration suite requires a dedicated _test database name', () => {
+  assert.equal(isDedicatedTestDatabaseName('mission_control_test'), true)
+  assert.equal(isDedicatedTestDatabaseName('mission_control'), false)
+  assert.equal(isDedicatedTestDatabaseName('production'), false)
+  assert.equal(isDedicatedTestDatabaseName(undefined), false)
+})
+
 async function resetDatabase(pool) {
   await pool.query('TRUNCATE outbox_events, domain_events, workspaces CASCADE')
 }
@@ -39,6 +60,7 @@ async function seedMission(pool) {
 test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) => {
   const pool = new Pool({ connectionString: databaseUrl, max: 10 })
   try {
+    await assertDedicatedTestDatabase(pool)
     await runMigrations(pool)
 
     await t.test('only one competing agent claims a ready task', async () => {
