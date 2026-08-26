@@ -184,7 +184,7 @@ export class ReviewRepository {
       if (!['running', 'reviewing'].includes(scoped.task_status)) {
         throw new Error('Task is not accepting Artifact submissions')
       }
-      if (!['running', 'waiting_human', 'succeeded'].includes(scoped.run_status)) {
+      if (!['running', 'waiting_tool', 'waiting_human', 'succeeded'].includes(scoped.run_status)) {
         throw new Error('Run is not in a submittable state')
       }
       if (scoped.version_run_id !== input.runId) {

@@ -91,6 +91,22 @@ async function submit(repository) {
   })
 }
 
+test('runtime can submit an Artifact Version while the submission tool owns the Run', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    await database.exec(
+      "UPDATE tasks SET status = 'running' WHERE id = 'task_review';" +
+      "UPDATE agent_runs SET status = 'waiting_tool' WHERE id = 'run_builder';",
+    )
+    const submission = await submit(new ReviewRepository(poolAdapter(database)))
+    assert.equal(submission.status, 'submitted')
+    assert.equal(submission.runId, 'run_builder')
+  } finally {
+    await database.close()
+  }
+})
+
 test('human approval of exact-version evidence completes the review-gated Task', async () => {
   const database = new PGlite()
   try {

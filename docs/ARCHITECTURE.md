@@ -273,7 +273,11 @@ a snapshot/update/removal lifecycle, and never enters Artifact history.
 Review is bound to exact state rather than the living room. The producing Run
 creates a Version, records `artifact_version` Evidence with the same content
 hash, and submits that Version. Submission computes a deterministic Evidence
-bundle hash. When the Mission Conversation contains an active Reviewer Agent,
+bundle hash. Because the Runtime marks a Run `waiting_tool` while any ordinary
+Tool Call is executing, the submission gate accepts that transient owner state
+in addition to `running`, `waiting_human`, and `succeeded`; it still rejects
+foreign Runs, stale Versions, uncommitted Worktrees, and mismatched Evidence.
+When the Mission Conversation contains an active Reviewer Agent,
 the same transaction creates a requested Review, a separate durable
 `review_executions` record, and a deduplicated Reviewer Inbox message. A
 Workspace human remains able to decide directly or take over a pending automatic
