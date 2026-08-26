@@ -361,6 +361,11 @@ without trusting stale process state.
 server-owned identity and hooks/signing disabled, records the exact tree and
 binary diff hash, and persists `file_diff` Evidence. A retry can reconstruct
 Evidence whether the crash happened before or after the Worktree row advanced.
+After staging and before committing, the gateway inspects every added, copied,
+modified, or renamed symlink. Absolute targets and targets that are dangling or
+resolve outside the assigned Worktree are rejected; the index is restored while
+the working file remains available for operator diagnosis. This prevents local
+dependency mounts and host paths from entering a reviewed Task commit.
 For a clean Worktree that still points at its baseline, the same tool records a
 no-change integration fact without creating an empty commit. This lets
 Researcher and other evidence-only Tasks complete and enter ordinary safe

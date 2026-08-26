@@ -295,3 +295,44 @@ test('repository commit finalizes a clean unchanged Worktree without inventing a
     await rm(setup.root, { recursive: true, force: true })
   }
 })
+
+test('repository commit rejects dependency links outside the Task Worktree and restores the index', async () => {
+  const setup = await fixture()
+  try {
+    await symlink('/tmp/shared-node_modules', join(setup.root, 'node_modules'))
+    const commit = setup.handlers.get('repo.commit')
+    await assert.rejects(
+      commit.execute({ message: 'Do not commit dependency mount' }, {
+        request: request('repo.commit', { message: 'Do not commit dependency mount' }, 'call_commit_external_link'),
+      }),
+      /relative in-Worktree target/,
+    )
+    assert.equal(
+      (await execute('git', ['-C', setup.root, 'diff', '--cached', '--name-only'])).stdout,
+      '',
+    )
+    assert.equal(
+      (await execute('git', ['-C', setup.root, 'rev-parse', 'HEAD'])).stdout.trim(),
+      setup.worktree.baseCommit,
+    )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('repository commit permits a relative symlink whose target resolves inside the Task Worktree', async () => {
+  const setup = await fixture()
+  try {
+    await symlink('sample.txt', join(setup.root, 'sample-link.txt'))
+    const committed = await setup.handlers.get('repo.commit').execute({ message: 'Add internal link' }, {
+      request: request('repo.commit', { message: 'Add internal link' }, 'call_commit_internal_link'),
+    })
+    assert.equal(committed.output.committed, true)
+    assert.equal(
+      (await execute('git', ['-C', setup.root, 'show', 'HEAD:sample-link.txt'])).stdout,
+      'sample.txt',
+    )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})

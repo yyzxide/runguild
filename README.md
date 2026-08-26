@@ -223,6 +223,14 @@ runtime configuration table and are never returned to the browser. The API can
 stop only child processes it launched itself; an externally managed Worker is
 shown as external and left untouched.
 
+For Web-managed local Workers, the persisted per-Agent model is the source used
+when a new Run freezes its execution context. `MODEL_NAME` in `.env` seeds the
+development bootstrap only; editing it after the Project already exists does
+not rewrite the database configuration. Save the model in **配置与启停** before
+dispatching work, and verify the new Run ledger when cost matters. Existing
+Runs deliberately retain their frozen model. A directly launched Agent process
+may still use an explicit `MODEL_NAME` environment override.
+
 `LocalWorkerSupervisor` enforces a safe startup boundary for local Workers: it
 validates the configured Git `repositoryPath` exists and is a directory before
 touching the Worktree root; an existing non-directory Worktree root is
@@ -263,6 +271,15 @@ AGENT_CONTEXT_INPUT_TOKENS=65536 \
 AGENT_TEST_COMMANDS_JSON='[["npm","test"],["npm","run","typecheck"]]' \
 npm run agent:start
 ~~~
+
+Git does not copy ignored dependency directories such as `node_modules` into a
+new Worktree. Dependency-bearing projects must prepare dependencies inside each
+Task Worktree, for example by adding one reviewed, exact install argv such as
+`["npm","ci","--ignore-scripts","--no-audit","--no-fund"]` to the Project
+allowlist before the normal test commands. Do not link dependency directories
+to an absolute path outside the Worktree: `repo.commit` rejects absolute,
+external, dangling, and self-referential staged symlinks and restores the index
+without deleting the working file.
 
 Run the repository integration and cleanup worker against the same roots:
 

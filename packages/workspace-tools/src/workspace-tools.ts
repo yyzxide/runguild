@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { realpath, readFile, stat } from 'node:fs/promises'
+import { lstat, readlink, realpath, readFile, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 
@@ -234,6 +234,47 @@ function exactCommandAllowed(
 ): boolean {
   return allowlist.some((allowed) =>
     allowed.length === command.length && allowed.every((part, index) => part === command[index]))
+}
+
+async function assertStagedSymlinksStayInsideWorkspace(
+  boundary: WorkspaceBoundary,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  const changed = await runCommand({
+    command: ['git', 'diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', '--'],
+    cwd: boundary.root,
+    timeoutMs: 30_000,
+    maxCaptureBytes: MAX_GIT_DIFF_BYTES,
+    ...(abortSignal === undefined ? {} : { abortSignal }),
+  })
+  if (changed.exitCode !== 0 || changed.truncated) {
+    throw new Error(changed.truncated
+      ? 'Staged path list exceeds the 2 MiB safety limit'
+      : 'Staged path inspection failed: ' + changed.stderr)
+  }
+  for (const path of changed.stdout.split('\0').filter(Boolean)) {
+    const absolute = resolve(boundary.root, path)
+    if (!boundary.contains(absolute)) throw new Error('Staged path escapes the assigned workspace: ' + path)
+    const info = await lstat(absolute)
+    if (!info.isSymbolicLink()) continue
+    const target = await readlink(absolute)
+    if (isAbsolute(target)) {
+      throw new Error('Staged symlink must use a relative in-Worktree target: ' + path)
+    }
+    const resolvedTarget = resolve(dirname(absolute), target)
+    if (!boundary.contains(resolvedTarget)) {
+      throw new Error('Staged symlink resolves outside the assigned Worktree: ' + path)
+    }
+    let canonicalTarget: string
+    try {
+      canonicalTarget = await realpath(resolvedTarget)
+    } catch {
+      throw new Error('Staged symlink target must exist and resolve safely inside the Worktree: ' + path)
+    }
+    if (!boundary.contains(canonicalTarget)) {
+      throw new Error('Staged symlink resolves outside the assigned Worktree: ' + path)
+    }
+  }
 }
 
 export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions): Promise<readonly [
@@ -521,6 +562,21 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
         })
         if (staged.exitCode !== 0) throw new Error('Staging Task changes failed: ' + staged.stderr)
+        try {
+          await assertStagedSymlinksStayInsideWorkspace(boundary, context.abortSignal)
+        } catch (error) {
+          const unstaged = await runCommand({
+            command: ['git', 'reset', '--mixed', '--quiet', 'HEAD', '--', '.'],
+            cwd: boundary.root,
+            timeoutMs: 30_000,
+          })
+          if (unstaged.exitCode !== 0) {
+            throw new Error('Unsafe staged symlink was rejected, but the index could not be restored: ' + unstaged.stderr, {
+              cause: error,
+            })
+          }
+          throw error
+        }
         const diff = await runCommand({
           command: ['git', 'diff', '--cached', '--binary', '--no-ext-diff', '--'],
           cwd: boundary.root,
