@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { access, stat } from 'node:fs/promises'
+import { access, mkdir, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -92,6 +92,18 @@ function commandLabel(command: LocalWorkerCommand, configuration: ProjectRuntime
   return agent ? 'Agent · ' + agent.name : 'Agent · ' + command.agentId
 }
 
+export async function ensureWorkspaceRoots(repositoryPath: string, worktreeRoot: string): Promise<void> {
+  const repository = await stat(repositoryPath)
+  if (!repository.isDirectory()) throw new Error('仓库路径必须是已存在的目录')
+  try {
+    const worktrees = await stat(worktreeRoot)
+    if (!worktrees.isDirectory()) throw new Error('Worktree 根目录已存在但不是目录')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    await mkdir(worktreeRoot, { recursive: true, mode: 0o700 })
+  }
+}
+
 export class LocalWorkerSupervisor implements LocalRuntimeControl {
   private readonly children = new Map<string, ChildProcess>()
 
@@ -154,11 +166,7 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
     const worktreeRoot = configuration.runtime.worktreeRoot
     if (command.kind === 'agent' || command.kind === 'integration') {
       if (!repositoryPath || !worktreeRoot) throw new Error('仓库路径和 Worktree 根目录尚未配置')
-      const repository = await stat(repositoryPath)
-      const worktrees = await stat(worktreeRoot)
-      if (!repository.isDirectory() || !worktrees.isDirectory()) {
-        throw new Error('仓库路径和 Worktree 根目录必须是已存在的目录')
-      }
+      await ensureWorkspaceRoots(repositoryPath, worktreeRoot)
     }
     const entryPoint = ENTRY_POINTS[command.kind]
     await access(entryPoint)

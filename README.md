@@ -223,6 +223,13 @@ runtime configuration table and are never returned to the browser. The API can
 stop only child processes it launched itself; an externally managed Worker is
 shown as external and left untouched.
 
+`LocalWorkerSupervisor` enforces a safe startup boundary for local Workers: it
+validates the configured Git `repositoryPath` exists and is a directory before
+touching the Worktree root; an existing non-directory Worktree root is
+rejected; and a missing Worktree root is created with Node's
+`fs.mkdir(worktreeRoot, { recursive: true, mode: 0o700 })` without invoking a
+shell.
+
 When `OPENAI_BASE_URL` points at an OpenAI-compatible endpoint, Agent Workers
 replay the complete durable transcript on every model hop instead of assuming
 that endpoint implements stateful `previous_response_id` continuation. The

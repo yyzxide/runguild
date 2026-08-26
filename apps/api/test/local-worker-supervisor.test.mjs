@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
-import { LocalWorkerSupervisor } from '../dist/local-worker-supervisor.js'
+import { ensureWorkspaceRoots, LocalWorkerSupervisor } from '../dist/local-worker-supervisor.js'
 
 const configuration = {
   project: {
@@ -57,4 +60,47 @@ test('local supervisor refuses duplicate and non-owned process control', async (
   assert.deepEqual(calls, [{ kind: 'scheduler', agentId: undefined }])
   const stopped = await supervisor.stop({ kind: 'scheduler' })
   assert.equal(stopped.state, 'not_owned')
+})
+
+test('ensureWorkspaceRoots creates missing Worktree root with 0700 permissions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'runguild-lws-'))
+  try {
+    const repositoryPath = join(directory, 'repository')
+    const worktreeRoot = join(directory, 'worktrees', 'nested')
+    await mkdir(repositoryPath)
+    await ensureWorkspaceRoots(repositoryPath, worktreeRoot)
+    const created = await stat(worktreeRoot)
+    assert.equal(created.isDirectory(), true)
+    assert.equal(created.mode & 0o777, 0o700)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('ensureWorkspaceRoots rejects an existing non-directory Worktree root', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'runguild-lws-'))
+  try {
+    const repositoryPath = join(directory, 'repository')
+    const worktreeRoot = join(directory, 'worktrees')
+    await mkdir(repositoryPath)
+    await writeFile(worktreeRoot, 'not a directory')
+    await assert.rejects(
+      ensureWorkspaceRoots(repositoryPath, worktreeRoot),
+      /已存在但不是目录/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('ensureWorkspaceRoots validates repository path before creating Worktree root', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'runguild-lws-'))
+  try {
+    const repositoryPath = join(directory, 'missing-repository')
+    const worktreeRoot = join(directory, 'worktrees')
+    await assert.rejects(ensureWorkspaceRoots(repositoryPath, worktreeRoot))
+    await assert.rejects(stat(worktreeRoot), (error) => error?.code === 'ENOENT')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
