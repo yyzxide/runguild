@@ -119,8 +119,10 @@ The control-plane foundation is executable:
   without inventing an empty commit, so evidence-only Tasks do not deadlock on
   an unnecessary Integration gate;
 - a separate integration worker that admits only approved committed Tasks,
-  performs clean fast-forward-only integration, completes the existing Task
-  gate, and safely removes integrated Worktrees and branches;
+  fast-forwards when possible or creates a hooks-disabled, conflict-free merge
+  whose parent is the exact reviewed HEAD; conflicts leave the base unchanged,
+  while successful integration completes the existing Task gate and safely
+  removes integrated Worktrees and branches;
 - immutable Evaluation Scenario Versions with a frozen Git baseline, paired
   single-Agent/multi-Agent plans, deterministic repetitions, and human-managed
   REST APIs;

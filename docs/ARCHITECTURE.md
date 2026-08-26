@@ -214,7 +214,9 @@ nudge and consumes another bounded hop.
    updates it, freezes an Artifact Version, and commits its Worktree. Code
    submission requires Evidence for both the exact Version and exact HEAD.
 9. Independent approval admits that HEAD to the integration worker, which
-   accepts only a clean fast-forward onto the recorded base branch.
+   fast-forwards when possible. If the base advanced independently, it may
+   create a conflict-free merge commit that retains the exact reviewed HEAD as
+   a parent; any conflict rejects integration without changing the base ref.
 10. Task completion evaluates evidence, review, and integration gates; the model cannot write
    the terminal Task state directly.
 11. Completing a task unlocks dependents in the same transaction. The
@@ -310,8 +312,9 @@ the Task to `ready`, while a terminal rejection fails it.
 - When a Task has changed code, its Submission must also reference `file_diff`
   Evidence whose commit is the recorded Worktree HEAD and whose exact diff spans
   the Task Worktree base through that HEAD; approval cannot complete the Task
-  until that same commit is integrated. A verified unchanged baseline is already
-  integrated and needs no invented diff or empty commit.
+  until that exact commit is contained by the recorded integration HEAD. A
+  verified unchanged baseline is already integrated and needs no invented diff
+  or empty commit.
 - A dependent Task cannot become ready before all required parents complete.
 - A side-effecting Tool Request with the same idempotency key returns the same
   recorded result.
@@ -365,13 +368,19 @@ cleanup while a dirty or advanced Worktree can never bypass Integration.
 
 The independent integration worker selects only approved Submissions with a
 `committed` Worktree. It verifies that the clean Worktree HEAD is the reviewed
-HEAD and that the current base is an ancestor. For the checked-out project
-branch it additionally requires a clean matching checkout and performs a
-hooks-disabled fast-forward merge. For an isolated Evaluation ref it performs
-an atomic compare-and-swap ref update without changing the checkout. Diverged
-state is visible as a failed integration and is never auto-resolved. Cleanup
-removes only a clean integrated Worktree and deletes a Task branch only after
-proving its HEAD is contained by the recorded base ref.
+HEAD. If the current base is its ancestor, integration is a fast-forward. If
+both histories advanced, the worker creates a hooks/signing-disabled merge only
+when Git reports no conflicts, verifies that the merge parents are the exact
+pre-integration base and reviewed Task HEAD, and records the resulting
+integration commit. The checked-out project branch additionally requires a
+clean matching checkout. A non-checked-out Evaluation ref is merged in a
+bounded temporary integration Worktree and advanced with an atomic
+compare-and-swap, without changing the project checkout. A crash after Git but
+before PostgreSQL is recovered by proving the reviewed HEAD is already an
+ancestor of the current base. Conflicts leave the base unchanged and remain a
+failed integration for human resolution. Cleanup removes only a clean
+integrated Worktree and deletes a Task branch only after proving its reviewed
+HEAD is contained by the recorded base ref.
 
 The runtime exposes no general shell tool. `test.run` spawns an argv array
 without a shell and only when it exactly matches the configured allowlist.

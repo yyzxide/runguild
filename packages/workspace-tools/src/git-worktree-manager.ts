@@ -245,6 +245,7 @@ export class GitWorktreeManager {
       if (taskStatus.exitCode !== 0 || taskStatus.stdout.trim()) {
         throw new Error('Task Worktree must be clean before integration')
       }
+      await this.cleanupTemporaryIntegrationWorktree(record.taskId)
       const sourceBranch = (await git(this.repositoryPath, ['branch', '--show-current'])).stdout.trim()
       const sourceRef = 'refs/heads/' + record.baseRef
       const sourceHead = (
@@ -262,28 +263,54 @@ export class GitWorktreeManager {
           throw new Error('Checked-out source branch differs from its recorded ref')
         }
       }
+      let expectedIntegratedHead = sourceHead
       if (sourceHead !== taskHead) {
-        const currentBaseIsAncestor = await git(
+        const taskAlreadyIntegrated = await git(
           this.repositoryPath,
-          ['merge-base', '--is-ancestor', sourceHead, taskHead],
+          ['merge-base', '--is-ancestor', taskHead, sourceHead],
           true,
         )
-        if (currentBaseIsAncestor.exitCode !== 0) {
-          throw new Error('Reviewed Task branch is stale relative to the current base branch')
-        }
-        if (sourceBranch === record.baseRef) {
-          await git(this.repositoryPath, [
-            '-c', 'core.hooksPath=/dev/null',
-            'merge', '--ff-only', record.branchName,
-          ])
-        } else {
-          await git(this.repositoryPath, ['update-ref', sourceRef, taskHead, sourceHead])
+        if (taskAlreadyIntegrated.exitCode !== 0) {
+          const currentBaseIsAncestor = await git(
+            this.repositoryPath,
+            ['merge-base', '--is-ancestor', sourceHead, taskHead],
+            true,
+          )
+          if (currentBaseIsAncestor.exitCode === 0) {
+            if (sourceBranch === record.baseRef) {
+              await git(this.repositoryPath, [
+                '-c', 'core.hooksPath=/dev/null',
+                'merge', '--ff-only', taskHead,
+              ])
+            } else {
+              await git(this.repositoryPath, ['update-ref', sourceRef, taskHead, sourceHead])
+            }
+            expectedIntegratedHead = taskHead
+          } else {
+            expectedIntegratedHead = await this.mergeReviewedHead({
+              record,
+              sourceBranch,
+              sourceRef,
+              sourceHead,
+              taskHead,
+            })
+          }
         }
       }
       const integratedHead = (
         await git(this.repositoryPath, ['rev-parse', '--verify', sourceRef + '^{commit}'])
       ).stdout.trim()
-      if (integratedHead !== taskHead) throw new Error('Integrated HEAD does not match reviewed Task HEAD')
+      if (integratedHead !== expectedIntegratedHead) {
+        throw new Error('Integration base advanced while the reviewed Task was being integrated')
+      }
+      const containsReviewedHead = await git(
+        this.repositoryPath,
+        ['merge-base', '--is-ancestor', taskHead, integratedHead],
+        true,
+      )
+      if (containsReviewedHead.exitCode !== 0) {
+        throw new Error('Integrated history does not contain the exact reviewed Task HEAD')
+      }
       const integrated = await this.store.markIntegrated({
         taskId: record.taskId,
         integrationToken: reservation.integrationToken,
@@ -298,6 +325,82 @@ export class GitWorktreeManager {
       }).catch(() => null)
       throw error
     }
+  }
+
+  private async mergeReviewedHead(input: {
+    readonly record: TaskWorktree
+    readonly sourceBranch: string
+    readonly sourceRef: string
+    readonly sourceHead: string
+    readonly taskHead: string
+  }): Promise<string> {
+    const integrationPath = resolve(
+      this.worktreeRoot,
+      '.integration-' + taskName(input.record.taskId).path,
+    )
+    if (!contains(this.worktreeRoot, integrationPath) || integrationPath === this.worktreeRoot) {
+      throw new Error('Derived integration Worktree path escaped its root')
+    }
+    const checkedOut = input.sourceBranch === input.record.baseRef
+    if (!checkedOut) {
+      await git(this.repositoryPath, [
+        'worktree', 'add', '--detach', integrationPath, input.sourceHead,
+      ])
+    }
+    const mergePath = checkedOut ? this.repositoryPath : integrationPath
+    try {
+      const merged = await git(mergePath, [
+        '-c', 'user.name=RunGuild Integration',
+        '-c', 'user.email=runguild-integration@example.invalid',
+        '-c', 'core.hooksPath=/dev/null',
+        '-c', 'commit.gpgSign=false',
+        'merge', '--no-ff', '--no-verify', '--no-gpg-sign',
+        '-m', 'Integrate reviewed Task ' + input.record.taskId,
+        input.taskHead,
+      ], true)
+      if (merged.exitCode !== 0) {
+        await git(mergePath, ['merge', '--abort'], true)
+        const detail = (merged.stdout + '\n' + merged.stderr).trim().slice(0, 2_000)
+        throw new Error(
+          'Reviewed Task conflicts with the current base branch' + (detail ? ': ' + detail : ''),
+        )
+      }
+      const mergedHead = (
+        await git(mergePath, ['rev-parse', '--verify', 'HEAD^{commit}'])
+      ).stdout.trim()
+      const parents = (
+        await git(mergePath, ['rev-list', '--parents', '-n', '1', mergedHead])
+      ).stdout.trim().split(/\s+/)
+      if (parents.length !== 3 || parents[1] !== input.sourceHead || parents[2] !== input.taskHead) {
+        throw new Error('Integration merge does not retain the exact reviewed Task HEAD as a parent')
+      }
+      if (!checkedOut) {
+        const updated = await git(
+          this.repositoryPath,
+          ['update-ref', input.sourceRef, mergedHead, input.sourceHead],
+          true,
+        )
+        if (updated.exitCode !== 0) {
+          throw new Error('Integration base advanced while the reviewed Task was being merged')
+        }
+      }
+      return mergedHead
+    } finally {
+      if (!checkedOut) await this.cleanupTemporaryIntegrationWorktree(input.record.taskId)
+    }
+  }
+
+  private async cleanupTemporaryIntegrationWorktree(taskId: TaskId): Promise<void> {
+    const integrationPath = resolve(this.worktreeRoot, '.integration-' + taskName(taskId).path)
+    const removed = await git(
+      this.repositoryPath,
+      ['worktree', 'remove', '--force', integrationPath],
+      true,
+    )
+    if (removed.exitCode !== 0 && await exists(integrationPath)) {
+      throw new Error('Stale integration Worktree could not be removed safely')
+    }
+    await git(this.repositoryPath, ['worktree', 'prune'])
   }
 
   async cleanup(input: {
