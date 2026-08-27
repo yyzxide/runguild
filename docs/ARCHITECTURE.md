@@ -467,11 +467,14 @@ produce; the completion gate never treats model prose as Evidence.
 
 `file.patch` accepts only bounded unified diffs and still delegates path,
 context, and application validation to `git apply --check`. Before that check,
-it deterministically recalculates only each hunk header's old/new line counts;
-it also appends the patch-format trailing newline when the model omits it. This
-repairs common model formatting errors without changing file paths, starting
-lines, context, or patch body content, and both normalizations are recorded in
-the resulting `file_diff` Evidence.
+it deterministically recalculates each hunk header's old/new line counts and
+appends the patch-format trailing newline when the model omits it. A stale hunk
+start may also be rebased to the current file only when the hunk's complete
+old-side text has exactly one match. Ambiguous matches are rejected before
+`git apply --check`; missing old-side text is not guessed and proceeds only to
+the strict forward/reverse checks needed for replay-safe patches. Count, start,
+and trailing-newline normalizations are recorded in the resulting `file_diff`
+Evidence.
 
 Each Scheduler tick reaps expired Task leases before dispatching ready work.
 A terminal or abandoned Run therefore releases its lease durably and moves the

@@ -230,6 +230,108 @@ function normalizeUnifiedDiffHunkCounts(diff: string): {
   return { diff: lines.join('\n'), changed, appendedTrailingNewline }
 }
 
+function diffPath(raw: string): string | null {
+  const value = raw.split('\t', 1)[0]?.trim()
+  if (!value || value === '/dev/null') return null
+  return value.startsWith('a/') || value.startsWith('b/') ? value.slice(2) : value
+}
+
+async function normalizeUnifiedDiffHunkStarts(
+  diff: string,
+  boundary: WorkspaceBoundary,
+): Promise<{ readonly diff: string; readonly changed: boolean }> {
+  const lines = diff.split('\n')
+  const fileLines = new Map<string, readonly string[] | null>()
+  let oldPath: string | null = null
+  let newPath: string | null = null
+  let cumulativeDelta = 0
+  let changed = false
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line === undefined) continue
+    if (line.startsWith('diff --git ')) {
+      oldPath = null
+      newPath = null
+      cumulativeDelta = 0
+      continue
+    }
+    if (line.startsWith('--- ')) {
+      oldPath = diffPath(line.slice(4))
+      cumulativeDelta = 0
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      newPath = diffPath(line.slice(4))
+      continue
+    }
+    const match = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)$/.exec(line)
+    if (!match) continue
+    const oldCount = Number(match[2])
+    const newCount = Number(match[4])
+    const targetPath = oldPath ?? newPath
+    if (!targetPath || oldCount === 0) {
+      cumulativeDelta += newCount - oldCount
+      continue
+    }
+
+    const oldSequence: string[] = []
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      if (oldSequence.length >= oldCount) break
+      const body = lines[bodyIndex]
+      if (body === undefined || body.startsWith('@@ ') || body.startsWith('diff --git ')) break
+      if (body === '\\ No newline at end of file') continue
+      if (body.startsWith(' ') || body.startsWith('-')) oldSequence.push(body.slice(1))
+      else if (!body.startsWith('+')) break
+    }
+    if (oldSequence.length === 0) {
+      cumulativeDelta += newCount - oldCount
+      continue
+    }
+
+    if (!fileLines.has(targetPath)) {
+      try {
+        const target = await boundary.existing(targetPath)
+        const content = await readFile(target.absolute, 'utf8')
+        fileLines.set(targetPath, content.split('\n'))
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+        if (code !== 'ENOENT') throw error
+        fileLines.set(targetPath, null)
+      }
+    }
+    const content = fileLines.get(targetPath)
+    if (content) {
+      const declaredStart = Number(match[1]) - 1
+      const declaredMatches = declaredStart >= 0 && oldSequence.every(
+        (value, offset) => content[declaredStart + offset] === value,
+      )
+      if (declaredMatches) {
+        cumulativeDelta += newCount - oldCount
+        continue
+      }
+      const matches: number[] = []
+      for (let start = 0; start + oldSequence.length <= content.length; start += 1) {
+        if (oldSequence.every((value, offset) => content[start + offset] === value)) matches.push(start)
+      }
+      if (matches.length === 1) {
+        const oldStart = matches[0]! + 1
+        const newStart = oldStart + cumulativeDelta
+        const normalized = '@@ -' + oldStart + ',' + oldCount +
+          ' +' + newStart + ',' + newCount + ' @@' + match[5]
+        if (normalized !== line) {
+          lines[index] = normalized
+          changed = true
+        }
+      } else if (matches.length > 1) {
+        throw new Error('Patch hunk start is stale and old-side context is ambiguous: ' + targetPath)
+      }
+    }
+    cumulativeDelta += newCount - oldCount
+  }
+  return { diff: lines.join('\n'), changed }
+}
+
 function exactCommandAllowed(
   command: readonly string[],
   allowlist: readonly (readonly string[])[],
@@ -462,12 +564,13 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!input.unifiedDiff || Buffer.byteLength(input.unifiedDiff) > MAX_PATCH_BYTES) {
         throw new Error('Patch must be non-empty and no larger than 1 MiB')
       }
-      const normalized = normalizeUnifiedDiffHunkCounts(input.unifiedDiff)
-      const paths = patchPaths(normalized.diff)
+      const counted = normalizeUnifiedDiffHunkCounts(input.unifiedDiff)
+      const paths = patchPaths(counted.diff)
       if (!paths.includes(input.path)) {
         throw new Error('Patch intent path is not present in the unified diff')
       }
       for (const path of paths) await boundary.patchTarget(path)
+      const normalized = await normalizeUnifiedDiffHunkStarts(counted.diff, boundary)
       const check = await runCommand({
         command: ['git', 'apply', '--check', '--whitespace=nowarn', '-'],
         cwd: boundary.root,
@@ -505,8 +608,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         metadata: {
           paths,
           alreadyApplied,
-          normalizedHunkCounts: normalized.changed,
-          appendedTrailingNewline: normalized.appendedTrailingNewline,
+          normalizedHunkCounts: counted.changed,
+          normalizedHunkStarts: normalized.changed,
+          appendedTrailingNewline: counted.appendedTrailingNewline,
         },
       })
       if (evidence.length === 0) throw new Error('Patch evidence was not persisted')

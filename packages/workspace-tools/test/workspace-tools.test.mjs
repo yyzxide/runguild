@@ -167,7 +167,7 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
       'diff --git a/sample.txt b/sample.txt',
       '--- a/sample.txt',
       '+++ b/sample.txt',
-      '@@ -1,99 +1,101 @@',
+      '@@ -999,99 +999,101 @@',
       '-beta',
       '+gamma',
       ' second line',
@@ -178,7 +178,26 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
     )
     assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'gamma\nsecond line\n')
     assert.equal(setup.evidence[2].draft.metadata.normalizedHunkCounts, true)
+    assert.equal(setup.evidence[2].draft.metadata.normalizedHunkStarts, true)
     assert.equal(setup.evidence[2].draft.metadata.appendedTrailingNewline, true)
+
+    const ambiguous = [
+      'diff --git a/sample.txt b/sample.txt',
+      '--- a/sample.txt',
+      '+++ b/sample.txt',
+      '@@ -999,1 +999,1 @@',
+      '-second line',
+      '+ambiguous line',
+      '',
+    ].join('\n')
+    await writeFile(join(setup.root, 'sample.txt'), 'second line\nsecond line\n', 'utf8')
+    await assert.rejects(
+      patch.execute(
+        { path: 'sample.txt', unifiedDiff: ambiguous },
+        { request: request('file.patch', { path: 'sample.txt', unifiedDiff: ambiguous }, 'call_ambiguous') },
+      ),
+      /old-side context is ambiguous/,
+    )
 
     await assert.rejects(
       patch.execute(
