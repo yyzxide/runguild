@@ -103,6 +103,13 @@ Model responses are bounded by `max_hops`. A response without an explicit
 messages are durable, so resuming a waiting Run does not require the model to
 reconstruct the missing action.
 
+Every Agent hop also receives the Worker's exact `test.run` argv allowlist and
+the repository-tool path contract. Shell operators, invented environment probes,
+and glob paths are explicitly invalid. The execution policy asks the model to
+batch independent discovery calls and begin `file.patch` after at most eight
+discovery hops, so a bounded Run cannot silently spend its full hop budget only
+searching and reading.
+
 ## Tool execution
 
 ~~~text

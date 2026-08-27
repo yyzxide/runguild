@@ -58,6 +58,7 @@ export interface AgentInboxProcessorDependencies {
     context: AgentExecutionContext,
     abortSignal?: AbortSignal,
   ) => Promise<RuntimeRunner>
+  readonly allowedTestCommands?: readonly (readonly string[])[]
   readonly planner?: PlanningProcessor
   readonly reviewer?: ReviewProcessor
 }
@@ -118,7 +119,10 @@ function reviewPayload(value: unknown): ArtifactReviewRequestedInboxPayload {
   return payload as unknown as ArtifactReviewRequestedInboxPayload
 }
 
-export function executionMessages(context: AgentExecutionContext): readonly ModelMessage[] {
+export function executionMessages(
+  context: AgentExecutionContext,
+  allowedTestCommands: readonly (readonly string[])[] = [],
+): readonly ModelMessage[] {
   // Frozen contexts created before the Conversation Plane shipped do not have
   // this field. Treat them as an empty team-room transcript during replay.
   const teamMessages = context.conversationMessages ?? []
@@ -174,7 +178,13 @@ export function executionMessages(context: AgentExecutionContext): readonly Mode
         'You are the ' + context.agentRole + ' Agent for an isolated software mission. ' +
         'Inspect facts with tools, make bounded changes, run allowlisted verification, and report evidence. ' +
         'Before requesting done, call repo.commit even when no code changed so the Worktree can be verified and finalized. ' +
-        'Never invent command results or claim a file changed without a successful tool result.',
+        'Never invent command results or claim a file changed without a successful tool result.\n\n' +
+        'Execution policy:\n' +
+        '- test.run accepts only these exact argv arrays: ' + JSON.stringify(allowedTestCommands) + '.\n' +
+        '- Never add Shell operators such as &&, ||, ;, pipes, redirection, or extra environment-probe commands to argv.\n' +
+        '- repo.search paths are literal existing relative files or directories; globs are unsupported. Omit paths to search the whole Worktree.\n' +
+        '- Batch independent reads/searches in one response. Spend at most 8 model hops on discovery, then begin file.patch.\n' +
+        '- Do not use test.run for environment discovery. Use it only for an exact configured verification command.',
     },
     ...skillMessages,
     ...conversationMessage,
@@ -311,7 +321,7 @@ export class AgentInboxProcessor {
       const runtime = await this.dependencies.createRuntime(context, abortController.signal)
       outcome = await runtime.run({
         runId: run.runId,
-        initialMessages: executionMessages(context),
+        initialMessages: executionMessages(context, this.dependencies.allowedTestCommands),
         skills: (context.skills ?? []).map((skill) => ({
           skillId: skill.skillId,
           versionId: skill.versionId,
@@ -328,7 +338,7 @@ export class AgentInboxProcessor {
         await delay(this.options.waitingToolRetryMs ?? 1_000, undefined, { signal: abortController.signal })
         outcome = await runtime.run({
           runId: run.runId,
-          initialMessages: executionMessages(context),
+          initialMessages: executionMessages(context, this.dependencies.allowedTestCommands),
           skills: (context.skills ?? []).map((skill) => ({
             skillId: skill.skillId,
             versionId: skill.versionId,

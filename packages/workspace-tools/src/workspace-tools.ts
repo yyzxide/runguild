@@ -705,7 +705,10 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     retryMode: 'none',
     async execute(input, context) {
       if (!exactCommandAllowed(input.command, options.allowedTestCommands)) {
-        throw new Error('Test command is not in the workspace allowlist')
+        throw new Error(
+          'Test command is not in the workspace allowlist; choose one exact argv: ' +
+          JSON.stringify(options.allowedTestCommands),
+        )
       }
       const timeoutMs = Math.min(input.timeoutMs, maxTestTimeoutMs)
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) throw new Error('Invalid test timeout')
@@ -762,7 +765,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
 export const WORKSPACE_TOOL_DEFINITIONS = [
   {
     action: 'repo.search' as const,
-    description: 'Search text in the assigned repository. Returns matching file paths, line numbers, and previews.',
+    description: 'Search text in the assigned repository. paths must be literal existing relative files/directories; globs are unsupported, and omitting paths searches the whole Worktree.',
     inputSchema: {
       type: 'object',
       required: ['query'],
@@ -832,7 +835,7 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
   },
   {
     action: 'test.run' as const,
-    description: 'Run one exact allowlisted test command and return bounded stdout, stderr, status, and durable evidence.',
+    description: 'Run one exact allowlisted argv from the execution policy, without Shell operators or extra commands, and return bounded output plus durable evidence.',
     inputSchema: {
       type: 'object',
       required: ['command', 'timeoutMs'],

@@ -293,6 +293,7 @@ const processor = new AgentInboxProcessor({
   tasks,
   contexts,
   createRuntime,
+  allowedTestCommands,
   planner,
   reviewer,
 }, {

@@ -229,10 +229,13 @@ test('Worker ownership loss aborts the active Agent Runtime', async () => {
 })
 
 test('execution prompt includes mission scope and evidence requirements', () => {
-  const messages = executionMessages(context)
+  const messages = executionMessages(context, [['npm', 'test'], ['npm', 'run', 'build']])
   assert.equal(messages[0].role, 'system')
   assert.match(messages[0].content, /Never invent command results/)
   assert.match(messages[0].content, /repo\.commit even when no code changed/)
+  assert.match(messages[0].content, /\[\["npm","test"\],\["npm","run","build"\]\]/)
+  assert.match(messages[0].content, /globs are unsupported/)
+  assert.match(messages[0].content, /at most 8 model hops on discovery/)
   assert.match(messages[1].content, /Build the feature/)
   assert.match(messages[1].content, /tests: Tests pass\. \(evidence: test_run\)/)
 })
