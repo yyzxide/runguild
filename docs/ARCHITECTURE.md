@@ -176,6 +176,12 @@ checks evidence and review gates before the Runtime writes `succeeded`. A
 normal model stop, text such as "done", or an empty response only produces a
 nudge and consumes another bounded hop.
 
+A provider response that ends because of an output limit, content filter, or
+provider error without a complete Tool Call fails the Run immediately after
+the redacted call ledger is persisted. The Runtime does not spend later hops
+retrying structurally incomplete output. Stopping an Agent Worker also aborts
+its active model/tool signal instead of waiting for the entire Run loop.
+
 Builder Tasks that require `file_diff` Evidence also use a deterministic,
 repeating implementation phase gate. The Runtime permits four discovery hops
 before the first successful `file.patch`, then opens one new four-hop discovery

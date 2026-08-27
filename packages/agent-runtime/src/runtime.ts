@@ -340,6 +340,15 @@ export class AgentRuntime {
         continue
       }
 
+      if (response.finishReason !== 'stop') {
+        return this.finish(
+          input.runId,
+          'failed',
+          'Model response ended with ' + response.finishReason + ' before producing an executable tool call.',
+          hop,
+        )
+      }
+
       const nudge: ModelMessage = {
         role: 'user',
         content: 'No explicit run status was provided. Continue working or call run.set_status; silence is not completion.',

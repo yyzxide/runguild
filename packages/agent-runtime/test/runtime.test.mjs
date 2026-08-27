@@ -251,6 +251,24 @@ test('hop budget times out repeated non-terminal model responses', async () => {
   assert.equal(setup.model.requests.length, 2)
 })
 
+test('output-limit truncation without a tool call fails once instead of burning the remaining hops', async () => {
+  const persistence = new MemoryPersistence(30)
+  const setup = runtime({
+    persistence,
+    responses: [response({ content: 'partial patch', finishReason: 'length' })],
+  })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.deepEqual(outcome, {
+    status: 'failed',
+    summary: 'Model response ended with length before producing an executable tool call.',
+    hops: 1,
+  })
+  assert.equal(setup.model.requests.length, 1)
+  assert.equal(persistence.messages.some((message) => message.content.includes('silence is not completion')), false)
+})
+
 test('implementation gate repeatedly bounds discovery between durable file.patch results', async () => {
   const persistence = new MemoryPersistence()
   const setup = runtime({

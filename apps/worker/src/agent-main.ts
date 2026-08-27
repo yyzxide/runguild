@@ -333,6 +333,7 @@ const heartbeat = await startWorkerHeartbeat({
 })
 const stop = () => {
   stopping = true
+  workerAbortController.abort(new Error('Agent Worker received a shutdown signal'))
 }
 process.once('SIGINT', stop)
 process.once('SIGTERM', stop)

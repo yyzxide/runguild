@@ -98,10 +98,13 @@ The Agent can report that its run is done, blocked, failed, or waiting for a
 human. The server validates this report and performs the actual state
 transition.
 
-Model responses are bounded by `max_hops`. A response without an explicit
-`run.set_status` cannot transition to succeeded. Pending Tool Calls and model
-messages are durable, so resuming a waiting Run does not require the model to
-reconstruct the missing action.
+Model responses are bounded by `max_hops`. A normal response without an
+explicit `run.set_status` cannot transition to succeeded. A response truncated
+by the output limit, content filter, or provider error without a complete Tool
+Call fails immediately instead of consuming more hops. Pending Tool Calls and
+model messages are durable, so resuming a waiting Run does not require the
+model to reconstruct the missing action. A Worker shutdown aborts the active
+model/tool signal before the process releases ownership.
 
 Every Agent hop also receives the Worker's exact `test.run` argv allowlist and
 the repository-tool path contract. Shell operators, invented environment probes,
