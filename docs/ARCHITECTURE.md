@@ -465,8 +465,9 @@ produce; the completion gate never treats model prose as Evidence.
 `file.patch` accepts only bounded unified diffs and still delegates path,
 context, and application validation to `git apply --check`. Before that check,
 it deterministically recalculates only each hunk header's old/new line counts;
-this repairs a common model formatting error without changing file paths,
-starting lines, context, or patch content, and the normalization is recorded in
+it also appends the patch-format trailing newline when the model omits it. This
+repairs common model formatting errors without changing file paths, starting
+lines, context, or patch body content, and both normalizations are recorded in
 the resulting `file_diff` Evidence.
 
 Each Scheduler tick reaps expired Task leases before dispatching ready work.

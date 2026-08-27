@@ -171,7 +171,6 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
       '-beta',
       '+gamma',
       ' second line',
-      '',
     ].join('\n')
     await patch.execute(
       { path: 'sample.txt', unifiedDiff: wrongCounts },
@@ -179,6 +178,7 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
     )
     assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'gamma\nsecond line\n')
     assert.equal(setup.evidence[2].draft.metadata.normalizedHunkCounts, true)
+    assert.equal(setup.evidence[2].draft.metadata.appendedTrailingNewline, true)
 
     await assert.rejects(
       patch.execute(

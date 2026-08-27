@@ -193,8 +193,10 @@ function patchPaths(diff: string): readonly string[] {
 function normalizeUnifiedDiffHunkCounts(diff: string): {
   readonly diff: string
   readonly changed: boolean
+  readonly appendedTrailingNewline: boolean
 } {
-  const lines = diff.split('\n')
+  const appendedTrailingNewline = !diff.endsWith('\n')
+  const lines = (appendedTrailingNewline ? diff + '\n' : diff).split('\n')
   let changed = false
   for (let index = 0; index < lines.length; index += 1) {
     const header = lines[index]
@@ -225,7 +227,7 @@ function normalizeUnifiedDiffHunkCounts(diff: string): {
       changed = true
     }
   }
-  return { diff: lines.join('\n'), changed }
+  return { diff: lines.join('\n'), changed, appendedTrailingNewline }
 }
 
 function exactCommandAllowed(
@@ -500,7 +502,12 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         kind: 'file_diff',
         uri: 'workspace://' + paths.join(',') + '#' + diffHash,
         contentHash: diffHash,
-        metadata: { paths, alreadyApplied, normalizedHunkCounts: normalized.changed },
+        metadata: {
+          paths,
+          alreadyApplied,
+          normalizedHunkCounts: normalized.changed,
+          appendedTrailingNewline: normalized.appendedTrailingNewline,
+        },
       })
       if (evidence.length === 0) throw new Error('Patch evidence was not persisted')
       const sideEffects: TypedSideEffect[] = paths.map((path) => ({
