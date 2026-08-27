@@ -27,7 +27,7 @@ const context = {
     key: 'tests',
     description: 'Tests pass.',
     required: true,
-    evidenceKinds: ['test_run'],
+    evidenceKinds: ['test_run', 'file_diff'],
   }],
 }
 
@@ -235,9 +235,23 @@ test('execution prompt includes mission scope and evidence requirements', () => 
   assert.match(messages[0].content, /repo\.commit even when no code changed/)
   assert.match(messages[0].content, /\[\["npm","test"\],\["npm","run","build"\]\]/)
   assert.match(messages[0].content, /globs are unsupported/)
-  assert.match(messages[0].content, /at most 8 model hops on discovery/)
+  assert.match(messages[0].content, /After 8 discovery hops/)
+  assert.match(messages[0].content, /Runtime hides repo\.status, repo\.search, repo\.diff, and file\.read/)
   assert.match(messages[1].content, /Build the feature/)
-  assert.match(messages[1].content, /tests: Tests pass\. \(evidence: test_run\)/)
+  assert.match(messages[1].content, /tests: Tests pass\. \(evidence: test_run, file_diff\)/)
+})
+
+test('execution prompt does not require file.patch without required file_diff evidence', () => {
+  const messages = executionMessages({
+    ...context,
+    acceptanceCriteria: [{
+      key: 'tests',
+      description: 'Tests pass.',
+      required: true,
+      evidenceKinds: ['test_run'],
+    }],
+  })
+  assert.doesNotMatch(messages[0].content, /Runtime hides repo\.status/)
 })
 
 test('execution prompt injects the exact frozen Skill Version below the runtime contract', () => {

@@ -79,6 +79,14 @@ interface TaskDispatchPayload {
   readonly missionId: MissionId
 }
 
+export const IMPLEMENTATION_DISCOVERY_HOP_LIMIT = 8
+
+export function requiresFilePatch(context: AgentExecutionContext): boolean {
+  return context.agentRole === 'builder' && context.acceptanceCriteria.some(
+    (criterion) => criterion.required && criterion.evidenceKinds.includes('file_diff'),
+  )
+}
+
 function dispatchPayload(value: unknown): TaskDispatchPayload {
   if (!value || typeof value !== 'object') throw new Error('Invalid task dispatch payload')
   const payload = value as Record<string, unknown>
@@ -171,6 +179,10 @@ export function executionMessages(
           'create an immutable Artifact Version, commit repository changes when present, and submit that exact Version for review.',
       ]
     : ['Independent review is not required for this Task.']
+  const implementationPolicy = requiresFilePatch(context)
+    ? '\n- This Task requires file_diff evidence. After ' + String(IMPLEMENTATION_DISCOVERY_HOP_LIMIT) +
+      ' discovery hops, Runtime hides repo.status, repo.search, repo.diff, and file.read until file.patch succeeds.'
+    : ''
   return [
     {
       role: 'system',
@@ -183,7 +195,7 @@ export function executionMessages(
         '- test.run accepts only these exact argv arrays: ' + JSON.stringify(allowedTestCommands) + '.\n' +
         '- Never add Shell operators such as &&, ||, ;, pipes, redirection, or extra environment-probe commands to argv.\n' +
         '- repo.search paths are literal existing relative files or directories; globs are unsupported. Omit paths to search the whole Worktree.\n' +
-        '- Batch independent reads/searches in one response. Spend at most 8 model hops on discovery, then begin file.patch.\n' +
+        '- Batch independent reads/searches in one response.' + implementationPolicy + '\n' +
         '- Do not use test.run for environment discovery. Use it only for an exact configured verification command.',
     },
     ...skillMessages,

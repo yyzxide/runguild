@@ -60,7 +60,8 @@ The control-plane foundation is executable:
 - Transactional Outbox and Redis publisher worker;
 - typed events, tools, side effects, Evidence, and Artifact contracts;
 - bounded Agent Runtime with explicit completion, hop budgets, Steering, Cancel,
-  and a durable transcript that survives approval pauses;
+  a durable transcript that survives approval pauses, and a persisted
+  discovery-to-implementation gate for Builder Tasks requiring `file_diff`;
 - provider-neutral model adapter and a redacted LLM call, token, latency, and
   cost ledger;
 - a production OpenAI Responses adapter with durable response continuation and

@@ -176,6 +176,13 @@ checks evidence and review gates before the Runtime writes `succeeded`. A
 normal model stop, text such as "done", or an empty response only produces a
 nudge and consumes another bounded hop.
 
+Builder Tasks that require `file_diff` Evidence also use a deterministic
+implementation phase gate. After eight discovery-only hops, repository read
+and search Tool definitions are hidden until `file.patch` succeeds. Calls from
+a stale provider response are rejected before the Tool Gateway executes them.
+The gate derives implementation progress from the durable transcript rather
+than Worker memory, so restart and replay preserve the same phase.
+
 ## 4. Source-of-truth boundaries
 
 | Concern | Durable truth | Acceleration only |

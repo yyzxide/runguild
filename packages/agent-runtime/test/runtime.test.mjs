@@ -80,6 +80,8 @@ class MemoryTools {
   }
   riskFor(action) {
     if (action === 'repo.search') return 'read_only'
+    if (action === 'file.read') return 'read_only'
+    if (action === 'file.patch') return 'workspace_write'
     if (action === 'conversation.reply') return 'external_write'
     return null
   }
@@ -95,6 +97,8 @@ function runtime({
   tools = new MemoryTools(),
   verify = async () => ({ accepted: true }),
   contextBuilder = new DeterministicContextBuilder({ tokenBudget: 4_096 }),
+  implementationGate,
+  toolDefinitions = [{ action: 'repo.search', description: 'Search', inputSchema: { type: 'object' } }],
 }) {
   const model = new ScriptedModelAdapter('scripted', 'deterministic', responses)
   return {
@@ -106,7 +110,8 @@ function runtime({
       tools,
       completionVerifier: { verify },
       contextBuilder,
-      toolDefinitions: [{ action: 'repo.search', description: 'Search', inputSchema: { type: 'object' } }],
+      toolDefinitions,
+      ...(implementationGate ? { implementationGate } : {}),
     }),
   }
 }
@@ -244,6 +249,54 @@ test('hop budget times out repeated non-terminal model responses', async () => {
   const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
   assert.deepEqual(outcome, { status: 'timed_out', summary: 'Maximum model hops reached.', hops: 2 })
   assert.equal(setup.model.requests.length, 2)
+})
+
+test('implementation gate hides discovery until a durable file.patch succeeds', async () => {
+  const persistence = new MemoryPersistence()
+  const setup = runtime({
+    persistence,
+    implementationGate: {
+      maxDiscoveryHops: 1,
+      discoveryActions: ['repo.search', 'file.read'],
+      implementationActions: ['file.patch'],
+    },
+    toolDefinitions: [
+      { action: 'repo.search', description: 'Search', inputSchema: { type: 'object' } },
+      { action: 'file.read', description: 'Read', inputSchema: { type: 'object' } },
+      { action: 'file.patch', description: 'Patch', inputSchema: { type: 'object' } },
+    ],
+    responses: [
+      response({ toolCalls: [{ id: 'call_reused', action: 'repo.search', input: { query: 'mission' } }] }),
+      response({ toolCalls: [{ id: 'call_discovery_blocked', action: 'repo.search', input: { query: 'more' } }] }),
+      response({ toolCalls: [
+        { id: 'call_stale_discovery', action: 'file.read', input: { path: 'src.ts' } },
+        { id: 'call_reused', action: 'file.patch', input: { path: 'src.ts', unifiedDiff: 'patch' } },
+      ] }),
+      response({ toolCalls: [{ id: 'call_discovery_restored', action: 'repo.search', input: { query: 'verify' } }] }),
+      response({ toolCalls: [statusCall('call_done_after_patch', 'done', 'Implemented.')] }),
+    ],
+  })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.equal(outcome.status, 'succeeded')
+  assert.deepEqual(setup.tools.calls.map((call) => call.action), [
+    'repo.search',
+    'file.patch',
+    'repo.search',
+  ])
+  assert.equal(setup.model.requests[1].tools.some((tool) => tool.action === 'repo.search'), false)
+  assert.equal(setup.model.requests[1].tools.some((tool) => tool.action === 'file.patch'), true)
+  assert.equal(setup.model.requests[2].tools.some((tool) => tool.action === 'file.read'), false)
+  assert.equal(setup.model.requests[3].tools.some((tool) => tool.action === 'repo.search'), true)
+  const blocked = persistence.messages.find((message) => message.toolCallId === 'call_discovery_blocked')
+  assert.match(blocked.content, /Discovery budget is exhausted/)
+  const stale = persistence.messages.find((message) => message.toolCallId === 'call_stale_discovery')
+  assert.match(stale.content, /Discovery budget is exhausted/)
+  assert.equal(
+    persistence.messages.filter((message) => message.content.startsWith('[Implementation gate]')).length,
+    1,
+  )
 })
 
 test('an oversized pinned context fails visibly without calling the model or retrying forever', async () => {
