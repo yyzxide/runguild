@@ -14,6 +14,7 @@ const conversationPlanningMigrationUrl = new URL('../migrations/0011_conversatio
 const workerInstancesMigrationUrl = new URL('../migrations/0012_worker_instances.sql', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
+const worktreeSetupMigrationUrl = new URL('../migrations/0015_worktree_setup.sql', import.meta.url)
 
 test('schema keeps durable coordination invariants in PostgreSQL', async () => {
   const sql = await readFile(migrationUrl, 'utf8')
@@ -152,4 +153,17 @@ test('Reviewer execution schema isolates model work with leases and a durable de
   assert.match(sql, /decision_hash/)
   assert.match(sql, /idx_review_executions_agent_pending/)
   assert.match(sql, /Reviewer execution scope does not match its Review/)
+})
+
+test('Worktree setup schema gates first model use with exact argv, leases, and generation-scoped reuse', async () => {
+  const sql = await readFile(worktreeSetupMigrationUrl, 'utf8')
+
+  assert.match(sql, /worktree_setup_commands JSONB/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS task_worktree_setups/)
+  assert.match(sql, /worktree_generation INTEGER/)
+  assert.match(sql, /commands_hash/)
+  assert.match(sql, /lease_expires_at/)
+  assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, mission_id, task_id\)/)
+  assert.match(sql, /uq_task_worktree_setup_succeeded/)
+  assert.doesNotMatch(sql, /stdout\s+TEXT|stderr\s+TEXT/i)
 })

@@ -170,6 +170,24 @@ deletes a dirty Worktree. A new Run attempt for the same Task reuses the
 Worktree row's persisted `base_commit` even if its named base branch has
 advanced; a retry cannot silently rebase or change the evidence baseline.
 
+### Pre-model Worktree setup
+
+~~~text
+absent configuration -> skipped
+configured -> running -> succeeded
+                   |-> failed
+running lease expired -> running (bounded takeover) -> failed (retry exhausted)
+succeeded + same Task/generation/commands hash -> reused
+~~~
+
+The setup lease is separate from the Task and Worktree provisioning leases.
+Commands are exact argv arrays executed sequentially in the canonical Worktree
+without a shell. A Run cannot construct its model Runtime until setup succeeds
+or reuses an exact durable success. A changed command list produces a new hash;
+a reprovisioned Worktree produces a new generation, so neither can reuse stale
+dependency state. Terminal records keep command metadata and output hashes but
+never raw stdout or stderr.
+
 ## Submission
 
 ~~~text

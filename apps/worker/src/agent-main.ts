@@ -26,6 +26,7 @@ import {
   TaskRepository,
   TaskWorktreeRepository,
   ToolExecutionRepository,
+  WorktreeSetupRepository,
   WorkerInstanceRepository,
   createDatabasePool,
   runMigrations,
@@ -43,6 +44,7 @@ import { AgentInboxProcessor } from './agent-loop.js'
 import { ArtifactReviewer } from './artifact-reviewer.js'
 import { ConversationPlanner } from './conversation-planner.js'
 import { startWorkerHeartbeat } from './worker-heartbeat.js'
+import { prepareWorktree } from './worktree-preparation.js'
 
 function requiredSetting(name: string): string {
   const value = process.env[name]?.trim()
@@ -78,6 +80,25 @@ function testCommandsSetting(): readonly (readonly string[])[] {
   return parsed as readonly (readonly string[])[]
 }
 
+function worktreeSetupCommandsSetting(): readonly (readonly string[])[] {
+  const raw = process.env.AGENT_WORKTREE_SETUP_COMMANDS_JSON ?? '[]'
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new Error('AGENT_WORKTREE_SETUP_COMMANDS_JSON must be valid JSON', { cause: error })
+  }
+  if (!Array.isArray(parsed)
+      || parsed.length > 20
+      || parsed.some((command) => !Array.isArray(command)
+        || command.length === 0
+        || command.length > 30
+        || command.some((part) => typeof part !== 'string' || !part.trim() || part.length > 1_000))) {
+    throw new Error('AGENT_WORKTREE_SETUP_COMMANDS_JSON must be an array of non-empty string arrays')
+  }
+  return parsed as readonly (readonly string[])[]
+}
+
 function reasoningEffortSetting(): 'none' | 'low' | 'medium' | 'high' | 'xhigh' | undefined {
   const value = process.env.OPENAI_REASONING_EFFORT?.trim()
   if (!value) return undefined
@@ -101,7 +122,9 @@ const contextInputTokens = integerSetting('AGENT_CONTEXT_INPUT_TOKENS', 65_536, 
 const pollMs = integerSetting('AGENT_POLL_MS', 1_000, 100, 60_000)
 const leaseSeconds = integerSetting('AGENT_LEASE_SECONDS', 60, 5, 3_600)
 const maxTestTimeoutMs = integerSetting('AGENT_MAX_TEST_TIMEOUT_MS', 120_000, 1_000, 900_000)
+const worktreeSetupTimeoutMs = integerSetting('AGENT_WORKTREE_SETUP_TIMEOUT_MS', 300_000, 1_000, 900_000)
 const allowedTestCommands = testCommandsSetting()
+const worktreeSetupCommands = worktreeSetupCommandsSetting()
 const contextBuilder = new DeterministicContextBuilder({ tokenBudget: contextInputTokens })
 
 const pool = createDatabasePool(databaseUrl)
@@ -121,6 +144,7 @@ const missions = new MissionRepository(pool)
 const reviews = new ReviewRepository(pool)
 const reviewExecutions = new ReviewerExecutionRepository(pool)
 const worktrees = new TaskWorktreeRepository(pool)
+const worktreeSetups = new WorktreeSetupRepository(pool)
 const worktreeManager = await GitWorktreeManager.create({
   repositoryPath: repositoryRoot,
   worktreeRoot,
@@ -208,6 +232,19 @@ async function createRuntime(
       leaseSeconds,
     })
   }
+  await prepareWorktree({ setups: worktreeSetups }, {
+    workspaceId: context.workspaceId,
+    missionId: context.missionId,
+    projectId: context.projectId,
+    taskId: context.taskId,
+    runId: context.runId,
+    worktreeGeneration: assigned.worktree.generation,
+    worktreePath: assigned.worktree.worktreePath,
+    commands: worktreeSetupCommands,
+    timeoutMs: worktreeSetupTimeoutMs,
+    leaseSeconds,
+    ...(abortSignal === undefined ? {} : { abortSignal }),
+  })
   let tools = gateways.get(context.taskId)
   if (!tools) {
     const workspaceHandlers = await createWorkspaceToolHandlers({

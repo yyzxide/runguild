@@ -7,6 +7,7 @@ import { canonicalJson } from './json.js'
 import { withTransaction } from './transaction.js'
 
 const DEFAULT_TEST_COMMANDS = [['npm', 'test'], ['npm', 'run', 'typecheck']] as const
+const DEFAULT_WORKTREE_SETUP_COMMANDS: readonly (readonly string[])[] = []
 
 export interface ProjectRuntimeConfiguration {
   readonly project: {
@@ -18,6 +19,8 @@ export interface ProjectRuntimeConfiguration {
   }
   readonly runtime: {
     readonly worktreeRoot: string | null
+    readonly worktreeSetupCommands: readonly (readonly string[])[]
+    readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
@@ -39,6 +42,8 @@ export interface UpdateProjectRuntimeConfigurationInput {
   readonly repositoryPath: string
   readonly defaultBranch: string
   readonly worktreeRoot: string
+  readonly worktreeSetupCommands: readonly (readonly string[])[]
+  readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number
@@ -83,6 +88,16 @@ function validateInput(input: UpdateProjectRuntimeConfigurationInput): {
         || command.some((part) => typeof part !== 'string' || !part.trim() || part.length > 1_000))) {
     throw new Error('Test commands must contain 1-50 non-empty argument arrays')
   }
+  if (!Array.isArray(input.worktreeSetupCommands) || input.worktreeSetupCommands.length > 20
+      || input.worktreeSetupCommands.some((command) => !Array.isArray(command)
+        || command.length < 1 || command.length > 30
+        || command.some((part) => typeof part !== 'string' || !part.trim() || part.length > 1_000))) {
+    throw new Error('Worktree setup commands must contain 0-20 non-empty argument arrays')
+  }
+  if (!Number.isInteger(input.worktreeSetupTimeoutMs)
+      || input.worktreeSetupTimeoutMs < 1_000 || input.worktreeSetupTimeoutMs > 900_000) {
+    throw new Error('Worktree setup timeout must be between 1000 and 900000 milliseconds')
+  }
   if (!Number.isInteger(input.agentContextInputTokens)
       || input.agentContextInputTokens < 256 || input.agentContextInputTokens > 2_000_000) {
     throw new Error('Agent context input tokens must be between 256 and 2000000')
@@ -119,13 +134,16 @@ export class ProjectRuntimeConfigRepository {
         readonly repository_path: string | null
         readonly default_branch: string
         readonly worktree_root: string | null
+        readonly worktree_setup_commands: readonly (readonly string[])[] | null
+        readonly worktree_setup_timeout_ms: number | null
         readonly test_commands: readonly (readonly string[])[] | null
         readonly agent_context_input_tokens: number | null
         readonly agent_max_test_timeout_ms: number | null
         readonly conversation_id: string | null
       }>(
         'SELECT project.id, project.workspace_id, project.name, project.repository_path, ' +
-        'project.default_branch, config.worktree_root, config.test_commands, ' +
+        'project.default_branch, config.worktree_root, config.worktree_setup_commands, ' +
+        'config.worktree_setup_timeout_ms, config.test_commands, ' +
         'config.agent_context_input_tokens, config.agent_max_test_timeout_ms, room.id AS conversation_id ' +
         'FROM projects project ' +
         'JOIN users actor ON actor.id = $3 AND actor.workspace_id = project.workspace_id ' +
@@ -167,6 +185,8 @@ export class ProjectRuntimeConfigRepository {
         },
         runtime: {
           worktreeRoot: row.worktree_root,
+          worktreeSetupCommands: row.worktree_setup_commands ?? DEFAULT_WORKTREE_SETUP_COMMANDS,
+          worktreeSetupTimeoutMs: row.worktree_setup_timeout_ms ?? 300_000,
           testCommands: row.test_commands?.length ? row.test_commands : DEFAULT_TEST_COMMANDS,
           agentContextInputTokens: row.agent_context_input_tokens ?? 65_536,
           agentMaxTestTimeoutMs: row.agent_max_test_timeout_ms ?? 120_000,
@@ -215,15 +235,21 @@ export class ProjectRuntimeConfigRepository {
       )
       await client.query(
         'INSERT INTO project_runtime_configs ' +
-        '(project_id, workspace_id, worktree_root, test_commands, agent_context_input_tokens, agent_max_test_timeout_ms) ' +
-        'VALUES ($1, $2, $3, $4::jsonb, $5, $6) ON CONFLICT (project_id) DO UPDATE SET ' +
-        'worktree_root = EXCLUDED.worktree_root, test_commands = EXCLUDED.test_commands, ' +
+        '(project_id, workspace_id, worktree_root, worktree_setup_commands, worktree_setup_timeout_ms, ' +
+        'test_commands, agent_context_input_tokens, agent_max_test_timeout_ms) ' +
+        'VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8) ON CONFLICT (project_id) DO UPDATE SET ' +
+        'worktree_root = EXCLUDED.worktree_root, ' +
+        'worktree_setup_commands = EXCLUDED.worktree_setup_commands, ' +
+        'worktree_setup_timeout_ms = EXCLUDED.worktree_setup_timeout_ms, ' +
+        'test_commands = EXCLUDED.test_commands, ' +
         'agent_context_input_tokens = EXCLUDED.agent_context_input_tokens, ' +
         'agent_max_test_timeout_ms = EXCLUDED.agent_max_test_timeout_ms, updated_at = NOW()',
         [
           input.projectId,
           input.workspaceId,
           normalized.worktreeRoot,
+          canonicalJson(input.worktreeSetupCommands),
+          input.worktreeSetupTimeoutMs,
           canonicalJson(input.testCommands),
           input.agentContextInputTokens,
           input.agentMaxTestTimeoutMs,

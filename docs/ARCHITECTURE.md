@@ -84,8 +84,10 @@ invokes the model, executes tools, and writes structured events.
 The executable slice currently deploys one process per Agent identity. Each
 process receives a bounded `REPOSITORY_ROOT` and a distinct `WORKTREE_ROOT`.
 It provisions the claimed Task's isolated Worktree before constructing that
-Task's Tool Gateway. Path resolution rejects lexical and symlink escapes, and
-test execution accepts only exact argv allowlist entries. Multiple Agent
+Task's Tool Gateway. If the Project declares setup commands, it executes those
+exact argv sequentially inside the canonical Worktree and requires the durable
+setup gate to pass before constructing the model-backed Runtime. Path resolution
+rejects lexical and symlink escapes, and test execution accepts only exact argv allowlist entries. Multiple Agent
 identities may run concurrently. Every Scheduler, Agent, Integration, and
 Evaluation process registers a durable Worker Instance and renews its expiry.
 Agent registration locks the Agent row and rejects a second non-expired process;
@@ -186,6 +188,7 @@ nudge and consumes another bounded hop.
 | Project launch inputs | PostgreSQL Project Runtime Configuration (never API keys) | API-owned local child-process map |
 | Mission working deliverable | PostgreSQL primary `mission_deliverable` Artifact and immutable Versions | Model prompt projection |
 | Task Worktree, reviewed HEAD, and integration state | PostgreSQL plus Git object database | Worker path cache |
+| Pre-model Worktree setup, lease, argv hash, and result hashes | PostgreSQL `task_worktree_setups` | Worker process timers |
 | Frozen Run instructions and per-hop model context | PostgreSQL Context Snapshots | Provider continuation cache |
 | Yjs content | PostgreSQL update log and snapshot | Y.Doc room and Redis fan-out |
 | Presence and carets | None | Awareness and Redis |
@@ -203,25 +206,29 @@ nudge and consumes another bounded hop.
 4. The Worker reserves a deterministic per-Task Worktree under a fencing lease,
    creates or reconciles its branch, and binds all repository tools to that
    exact canonical path.
-5. After the idempotent Task claim succeeds, the Worker advances its Inbox cursor
+5. The Worker reserves the Project's exact-argv setup gate for that Worktree
+   generation and command hash. It runs commands sequentially with no shell,
+   stores only output hashes, and does not construct the model Runtime until
+   the gate succeeds. A matching durable success is reusable after restart.
+6. After the idempotent Task claim succeeds, the Worker advances its Inbox cursor
    with optimistic concurrency. A crash between these operations safely
    replays the Inbox message and discovers the already-created runnable Run.
-6. The bounded model/tool loop executes until explicit completion, failure,
+7. The bounded model/tool loop executes until explicit completion, failure,
    cancellation, or human wait.
-7. Tool requests reserve an idempotency key before any side effect.
-8. Every Mission has a deterministic primary deliverable Artifact. Its exact id
+8. Tool requests reserve an idempotency key before any side effect.
+9. Every Mission has a deterministic primary deliverable Artifact. Its exact id
    and the Task review policy are frozen into the Run context. The Builder
    updates it, freezes an Artifact Version, and commits its Worktree. Code
    submission requires Evidence for both the exact Version and exact HEAD.
-9. Independent approval admits that HEAD to the integration worker, which
+10. Independent approval admits that HEAD to the integration worker, which
    fast-forwards when possible. If the base advanced independently, it may
    create a conflict-free merge commit that retains the exact reviewed HEAD as
    a parent; any conflict rejects integration without changing the base ref.
-10. Task completion evaluates evidence, review, and integration gates; the model cannot write
+11. Task completion evaluates evidence, review, and integration gates; the model cannot write
    the terminal Task state directly.
-11. Completing a task unlocks dependents in the same transaction. The
+12. Completing a task unlocks dependents in the same transaction. The
    integration worker then removes the clean Worktree and merged branch.
-12. Once every Task completes, the Mission exposes the latest independently
+13. Once every Task completes, the Mission exposes the latest independently
    approved Artifact Version as the final-delivery candidate (or the latest
    Mission Version when no Task review was required). A Workspace human must
    approve that exact id; a stale id is rejected, and only then does the Mission
@@ -356,6 +363,15 @@ integration history while variants and repetitions cannot contaminate one
 another. Provisioning, integration, and cleanup each use expiring fencing
 tokens, so a restart can reconcile a partially completed filesystem operation
 without trusting stale process state.
+
+Dependency preparation is a separate gate, not a general Shell tool and not a
+test allowlist entry. Project Runtime Configuration stores zero to twenty exact
+argv arrays plus a per-command timeout. `task_worktree_setups` binds an attempt
+to the Workspace, Mission, Project, Task, Run, Worktree generation, and canonical
+commands hash. An expiring lease permits takeover after a crash; only its token
+may write success or failure. Reuse requires a successful row with the same Task,
+generation, and hash. Audit rows retain argv, timing, exit status, timeout state,
+and stdout/stderr SHA-256 values, never raw command output.
 
 `repo.commit` stages the complete Task change, creates a commit with fixed
 server-owned identity and hooks/signing disabled, records the exact tree and

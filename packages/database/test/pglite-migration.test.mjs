@@ -19,6 +19,7 @@ const migrationUrls = [
   new URL('../migrations/0012_worker_instances.sql', import.meta.url),
   new URL('../migrations/0013_project_runtime_config.sql', import.meta.url),
   new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
+  new URL('../migrations/0015_worktree_setup.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {
@@ -70,6 +71,7 @@ test('core migration executes on an in-process PostgreSQL engine', async () => {
       'worker_instances',
       'project_runtime_configs',
       'review_executions',
+      'task_worktree_setups',
     ]) {
       assert.equal(tables.has(required), true, 'missing table ' + required)
     }

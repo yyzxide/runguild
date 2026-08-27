@@ -113,6 +113,10 @@ The control-plane foundation is executable:
 - deterministic per-Task Git Worktree provisioning with database fencing,
   lease-expiry takeover, restart reconciliation, and strict repository/path/
   branch/ancestry validation;
+- project-scoped, exact-argv Worktree preparation that runs after provisioning
+  and before the first model call, with a generation/config hash, fenced lease,
+  bounded retries, hashed command output, and real status in the Web launch
+  manifest;
 - Agent-native `repo.status`, bounded `repo.diff`, and idempotent `repo.commit`
   tools that persist exact commit/tree/cumulative-diff Evidence and recover the
   commit-before-evidence crash window; a verified clean baseline is finalized
@@ -215,9 +219,11 @@ is enabled; Worker online/stale/stopped state comes from separately persisted
 process heartbeats. The home page refreshes those heartbeats every five seconds
 and turns a missing Scheduler or Agent Worker into the next corrective action.
 The **配置与启停** launch manifest persists the Project repository path,
-Worktree root, exact argv test allowlist, context/test limits, and per-Agent
-model selection. It can start and stop Scheduler, Agent, Integration, and
-Evaluation processes when `ENABLE_LOCAL_RUNTIME_CONTROL=true`. API credentials
+Worktree root, pre-model Worktree setup argv and timeout, exact argv test
+allowlist, context/test limits, and per-Agent model selection. Recent setup
+attempts come from PostgreSQL and expose running/passed/failed state without
+returning raw package-manager output. It can start and stop Scheduler, Agent,
+Integration, and Evaluation processes when `ENABLE_LOCAL_RUNTIME_CONTROL=true`. API credentials
 remain only in the API process environment: they are never written to the
 runtime configuration table and are never returned to the browser. The API can
 stop only child processes it launched itself; an externally managed Worker is
@@ -268,15 +274,20 @@ WORKTREE_ROOT=/absolute/path/to/task-worktrees \
 OPENAI_API_KEY=... \
 MODEL_NAME=your-openai-model \
 AGENT_CONTEXT_INPUT_TOKENS=65536 \
+AGENT_WORKTREE_SETUP_COMMANDS_JSON='[["npm","ci","--ignore-scripts","--no-audit","--no-fund"]]' \
+AGENT_WORKTREE_SETUP_TIMEOUT_MS=300000 \
 AGENT_TEST_COMMANDS_JSON='[["npm","test"],["npm","run","typecheck"]]' \
 npm run agent:start
 ~~~
 
 Git does not copy ignored dependency directories such as `node_modules` into a
-new Worktree. Dependency-bearing projects must prepare dependencies inside each
-Task Worktree, for example by adding one reviewed, exact install argv such as
-`["npm","ci","--ignore-scripts","--no-audit","--no-fund"]` to the Project
-allowlist before the normal test commands. Do not link dependency directories
+new Worktree. Dependency-bearing projects must configure the separate
+pre-model Worktree setup list, for example with one reviewed, exact install argv
+such as `["npm","ci","--ignore-scripts","--no-audit","--no-fund"]`. Commands
+run sequentially with `shell=false`; the Agent Runtime is not constructed until
+all commands pass. Success can be reused only for the same Task Worktree
+generation and exact commands hash. Failed and lease-recovered attempts remain
+durable, while stdout/stderr are represented only by SHA-256 hashes. Do not link dependency directories
 to an absolute path outside the Worktree: `repo.commit` rejects absolute,
 external, dangling, and self-referential staged symlinks and restores the index
 without deleting the working file.

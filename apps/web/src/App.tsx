@@ -168,6 +168,8 @@ function RuntimeConfigPanel({
     repositoryPath: runtime.configuration.project.repositoryPath ?? '',
     defaultBranch: runtime.configuration.project.defaultBranch,
     worktreeRoot: runtime.configuration.runtime.worktreeRoot ?? '',
+    worktreeSetupCommands: runtime.configuration.runtime.worktreeSetupCommands,
+    worktreeSetupTimeoutMs: runtime.configuration.runtime.worktreeSetupTimeoutMs,
     testCommands: runtime.configuration.runtime.testCommands,
     agentContextInputTokens: runtime.configuration.runtime.agentContextInputTokens,
     agentMaxTestTimeoutMs: runtime.configuration.runtime.agentMaxTestTimeoutMs,
@@ -178,16 +180,30 @@ function RuntimeConfigPanel({
     })),
   }), [runtime.configuration])
   const [draft, setDraft] = useState<UpdateProjectRuntimeConfiguration>(toDraft)
+  const [setupCommandsJson, setSetupCommandsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.worktreeSetupCommands, null, 2))
   const [testCommandsJson, setTestCommandsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.testCommands, null, 2))
   const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
     setDraft(toDraft())
+    setSetupCommandsJson(JSON.stringify(runtime.configuration.runtime.worktreeSetupCommands, null, 2))
     setTestCommandsJson(JSON.stringify(runtime.configuration.runtime.testCommands, null, 2))
   }, [toDraft])
 
   const save = () => {
+    let setupCommands: unknown
     let commands: unknown
+    try {
+      setupCommands = JSON.parse(setupCommandsJson)
+    } catch {
+      setFormError('Worktree 准备命令不是合法 JSON。每条命令应写成精确参数数组。')
+      return
+    }
+    if (!Array.isArray(setupCommands) || setupCommands.length > 20 || setupCommands.some((command) =>
+      !Array.isArray(command) || command.length === 0 || command.some((part) => typeof part !== 'string' || !part.trim()))) {
+      setFormError('Worktree 准备命令必须是二维字符串数组；不需要准备时使用空数组 []。')
+      return
+    }
     try {
       commands = JSON.parse(testCommandsJson)
     } catch {
@@ -200,7 +216,11 @@ function RuntimeConfigPanel({
       return
     }
     setFormError(null)
-    onSave({ ...draft, testCommands: commands as string[][] })
+    onSave({
+      ...draft,
+      worktreeSetupCommands: setupCommands as string[][],
+      testCommands: commands as string[][],
+    })
   }
   const workerOnline = (kind: WorkerKind, agentId?: string) => kind === 'agent'
     ? overview?.agents.find((agent) => agent.id === agentId)?.worker?.state === 'online'
@@ -231,6 +251,26 @@ function RuntimeConfigPanel({
             <section className="manifest-step">
               <span className="manifest-step__number">02</span>
               <div className="manifest-step__body">
+                <div className="manifest-step__heading"><span><ShieldCheck size={18} /></span><div><strong>首次模型调用前的 Worktree 准备</strong><small>Worktree 创建后按顺序执行精确 argv；全部通过后才允许调用模型，不经过 Shell。</small></div></div>
+                <label className="runtime-field runtime-field--code"><span>准备命令 JSON（可为空数组）</span><textarea rows={4} value={setupCommandsJson} onChange={(event) => setSetupCommandsJson(event.target.value)} spellCheck={false} placeholder={'[["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]]'} /></label>
+                <div className="runtime-limits">
+                  <label className="runtime-field"><span>单条准备命令超时（毫秒）</span><input type="number" min={1_000} max={900_000} value={draft.worktreeSetupTimeoutMs} onChange={(event) => setDraft({ ...draft, worktreeSetupTimeoutMs: Number(event.target.value) })} /></label>
+                  <div className="setup-policy"><strong>持久化门禁</strong><span>同一 Worktree generation 与命令哈希成功后可复用；失败、超时和租约恢复都有真实记录。</span></div>
+                </div>
+                <div className="setup-history" aria-label="最近 Worktree 准备记录">
+                  <header><strong>最近执行</strong><span>{(runtime.recentSetups ?? []).length} 条</span></header>
+                  {(runtime.recentSetups ?? []).length === 0 ? <p>尚无准备执行记录。保存命令并启动 Agent Worker 后，这里会显示真实状态。</p> : (runtime.recentSetups ?? []).slice(0, 4).map((setup) => <article key={setup.id}>
+                    <span className={`setup-status setup-status--${setup.status}`}><i />{{ running: '执行中', succeeded: '已通过', failed: '未通过' }[setup.status]}</span>
+                    <div><code>{setup.taskId}</code><small>generation {setup.worktreeGeneration} · 第 {setup.attempt} 次 · {setup.commands.length} 条命令</small></div>
+                    <time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(setup.updatedAt))}</time>
+                  </article>)}
+                </div>
+              </div>
+            </section>
+
+            <section className="manifest-step">
+              <span className="manifest-step__number">03</span>
+              <div className="manifest-step__body">
                 <div className="manifest-step__heading"><span><Terminal size={18} /></span><div><strong>允许 Agent 执行的测试</strong><small>使用参数数组，不经过 Shell；这也是工具网关的命令白名单。</small></div></div>
                 <label className="runtime-field runtime-field--code"><span>测试命令 JSON</span><textarea rows={5} value={testCommandsJson} onChange={(event) => setTestCommandsJson(event.target.value)} spellCheck={false} /></label>
                 <div className="runtime-limits">
@@ -241,7 +281,7 @@ function RuntimeConfigPanel({
             </section>
 
             <section className="manifest-step">
-              <span className="manifest-step__number">03</span>
+              <span className="manifest-step__number">04</span>
               <div className="manifest-step__body">
                 <div className="manifest-step__heading"><span><Bot size={18} /></span><div><strong>每个 Agent 使用的模型</strong><small>模型按 Agent 持久化；当前本地 Worker 支持 OpenAI Responses 适配器。</small></div></div>
                 <div className="agent-model-list">

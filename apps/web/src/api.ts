@@ -122,6 +122,8 @@ export interface ProjectRuntimeConfiguration {
   }
   readonly runtime: {
     readonly worktreeRoot: string | null
+    readonly worktreeSetupCommands: readonly (readonly string[])[]
+    readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
@@ -152,6 +154,18 @@ export interface RuntimeControlCapability {
 
 export interface ProjectRuntimeConfigurationResponse {
   readonly configuration: ProjectRuntimeConfiguration
+  readonly recentSetups: readonly {
+    readonly id: string
+    readonly taskId: string
+    readonly runId: string
+    readonly worktreeGeneration: number
+    readonly commands: readonly (readonly string[])[]
+    readonly status: 'running' | 'succeeded' | 'failed'
+    readonly attempt: number
+    readonly error?: Readonly<Record<string, unknown>>
+    readonly updatedAt: string
+    readonly finishedAt?: string
+  }[]
   readonly control: RuntimeControlCapability
 }
 
@@ -159,6 +173,8 @@ export interface UpdateProjectRuntimeConfiguration {
   readonly repositoryPath: string
   readonly defaultBranch: string
   readonly worktreeRoot: string
+  readonly worktreeSetupCommands: readonly (readonly string[])[]
+  readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number

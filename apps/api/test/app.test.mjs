@@ -107,6 +107,8 @@ function fakeProjectRuntimeConfigs() {
     },
     runtime: {
       worktreeRoot: '/workspace/runguild-worktrees',
+      worktreeSetupCommands: [],
+      worktreeSetupTimeoutMs: 300_000,
       testCommands: [['npm', 'test']],
       agentContextInputTokens: 65_536,
       agentMaxTestTimeoutMs: 120_000,
@@ -134,6 +136,8 @@ function fakeProjectRuntimeConfigs() {
           },
           runtime: {
             worktreeRoot: input.worktreeRoot,
+            worktreeSetupCommands: input.worktreeSetupCommands,
+            worktreeSetupTimeoutMs: input.worktreeSetupTimeoutMs,
             testCommands: input.testCommands,
             agentContextInputTokens: input.agentContextInputTokens,
             agentMaxTestTimeoutMs: input.agentMaxTestTimeoutMs,
@@ -535,6 +539,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal(runtimeConfig.status, 200)
     const runtimeConfigBody = await runtimeConfig.json()
     assert.equal(runtimeConfigBody.configuration.project.defaultBranch, 'main')
+    assert.deepEqual(runtimeConfigBody.recentSetups, [])
     assert.equal(runtimeConfigBody.control.enabled, true)
     assert.equal(JSON.stringify(runtimeConfigBody).includes('secret-value'), false)
 
@@ -545,6 +550,8 @@ test('mission API enforces actor identity and exposes command flow', async () =>
         repositoryPath: '/workspace/new-runguild',
         defaultBranch: 'develop',
         worktreeRoot: '/workspace/new-worktrees',
+        worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
+        worktreeSetupTimeoutMs: 240_000,
         testCommands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
         agentContextInputTokens: 80_000,
         agentMaxTestTimeoutMs: 180_000,
@@ -552,7 +559,9 @@ test('mission API enforces actor identity and exposes command flow', async () =>
       }),
     })
     assert.equal(updatedRuntime.status, 200)
-    assert.equal((await updatedRuntime.json()).configuration.agents[0].modelName, 'gpt-new')
+    const updatedRuntimeBody = await updatedRuntime.json()
+    assert.equal(updatedRuntimeBody.configuration.agents[0].modelName, 'gpt-new')
+    assert.deepEqual(updatedRuntimeBody.configuration.runtime.worktreeSetupCommands, [['npm', 'ci', '--ignore-scripts']])
 
     const agentRuntimeConfig = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/runtime-config', {
       headers: { 'x-actor-id': 'planner_api', 'x-actor-kind': 'agent' },

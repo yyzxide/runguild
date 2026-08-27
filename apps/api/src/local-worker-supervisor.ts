@@ -233,6 +233,8 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
       AGENT_CONTEXT_INPUT_TOKENS: String(configuration.runtime.agentContextInputTokens),
       AGENT_MAX_TEST_TIMEOUT_MS: String(configuration.runtime.agentMaxTestTimeoutMs),
       AGENT_TEST_COMMANDS_JSON: JSON.stringify(configuration.runtime.testCommands),
+      AGENT_WORKTREE_SETUP_COMMANDS_JSON: JSON.stringify(configuration.runtime.worktreeSetupCommands),
+      AGENT_WORKTREE_SETUP_TIMEOUT_MS: String(configuration.runtime.worktreeSetupTimeoutMs),
     })
   }
 }

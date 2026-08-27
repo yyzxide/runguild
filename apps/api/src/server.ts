@@ -12,6 +12,7 @@ import {
   TaskRepository,
   ToolExecutionRepository,
   WorkerInstanceRepository,
+  WorktreeSetupRepository,
   createDatabasePool,
   runMigrations,
 } from '@runguild/database'
@@ -60,6 +61,7 @@ const app = createApiApp({
   missions: new MissionRepository(pool),
   projectOperator: new ProjectOperatorRepository(pool),
   projectRuntimeConfigs: new ProjectRuntimeConfigRepository(pool),
+  worktreeSetups: new WorktreeSetupRepository(pool),
   conversations: new ConversationRepository(pool),
   conversationPlanning: new ConversationPlanningRepository(pool),
   runControls: new RuntimeRepository(pool),

@@ -13,6 +13,8 @@ const configuration = {
   },
   runtime: {
     worktreeRoot: '/workspace/worktrees',
+    worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
+    worktreeSetupTimeoutMs: 240_000,
     testCommands: [['npm', 'test']],
     agentContextInputTokens: 65_536,
     agentMaxTestTimeoutMs: 120_000,
@@ -40,6 +42,21 @@ test('local supervisor exposes readiness without exposing API credentials', () =
     ['OPENAI_API_KEY'],
   )
   assert.equal(JSON.stringify(capabilities).includes('postgres://database'), false)
+})
+
+test('local supervisor injects persisted Worktree setup argv into only the Agent child environment', () => {
+  const supervisor = new LocalWorkerSupervisor({
+    databaseUrl: 'postgres://database',
+    openaiApiKey: 'secret-value',
+    activity: { async hasActive() { return false } },
+  })
+  const environment = supervisor.environmentFor({ kind: 'agent', agentId: 'builder' }, configuration)
+  assert.equal(environment.AGENT_WORKTREE_SETUP_COMMANDS_JSON, '[["npm","ci","--ignore-scripts"]]')
+  assert.equal(environment.AGENT_WORKTREE_SETUP_TIMEOUT_MS, '240000')
+  assert.equal(environment.OPENAI_API_KEY, 'secret-value')
+  const integration = supervisor.environmentFor({ kind: 'integration' }, configuration)
+  assert.equal(integration.AGENT_WORKTREE_SETUP_COMMANDS_JSON, undefined)
+  assert.equal(integration.OPENAI_API_KEY, undefined)
 })
 
 test('local supervisor refuses duplicate and non-owned process control', async () => {

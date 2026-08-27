@@ -73,6 +73,8 @@ Expected flow:
 - Review: independent decision against explicit acceptance criteria.
 - Task Worktree: isolated repository branch plus provision, reviewed-commit,
   integration, and cleanup lifecycle for one Task.
+- Worktree Setup: generation- and exact-argv-scoped durable gate that prepares
+  an isolated Task Worktree before any model call.
 - Skill and Skill Version: Workspace operating procedure with immutable content
   versions and deterministic Agent assignment.
 - Context Snapshot: exact token-budgeted model-visible view for one Run hop.
@@ -221,3 +223,7 @@ The first portfolio-quality release is accepted when automated tests prove:
     never has to invent or discover an out-of-band id before creating a Version.
 24. Mission completion rejects a stale or missing final Artifact Version and
     records the exact human-approved Version before entering `completed`.
+25. A dependency-bearing Task runs only reviewed exact-argv setup commands in
+    its isolated Worktree, calls no model before they pass, and recovers an
+    interrupted setup without reusing success from another generation or
+    command hash.

@@ -20,12 +20,21 @@ function poolAdapter(database) {
 async function setup(database) {
   for (const migration of [
     '0001_core.sql',
+    '0002_orchestration.sql',
+    '0003_runtime.sql',
+    '0004_execution.sql',
+    '0005_artifacts.sql',
+    '0006_reviews.sql',
+    '0007_worktrees.sql',
+    '0008_context.sql',
+    '0009_evaluation.sql',
     '0010_conversations.sql',
+    '0011_conversation_planning.sql',
+    '0012_worker_instances.sql',
     '0013_project_runtime_config.sql',
+    '0014_reviewer_execution.sql',
+    '0015_worktree_setup.sql',
   ]) {
-    if (migration === '0010_conversations.sql') {
-      await database.exec('ALTER TABLE projects ADD COLUMN repository_path TEXT;')
-    }
     await database.exec(await readFile(new URL('../migrations/' + migration, import.meta.url), 'utf8'))
   }
   await database.exec(
@@ -55,6 +64,8 @@ test('Project Runtime Config Repository returns defaults and persists safe launc
     const initial = await repository.get('ws', 'project', 'user')
     assert.equal(initial.project.repositoryPath, null)
     assert.equal(initial.project.defaultBranch, 'main')
+    assert.deepEqual(initial.runtime.worktreeSetupCommands, [])
+    assert.equal(initial.runtime.worktreeSetupTimeoutMs, 300_000)
     assert.deepEqual(initial.runtime.testCommands, [['npm', 'test'], ['npm', 'run', 'typecheck']])
     assert.deepEqual(initial.agents.map((agent) => agent.id), ['planner', 'builder'])
 
@@ -63,6 +74,8 @@ test('Project Runtime Config Repository returns defaults and persists safe launc
       repositoryPath: '/workspace/runguild',
       defaultBranch: 'develop',
       worktreeRoot: '/workspace/runguild-worktrees',
+      worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
+      worktreeSetupTimeoutMs: 240_000,
       testCommands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
       agentContextInputTokens: 80_000,
       agentMaxTestTimeoutMs: 180_000,
@@ -74,12 +87,17 @@ test('Project Runtime Config Repository returns defaults and persists safe launc
     assert.equal(updated.project.repositoryPath, '/workspace/runguild')
     assert.equal(updated.project.defaultBranch, 'develop')
     assert.equal(updated.runtime.worktreeRoot, '/workspace/runguild-worktrees')
+    assert.deepEqual(updated.runtime.worktreeSetupCommands, [['npm', 'ci', '--ignore-scripts']])
+    assert.equal(updated.runtime.worktreeSetupTimeoutMs, 240_000)
     assert.equal(updated.runtime.agentContextInputTokens, 80_000)
     assert.deepEqual(updated.agents.map((agent) => agent.modelName), ['gpt-planner', 'gpt-builder'])
 
     const stored = await database.query(
-      "SELECT test_commands, agent_max_test_timeout_ms FROM project_runtime_configs WHERE project_id = 'project'",
+      "SELECT worktree_setup_commands, worktree_setup_timeout_ms, test_commands, agent_max_test_timeout_ms " +
+      "FROM project_runtime_configs WHERE project_id = 'project'",
     )
+    assert.deepEqual(stored.rows[0].worktree_setup_commands, [['npm', 'ci', '--ignore-scripts']])
+    assert.equal(stored.rows[0].worktree_setup_timeout_ms, 240_000)
     assert.deepEqual(stored.rows[0].test_commands, [['npm', 'test'], ['npm', 'run', 'typecheck']])
     assert.equal(stored.rows[0].agent_max_test_timeout_ms, 180_000)
   } finally {
@@ -97,7 +115,9 @@ test('Project Runtime Config Repository enforces tenant, team, and path boundari
     const valid = {
       workspaceId: 'ws', projectId: 'project', userId: 'user',
       repositoryPath: '/workspace/runguild', defaultBranch: 'main',
-      worktreeRoot: '/workspace/worktrees', testCommands: [['npm', 'test']],
+      worktreeRoot: '/workspace/worktrees',
+      worktreeSetupCommands: [], worktreeSetupTimeoutMs: 300_000,
+      testCommands: [['npm', 'test']],
       agentContextInputTokens: 65_536, agentMaxTestTimeoutMs: 120_000,
       agentModels: [],
     }

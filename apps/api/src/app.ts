@@ -55,6 +55,7 @@ import {
   type SkillRepository,
   type TaskRepository,
   type ToolExecutionRepository,
+  type WorktreeSetupRepository,
 } from '@runguild/database'
 import { buildEvaluationReport } from '@runguild/evaluation'
 import express, { type NextFunction, type Request, type Response } from 'express'
@@ -70,6 +71,7 @@ type MissionService = Pick<
 type DevelopmentSetupService = Pick<DevelopmentSetupRepository, 'bootstrap'>
 type ProjectOperatorService = Pick<ProjectOperatorRepository, 'getOverview'>
 type ProjectRuntimeConfigService = Pick<ProjectRuntimeConfigRepository, 'get' | 'update'>
+type WorktreeSetupService = Pick<WorktreeSetupRepository, 'listRecentForProject'>
 
 type ConversationService = Pick<
   ConversationRepository,
@@ -95,6 +97,7 @@ export interface ApiDependencies {
   readonly missions: MissionService
   readonly projectOperator: ProjectOperatorService
   readonly projectRuntimeConfigs: ProjectRuntimeConfigService
+  readonly worktreeSetups?: WorktreeSetupService
   readonly conversations: ConversationService
   readonly conversationPlanning: ConversationPlanningService
   readonly runControls: RunControlService
@@ -324,6 +327,8 @@ const updateProjectRuntimeConfigSchema = z.object({
   repositoryPath: z.string().min(1).max(4_096),
   defaultBranch: z.string().min(1).max(200),
   worktreeRoot: z.string().min(1).max(4_096),
+  worktreeSetupCommands: z.array(z.array(z.string().min(1).max(1_000)).min(1).max(30)).max(20),
+  worktreeSetupTimeoutMs: z.number().int().min(1_000).max(900_000),
   testCommands: z.array(z.array(z.string().min(1).max(1_000)).min(1).max(30)).min(1).max(50),
   agentContextInputTokens: z.number().int().min(256).max(2_000_000),
   agentMaxTestTimeoutMs: z.number().int().min(1_000).max(900_000),
@@ -451,6 +456,13 @@ export function createApiApp(dependencies: ApiDependencies) {
     }
     res.json({
       configuration,
+      recentSetups: dependencies.worktreeSetups
+        ? await dependencies.worktreeSetups.listRecentForProject({
+            workspaceId: configuration.project.workspaceId,
+            projectId: configuration.project.id,
+            limit: 10,
+          })
+        : [],
       control: dependencies.localRuntimeControl?.capabilities(configuration) ?? {
         enabled: false,
         reason: 'local_runtime_control_disabled',
@@ -484,6 +496,13 @@ export function createApiApp(dependencies: ApiDependencies) {
       })
       res.json({
         configuration,
+        recentSetups: dependencies.worktreeSetups
+          ? await dependencies.worktreeSetups.listRecentForProject({
+              workspaceId: configuration.project.workspaceId,
+              projectId: configuration.project.id,
+              limit: 10,
+            })
+          : [],
         control: dependencies.localRuntimeControl?.capabilities(configuration) ?? {
           enabled: false,
           reason: 'local_runtime_control_disabled',
