@@ -79,7 +79,7 @@ interface TaskDispatchPayload {
   readonly missionId: MissionId
 }
 
-export const IMPLEMENTATION_DISCOVERY_HOP_LIMIT = 8
+export const IMPLEMENTATION_DISCOVERY_HOP_LIMIT = 4
 
 export function requiresFilePatch(context: AgentExecutionContext): boolean {
   return context.agentRole === 'builder' && context.acceptanceCriteria.some(
@@ -180,8 +180,10 @@ export function executionMessages(
       ]
     : ['Independent review is not required for this Task.']
   const implementationPolicy = requiresFilePatch(context)
-    ? '\n- This Task requires file_diff evidence. After ' + String(IMPLEMENTATION_DISCOVERY_HOP_LIMIT) +
-      ' discovery hops, Runtime hides repo.status, repo.search, repo.diff, and file.read until file.patch succeeds.'
+    ? '\n- This Task requires file_diff evidence. Runtime permits at most ' +
+      String(IMPLEMENTATION_DISCOVERY_HOP_LIMIT) +
+      ' discovery hops before the first successful file.patch and after each later successful file.patch. ' +
+      'When a window expires, repo.status, repo.search, repo.diff, and file.read stay hidden until another file.patch succeeds.'
     : ''
   return [
     {

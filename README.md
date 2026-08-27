@@ -61,7 +61,8 @@ The control-plane foundation is executable:
 - typed events, tools, side effects, Evidence, and Artifact contracts;
 - bounded Agent Runtime with explicit completion, hop budgets, Steering, Cancel,
   a durable transcript that survives approval pauses, and a persisted
-  discovery-to-implementation gate for Builder Tasks requiring `file_diff`;
+  repeating discovery-to-implementation gate for Builder Tasks requiring
+  `file_diff`, reconstructed from the durable transcript after every patch;
 - provider-neutral model adapter and a redacted LLM call, token, latency, and
   cost ledger;
 - a production OpenAI Responses adapter with durable response continuation and

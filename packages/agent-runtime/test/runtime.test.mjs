@@ -251,7 +251,7 @@ test('hop budget times out repeated non-terminal model responses', async () => {
   assert.equal(setup.model.requests.length, 2)
 })
 
-test('implementation gate hides discovery until a durable file.patch succeeds', async () => {
+test('implementation gate repeatedly bounds discovery between durable file.patch results', async () => {
   const persistence = new MemoryPersistence()
   const setup = runtime({
     persistence,
@@ -273,6 +273,8 @@ test('implementation gate hides discovery until a durable file.patch succeeds', 
         { id: 'call_reused', action: 'file.patch', input: { path: 'src.ts', unifiedDiff: 'patch' } },
       ] }),
       response({ toolCalls: [{ id: 'call_discovery_restored', action: 'repo.search', input: { query: 'verify' } }] }),
+      response({ toolCalls: [{ id: 'call_discovery_blocked_again', action: 'file.read', input: { path: 'other.ts' } }] }),
+      response({ toolCalls: [{ id: 'call_second_patch', action: 'file.patch', input: { path: 'other.ts', unifiedDiff: 'patch' } }] }),
       response({ toolCalls: [statusCall('call_done_after_patch', 'done', 'Implemented.')] }),
     ],
   })
@@ -284,18 +286,23 @@ test('implementation gate hides discovery until a durable file.patch succeeds', 
     'repo.search',
     'file.patch',
     'repo.search',
+    'file.patch',
   ])
   assert.equal(setup.model.requests[1].tools.some((tool) => tool.action === 'repo.search'), false)
   assert.equal(setup.model.requests[1].tools.some((tool) => tool.action === 'file.patch'), true)
   assert.equal(setup.model.requests[2].tools.some((tool) => tool.action === 'file.read'), false)
   assert.equal(setup.model.requests[3].tools.some((tool) => tool.action === 'repo.search'), true)
+  assert.equal(setup.model.requests[4].tools.some((tool) => tool.action === 'file.read'), false)
+  assert.equal(setup.model.requests[4].tools.some((tool) => tool.action === 'file.patch'), true)
   const blocked = persistence.messages.find((message) => message.toolCallId === 'call_discovery_blocked')
   assert.match(blocked.content, /Discovery budget is exhausted/)
   const stale = persistence.messages.find((message) => message.toolCallId === 'call_stale_discovery')
   assert.match(stale.content, /Discovery budget is exhausted/)
+  const blockedAgain = persistence.messages.find((message) => message.toolCallId === 'call_discovery_blocked_again')
+  assert.match(blockedAgain.content, /Discovery budget is exhausted/)
   assert.equal(
     persistence.messages.filter((message) => message.content.startsWith('[Implementation gate]')).length,
-    1,
+    2,
   )
 })
 

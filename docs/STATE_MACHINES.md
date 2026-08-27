@@ -106,13 +106,15 @@ reconstruct the missing action.
 Every Agent hop also receives the Worker's exact `test.run` argv allowlist and
 the repository-tool path contract. Shell operators, invented environment probes,
 and glob paths are explicitly invalid. For a Builder Task that requires
-`file_diff` Evidence, the execution policy allows eight discovery hops. From
-hop nine, the Runtime removes `repo.status`, `repo.search`, `repo.diff`, and
-`file.read` from the model-visible Tool definitions until a durable successful
-`file.patch` result exists. It also rejects a stale or replayed discovery call
-at the Tool boundary. The phase is reconstructed from persisted assistant Tool
-Calls and Tool Results, so a crash cannot reset the budget or invent progress.
-Tasks without required `file_diff` Evidence do not receive this gate.
+`file_diff` Evidence, the execution policy allows four discovery hops before
+the first successful `file.patch` and four more after every later successful
+patch. When the current window expires, the Runtime removes `repo.status`,
+`repo.search`, `repo.diff`, and `file.read` from the model-visible Tool
+definitions until another durable `file.patch` succeeds. It also rejects a
+stale or replayed discovery call at the Tool boundary. The current window is
+reconstructed from persisted assistant Tool Calls and Tool Results, so a crash
+cannot reset the budget or invent progress. Tasks without required `file_diff`
+Evidence do not receive this gate.
 
 ## Tool execution
 

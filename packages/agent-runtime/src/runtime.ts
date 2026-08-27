@@ -149,24 +149,29 @@ function statusCall(calls: readonly ModelToolCall[]): ModelToolCall<'run.set_sta
 
 const IMPLEMENTATION_GATE_MARKER = '[Implementation gate]'
 
-function hasSucceededAction(
+function lastSucceededActionHop(
   messages: readonly ModelMessage[],
   actions: ReadonlySet<ToolAction>,
-): boolean {
-  const pendingActions = new Map<string, ToolAction>()
+): number | null {
+  const pendingActions = new Map<string, { readonly action: ToolAction; readonly hop: number }>()
+  let lastHop: number | null = null
   for (const message of messages) {
-    for (const call of message.toolCalls ?? []) pendingActions.set(call.id, call.action)
+    for (const call of message.toolCalls ?? []) {
+      pendingActions.set(call.id, { action: call.action, hop: message.hop ?? 0 })
+    }
     if (message.role !== 'tool' || message.toolCallId === undefined) continue
-    const action = pendingActions.get(message.toolCallId)
+    const pending = pendingActions.get(message.toolCallId)
     try {
       const result = JSON.parse(message.content) as { readonly status?: unknown }
-      if (result.status === 'succeeded' && action !== undefined && actions.has(action)) return true
+      if (result.status === 'succeeded' && pending !== undefined && actions.has(pending.action)) {
+        lastHop = Math.max(lastHop ?? 0, message.hop ?? pending.hop)
+      }
     } catch {
       // Malformed historical tool output cannot prove that an implementation action succeeded.
     }
     pendingActions.delete(message.toolCallId)
   }
-  return false
+  return lastHop
 }
 
 export class AgentRuntime {
@@ -537,11 +542,14 @@ export class AgentRuntime {
     return null
   }
 
-  private implementationStarted(messages: readonly ModelMessage[]): boolean {
+  private discoveryDeadline(messages: readonly ModelMessage[]): number {
     const gate = this.options.implementationGate
-    return gate
-      ? hasSucceededAction(messages, new Set(gate.implementationActions))
-      : true
+    if (!gate) return Number.POSITIVE_INFINITY
+    const lastImplementationHop = lastSucceededActionHop(
+      messages,
+      new Set(gate.implementationActions),
+    )
+    return (lastImplementationHop ?? 0) + gate.maxDiscoveryHops
   }
 
   private discoveryActionBlocked(
@@ -551,9 +559,9 @@ export class AgentRuntime {
   ): boolean {
     const gate = this.options.implementationGate
     return Boolean(gate
-      && hop > gate.maxDiscoveryHops
+      && hop > this.discoveryDeadline(messages)
       && gate.discoveryActions.includes(action)
-      && !this.implementationStarted(messages))
+    )
   }
 
   private definitionsFor(
@@ -561,7 +569,7 @@ export class AgentRuntime {
     messages: readonly ModelMessage[],
   ): readonly ModelToolDefinition[] {
     const gate = this.options.implementationGate
-    if (!gate || hop <= gate.maxDiscoveryHops || this.implementationStarted(messages)) {
+    if (!gate || hop <= this.discoveryDeadline(messages)) {
       return this.definitions
     }
     const discovery = new Set(gate.discoveryActions)
@@ -574,20 +582,24 @@ export class AgentRuntime {
     messages: ModelMessage[],
   ): Promise<void> {
     const gate = this.options.implementationGate
-    if (!gate
-        || hop <= gate.maxDiscoveryHops
-        || this.implementationStarted(messages)
-        || messages.some((message) => message.content.startsWith(IMPLEMENTATION_GATE_MARKER))) {
+    if (!gate || hop <= this.discoveryDeadline(messages)) {
       return
     }
+    const lastImplementationHop = lastSucceededActionHop(
+      messages,
+      new Set(gate.implementationActions),
+    )
+    const cycleMarker = IMPLEMENTATION_GATE_MARKER + ' cycle=' + String(lastImplementationHop ?? 'initial')
+    if (messages.some((message) => message.content.startsWith(cycleMarker))) return
     const message: ModelMessage = {
       role: 'user',
       hop,
       content:
-        IMPLEMENTATION_GATE_MARKER + ' The ' + String(gate.maxDiscoveryHops) +
-        '-hop discovery budget is exhausted. Repository discovery tools are temporarily unavailable. ' +
+        cycleMarker + '. The current ' + String(gate.maxDiscoveryHops) +
+        '-hop discovery window is exhausted. Repository discovery tools are temporarily unavailable. ' +
         'Use the facts already gathered and make one bounded change now with one of these actions: ' +
-        gate.implementationActions.join(', ') + '. Discovery tools return after that action succeeds.',
+        gate.implementationActions.join(', ') +
+        '. A successful implementation action opens one new bounded discovery window.',
     }
     await this.options.persistence.appendMessage(runId, hop, message)
     messages.push(message)
