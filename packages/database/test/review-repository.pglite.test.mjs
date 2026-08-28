@@ -373,6 +373,22 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
       })
       assert.equal(claimed.kind, 'work')
       assert.equal(claimed.work.attempt, attempt)
+      if (attempt === 1) {
+        await executions.recordInvalidModelResponse({
+          reviewId,
+          reviewerAgentId: 'agent_reviewer',
+          leaseToken: claimed.work.leaseToken,
+          promptSnapshot: { schemaVersion: 1, messages: [{ role: 'user', content: 'Decide.' }] },
+          responseSnapshot: { finishReason: 'stop', content: 'Approved in prose.', toolCalls: [] },
+          modelProvider: 'openai',
+          modelName: 'test',
+          providerRequestId: 'response_invalid',
+          inputTokens: 321,
+          outputTokens: 17,
+          latencyMs: 25,
+          errorMessage: 'Reviewer must call review.submit_decision exactly once',
+        })
+      }
       assert.equal((await executions.fail({
         reviewId,
         reviewerAgentId: 'agent_reviewer',
@@ -385,6 +401,15 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
       [reviewId],
     )
     assert.equal(failed.rows[0].status, 'failed')
+    const invalidResponse = await database.query(
+      'SELECT response_snapshot, provider_request_id, input_tokens, output_tokens ' +
+      'FROM review_executions WHERE review_id = $1',
+      [reviewId],
+    )
+    assert.equal(invalidResponse.rows[0].response_snapshot.content, 'Approved in prose.')
+    assert.equal(invalidResponse.rows[0].provider_request_id, 'response_invalid')
+    assert.equal(invalidResponse.rows[0].input_tokens, 321)
+    assert.equal(invalidResponse.rows[0].output_tokens, 17)
     const frozenSnapshot = JSON.stringify(failed.rows[0].materials_snapshot)
 
     assert.deepEqual(await executions.retryFailed({

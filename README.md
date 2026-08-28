@@ -116,8 +116,10 @@ The control-plane foundation is executable:
   results, and the cumulative base-to-HEAD Git diff. The durable snapshot keeps
   every selected Evidence id, while the bounded model projection emits repeated
   content-addressed payloads once and retains every equivalent id and producer;
-  a persisted model decision resumes without a second model call after a process
-  crash;
+  Planner/Reviewer control-plane calls require one non-parallel structured Tool
+  Call, invalid Reviewer responses persist their text, Tool Calls, usage, and
+  provider request id for diagnosis, and a persisted valid decision resumes
+  without a second model call after a process crash;
 - deterministic per-Task Git Worktree provisioning with database fencing,
   lease-expiry takeover, restart reconciliation, and strict repository/path/
   branch/ancestry validation;

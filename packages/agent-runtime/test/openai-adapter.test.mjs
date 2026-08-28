@@ -75,6 +75,8 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
   assert.equal(fake.requests[0].body.tools[0].name, 'repo__search')
   assert.match(fake.requests[0].body.tools[0].name, /^[a-zA-Z0-9_-]+$/)
   assert.equal(fake.requests[0].body.store, true)
+  assert.equal(fake.requests[0].body.tool_choice, 'auto')
+  assert.equal(fake.requests[0].body.parallel_tool_calls, true)
   assert.equal(result.providerRequestId, 'resp_first')
   assert.equal(result.finishReason, 'tool_calls')
   assert.deepEqual(result.toolCalls, [{
@@ -87,6 +89,25 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
     outputTokens: 5,
     cachedInputTokens: 3,
   })
+})
+
+test('OpenAI adapter can require one-at-a-time structured tool output for control-plane calls', async () => {
+  const fake = fakeClient([response({ id: 'resp_required' })])
+  const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+
+  await adapter.complete({
+    messages: [{ role: 'user', content: 'Return a structured decision.' }],
+    tools: [{
+      action: 'review.submit_decision',
+      description: 'Submit one decision.',
+      inputSchema: { type: 'object' },
+    }],
+    toolChoice: 'required',
+    parallelToolCalls: false,
+  })
+
+  assert.equal(fake.requests[0].body.tool_choice, 'required')
+  assert.equal(fake.requests[0].body.parallel_tool_calls, false)
 })
 
 test('OpenAI continuation sends only post-response tool outputs and repeats instructions', async () => {

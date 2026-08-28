@@ -176,6 +176,9 @@ A human retry may move only `failed -> queued` (or `failed -> model_complete`
 when a decision was already persisted), adds exactly one bounded attempt, keeps
 the frozen material snapshot, and writes a fresh Inbox/outbox wake plus audit
 event. It cannot reopen terminal Review decisions or a Task outside `reviewing`.
+An invalid model response remains inside the execution ledger with its raw text,
+Tool Calls, provider request id, Token usage, and latency. It consumes an attempt
+but cannot advance to `model_complete` or alter the Review.
 
 ## Task Worktree
 

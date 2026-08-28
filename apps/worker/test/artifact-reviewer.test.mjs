@@ -63,6 +63,8 @@ test('Artifact Reviewer persists one model decision before recording the indepen
         provider: 'openai', model: 'review-model',
         async complete(request) {
           calls.push(['model.called', request.tools[0].action])
+          assert.equal(request.toolChoice, 'required')
+          assert.equal(request.parallelToolCalls, false)
           return {
             content: '', finishReason: 'tool_calls',
             toolCalls: [{ id: 'call_1', action: 'review.submit_decision', input: decision }],
@@ -81,6 +83,49 @@ test('Artifact Reviewer persists one model decision before recording the indepen
   assert.deepEqual(calls.map((call) => call[0]), [
     'model.called', 'model.persisted', 'review.recorded', 'execution.completed',
   ])
+})
+
+test('Artifact Reviewer persists an invalid model response before exhausting its retry', async () => {
+  const calls = []
+  const reviewer = new ArtifactReviewer({
+    executions: {
+      async claim() { return { kind: 'work', work: work() } },
+      async completeModel() { throw new Error('invalid response must not complete the model gate') },
+      async recordInvalidModelResponse(input) {
+        calls.push(['invalid.persisted', input])
+      },
+      async renew() { return true },
+      async complete() { throw new Error('invalid response must not complete the execution') },
+      async fail(input) { calls.push(['failed', input.message]); return { retryable: false } },
+    },
+    reviews: { async reviewSubmission() { throw new Error('invalid response must not create a Review decision') } },
+    modelFor() {
+      return {
+        provider: 'openai', model: 'review-model',
+        async complete() {
+          return {
+            content: 'I approve this submission in prose.',
+            finishReason: 'stop',
+            toolCalls: [],
+            usage: { inputTokens: 321, outputTokens: 17 },
+            providerRequestId: 'response_invalid',
+          }
+        },
+      }
+    },
+  })
+
+  assert.equal(await reviewer.process({
+    schemaVersion: 1, type: 'artifact.review_requested', reviewId: 'review_1',
+    submissionId: 'submission_1', missionId: 'mission_1', taskId: 'task_1',
+  }, 'agent_reviewer'), 'processed')
+  assert.deepEqual(calls.map((call) => call[0]), ['invalid.persisted', 'failed'])
+  assert.equal(calls[0][1].responseSnapshot.finishReason, 'stop')
+  assert.equal(calls[0][1].responseSnapshot.content, 'I approve this submission in prose.')
+  assert.deepEqual(calls[0][1].responseSnapshot.toolCalls, [])
+  assert.equal(calls[0][1].providerRequestId, 'response_invalid')
+  assert.equal(calls[0][1].inputTokens, 321)
+  assert.match(calls[1][1], /exactly once/)
 })
 
 test('Artifact Reviewer resumes a stored decision without a second model call', async () => {

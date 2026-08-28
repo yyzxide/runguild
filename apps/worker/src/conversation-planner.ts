@@ -186,6 +186,8 @@ export class ConversationPlanner {
         const response = await model.complete({
           messages,
           tools: [toolDefinition],
+          toolChoice: 'required',
+          parallelToolCalls: false,
         })
         plan = planFromResponse(response, work.availableRoles)
         await this.dependencies.planning.completeModel({

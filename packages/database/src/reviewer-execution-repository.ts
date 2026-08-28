@@ -153,6 +153,22 @@ export interface CompleteReviewerModelInput {
   readonly latencyMs: number
 }
 
+export interface RecordInvalidReviewerModelResponseInput {
+  readonly reviewId: ReviewId
+  readonly reviewerAgentId: AgentId
+  readonly leaseToken: string
+  readonly promptSnapshot: Readonly<Record<string, unknown>>
+  readonly responseSnapshot: Readonly<Record<string, unknown>>
+  readonly modelProvider: string
+  readonly modelName: string
+  readonly providerRequestId?: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly estimatedCostUsd?: number
+  readonly latencyMs: number
+  readonly errorMessage: string
+}
+
 function validateDecision(decision: ReviewerDecision): void {
   if (!['approved', 'rejected', 'changes_requested'].includes(decision.decision)) {
     throw new Error('Invalid Reviewer decision')
@@ -421,6 +437,32 @@ export class ReviewerExecutionRepository {
       ],
     )
     if (result.rowCount !== 1) throw new Error('Reviewer lease was lost before model completion')
+  }
+
+  async recordInvalidModelResponse(input: RecordInvalidReviewerModelResponseInput): Promise<void> {
+    const result = await this.pool.query(
+      'UPDATE review_executions SET prompt_snapshot = $4::jsonb, response_snapshot = $5::jsonb, ' +
+      'model_provider = $6, model_name = $7, provider_request_id = $8, input_tokens = $9, ' +
+      'output_tokens = $10, estimated_cost_usd = $11, latency_ms = $12, error = $13::jsonb, ' +
+      'updated_at = NOW() WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
+      "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW()",
+      [
+        input.reviewId,
+        input.reviewerAgentId,
+        input.leaseToken,
+        canonicalJson(input.promptSnapshot),
+        canonicalJson(input.responseSnapshot),
+        input.modelProvider,
+        input.modelName,
+        input.providerRequestId ?? null,
+        input.inputTokens,
+        input.outputTokens,
+        input.estimatedCostUsd ?? null,
+        input.latencyMs,
+        canonicalJson({ message: input.errorMessage }),
+      ],
+    )
+    if (result.rowCount !== 1) throw new Error('Reviewer lease was lost before invalid model response persistence')
   }
 
   async renew(input: {

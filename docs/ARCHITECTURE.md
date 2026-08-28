@@ -337,6 +337,13 @@ database finalization without another model call. Approval reuses the Task
 completion gate and dependency unlock transaction; `changes_requested` returns
 the Task to `ready`, while a terminal rejection fails it.
 
+Planner and Reviewer model requests require a structured Tool Call and disable
+parallel Tool Calls because each control-plane transition accepts exactly one
+decision. A compatible provider may still violate that contract. Reviewer
+validation therefore remains strict, but the invalid response snapshot, usage,
+latency, provider request id, and error are persisted before the attempt fails;
+text-only approval can never become a database Review decision.
+
 ## 7. Coordination invariants
 
 - A Task has at most one active lease.

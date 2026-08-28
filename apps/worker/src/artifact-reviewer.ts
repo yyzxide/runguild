@@ -133,7 +133,7 @@ export const REVIEW_DECISION_TOOL_DEFINITION: ModelToolDefinition = {
 
 type ReviewExecutions = Pick<
   ReviewerExecutionRepository,
-  'claim' | 'completeModel' | 'renew' | 'complete' | 'fail'
+  'claim' | 'completeModel' | 'recordInvalidModelResponse' | 'renew' | 'complete' | 'fail'
 >
 type Reviews = Pick<ReviewRepository, 'reviewSubmission'>
 
@@ -229,20 +229,46 @@ export class ArtifactReviewer {
         const response = await model.complete({
           messages,
           tools: [REVIEW_DECISION_TOOL_DEFINITION],
+          toolChoice: 'required',
+          parallelToolCalls: false,
           abortSignal: abortController.signal,
         })
-        decision = decisionFrom(response)
+        const latencyMs = Math.max(0, Date.now() - startedAt)
+        const promptSnapshot = { schemaVersion: 1, messages, tools: [REVIEW_DECISION_TOOL_DEFINITION] }
+        const responseSnapshot = {
+          finishReason: response.finishReason,
+          content: response.content,
+          toolCalls: response.toolCalls,
+        }
+        try {
+          decision = decisionFrom(response)
+        } catch (error) {
+          await this.dependencies.executions.recordInvalidModelResponse({
+            reviewId: work.reviewId,
+            reviewerAgentId,
+            leaseToken: work.leaseToken,
+            promptSnapshot,
+            responseSnapshot,
+            modelProvider: model.provider,
+            modelName: model.model,
+            ...(response.providerRequestId === undefined ? {} : { providerRequestId: response.providerRequestId }),
+            inputTokens: response.usage.inputTokens,
+            outputTokens: response.usage.outputTokens,
+            ...(response.usage.estimatedCostUsd === undefined
+              ? {}
+              : { estimatedCostUsd: response.usage.estimatedCostUsd }),
+            latencyMs,
+            errorMessage: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        }
         await this.dependencies.executions.completeModel({
           reviewId: work.reviewId,
           reviewerAgentId,
           leaseToken: work.leaseToken,
           decision,
-          promptSnapshot: { schemaVersion: 1, messages, tools: [REVIEW_DECISION_TOOL_DEFINITION] },
-          responseSnapshot: {
-            finishReason: response.finishReason,
-            content: response.content,
-            toolCalls: response.toolCalls,
-          },
+          promptSnapshot,
+          responseSnapshot,
           modelProvider: model.provider,
           modelName: model.model,
           ...(response.providerRequestId === undefined ? {} : { providerRequestId: response.providerRequestId }),
@@ -251,7 +277,7 @@ export class ArtifactReviewer {
           ...(response.usage.estimatedCostUsd === undefined
             ? {}
             : { estimatedCostUsd: response.usage.estimatedCostUsd }),
-          latencyMs: Math.max(0, Date.now() - startedAt),
+          latencyMs,
         })
       }
 

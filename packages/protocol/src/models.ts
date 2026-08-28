@@ -35,6 +35,8 @@ export interface ModelToolDefinition {
 export interface ModelRequest {
   readonly messages: readonly ModelMessage[]
   readonly tools: readonly ModelToolDefinition[]
+  readonly toolChoice?: 'auto' | 'required'
+  readonly parallelToolCalls?: boolean
   readonly context?: ModelContextMetadata
   readonly abortSignal?: AbortSignal
   readonly continuation?: ModelContinuation
