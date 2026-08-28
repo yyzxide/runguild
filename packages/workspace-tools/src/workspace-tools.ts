@@ -768,7 +768,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         })
         if (head.exitCode !== 0) throw new Error('Worktree HEAD cannot be resolved')
         commitHash = head.stdout.trim()
-        if (record.headCommit === commitHash && record.status === 'ready') {
+        if (record.headCommit === commitHash
+            && record.status === 'ready'
+            && record.reconciliationBaseCommit === undefined) {
           const tree = await runCommand({
             command: ['git', 'rev-parse', '--verify', 'HEAD^{tree}'],
             cwd: boundary.root,
@@ -791,7 +793,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         const recovered = await runCommand({
           command: [
             'git', 'diff', '--binary', '--no-ext-diff',
-            record.headCommit === commitHash ? record.baseCommit : record.headCommit ?? record.baseCommit,
+            record.headCommit === commitHash
+              ? record.reconciliationBaseCommit ?? record.baseCommit
+              : record.headCommit ?? record.reconciliationBaseCommit ?? record.baseCommit,
             commitHash,
             '--',
           ],
@@ -806,9 +810,20 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         committed = record.headCommit !== commitHash
       }
 
+      const diffBaseCommit = record.reconciliationBaseCommit ?? record.baseCommit
+      if (record.reconciliationBaseCommit !== undefined) {
+        const reconciled = await runCommand({
+          command: ['git', 'merge-base', '--is-ancestor', record.reconciliationBaseCommit, commitHash],
+          cwd: boundary.root,
+          timeoutMs: 30_000,
+        })
+        if (reconciled.exitCode !== 0) {
+          throw new Error('Integration conflict resolution commit must contain the current base commit')
+        }
+      }
       const cumulative = await runCommand({
         command: [
-          'git', 'diff', '--binary', '--no-ext-diff', record.baseCommit, commitHash, '--',
+          'git', 'diff', '--binary', '--no-ext-diff', diffBaseCommit, commitHash, '--',
         ],
         cwd: boundary.root,
         timeoutMs: 30_000,

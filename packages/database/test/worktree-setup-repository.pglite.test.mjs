@@ -23,6 +23,7 @@ const migrations = [
   '0014_reviewer_execution.sql',
   '0015_worktree_setup.sql',
   '0016_submission_evidence.sql',
+  '0017_integration_conflict_recovery.sql',
 ]
 
 function poolAdapter(database) {

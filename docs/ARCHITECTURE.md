@@ -239,7 +239,9 @@ replay preserve the same window.
 10. Independent approval admits that HEAD to the integration worker, which
    fast-forwards when possible. If the base advanced independently, it may
    create a conflict-free merge commit that retains the exact reviewed HEAD as
-   a parent; any conflict rejects integration without changing the base ref.
+   a parent. A content conflict leaves the base ref unchanged, materializes a
+   pending merge in the isolated Task Worktree, supersedes the old approval,
+   and sends the Task through Builder evidence and independent Review again.
 11. Task completion evaluates evidence, review, and integration gates; the model cannot write
    the terminal Task state directly.
 12. Completing a task unlocks dependents in the same transaction. The
@@ -441,8 +443,18 @@ clean matching checkout. A non-checked-out Evaluation ref is merged in a
 bounded temporary integration Worktree and advanced with an atomic
 compare-and-swap, without changing the project checkout. A crash after Git but
 before PostgreSQL is recovered by proving the reviewed HEAD is already an
-ancestor of the current base. Conflicts leave the base unchanged and remain a
-failed integration for human resolution. Cleanup removes only a clean
+ancestor of the current base. A content conflict aborts the attempted source
+merge, then merges that exact current base with `--no-commit` inside the Task
+Worktree. PostgreSQL atomically stores `reconciliation_base_commit`, supersedes
+the old approved Submission, and returns the Task to `ready` (or `failed` when
+its attempt budget is exhausted), so the Integration queue cannot poll the same
+deterministic conflict forever. The next Builder Run receives the durable
+recovery reason, resolves the pending merge with bounded file tools, and must
+create a new commit, test Evidence, Artifact Version, and independently reviewed
+Submission. `repo.commit` proves the new HEAD contains the recorded current base
+and calculates Task diff Evidence from that base, excluding unrelated platform
+changes. Failures outside this content-conflict path retain fenced replay so a
+crash after the Git ref moved can still reconcile safely. Cleanup removes only a clean
 integrated Worktree and deletes a Task branch only after proving its reviewed
 HEAD is contained by the recorded base ref.
 

@@ -255,6 +255,23 @@ test('execution prompt does not require file.patch without required file_diff ev
   assert.doesNotMatch(messages[0].content, /Runtime hides repo\.status/)
 })
 
+test('execution prompt explains durable Integration conflict recovery and fresh Review', () => {
+  const messages = executionMessages({
+    ...context,
+    integrationRecovery: {
+      baseCommit: 'b'.repeat(40),
+      error: { code: 'worktree_integration_conflict', message: 'README conflicts' },
+    },
+  })
+
+  const taskPrompt = messages.at(-1).content
+  assert.match(taskPrompt, /Integration recovery is active/)
+  assert.match(taskPrompt, new RegExp('b{40}'))
+  assert.match(taskPrompt, /pending Git merge/)
+  assert.match(taskPrompt, /old Submission was superseded/)
+  assert.match(taskPrompt, /independent Review/)
+})
+
 test('execution prompt injects the exact frozen Skill Version below the runtime contract', () => {
   const messages = executionMessages({
     ...context,

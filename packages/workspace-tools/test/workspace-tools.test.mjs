@@ -82,7 +82,14 @@ async function fixture() {
         return taskId === worktree.taskId ? worktree : null
       },
       async recordCommit(input) {
-        worktree = { ...worktree, status: 'committed', headCommit: input.headCommit }
+        worktree = {
+          ...worktree,
+          status: 'committed',
+          headCommit: input.headCommit,
+          baseCommit: worktree.reconciliationBaseCommit ?? worktree.baseCommit,
+          reconciliationBaseCommit: undefined,
+          lastError: undefined,
+        }
         return worktree
       },
       async recordUnchangedIntegration(input) {
@@ -97,6 +104,7 @@ async function fixture() {
     command,
     handlers: new Map(handlers.map((handler) => [handler.action, handler])),
     get worktree() { return worktree },
+    setWorktree(next) { worktree = next },
   }
 }
 
@@ -323,6 +331,58 @@ test('repository commit finalizes a clean unchanged Worktree without inventing a
     assert.equal(setup.worktree.status, 'integrated')
     assert.equal(setup.worktree.integratedCommit, setup.worktree.baseCommit)
     assert.equal((await execute('git', ['-C', setup.root, 'rev-list', '--count', 'HEAD'])).stdout.trim(), '1')
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('Integration resolution evidence is based on the reconciled current branch, not the stale Task base', async () => {
+  const setup = await fixture()
+  try {
+    const originalBase = setup.worktree.baseCommit
+    await writeFile(join(setup.root, 'sample.txt'), 'reviewed Task change\n', 'utf8')
+    await execute('git', ['-C', setup.root, 'add', 'sample.txt'])
+    await execute('git', [
+      '-C', setup.root,
+      '-c', 'user.name=RunGuild',
+      '-c', 'user.email=runguild@example.invalid',
+      'commit', '-m', 'old reviewed task',
+    ])
+    const oldTaskHead = (await execute('git', ['-C', setup.root, 'rev-parse', 'HEAD'])).stdout.trim()
+    await execute('git', ['-C', setup.root, 'switch', '-c', 'current-base', originalBase])
+    await writeFile(join(setup.root, 'platform.txt'), 'current platform\n', 'utf8')
+    await execute('git', ['-C', setup.root, 'add', 'platform.txt'])
+    await execute('git', [
+      '-C', setup.root,
+      '-c', 'user.name=RunGuild',
+      '-c', 'user.email=runguild@example.invalid',
+      'commit', '-m', 'advance platform',
+    ])
+    const currentBase = (await execute('git', ['-C', setup.root, 'rev-parse', 'HEAD'])).stdout.trim()
+    await execute('git', ['-C', setup.root, 'switch', 'main'])
+    await execute('git', ['-C', setup.root, 'merge', '--no-ff', '--no-commit', 'current-base'])
+    setup.setWorktree({
+      ...setup.worktree,
+      status: 'ready',
+      headCommit: oldTaskHead,
+      reconciliationBaseCommit: currentBase,
+      lastError: { code: 'worktree_integration_conflict' },
+    })
+
+    const committed = await setup.handlers.get('repo.commit').execute(
+      { message: 'Resolve Integration conflict' },
+      { request: request('repo.commit', {}, 'call_reconcile_commit') },
+    )
+    assert.equal(committed.output.committed, true)
+    assert.equal(setup.worktree.baseCommit, currentBase)
+    assert.equal(setup.worktree.reconciliationBaseCommit, undefined)
+    const parents = (await execute(
+      'git', ['-C', setup.root, 'rev-list', '--parents', '-n', '1', committed.output.commit],
+    )).stdout.trim().split(' ')
+    assert.deepEqual(parents, [committed.output.commit, oldTaskHead, currentBase])
+    const exactDiff = setup.evidence.at(-1).draft.metadata.diff
+    assert.match(exactDiff, /reviewed Task change/)
+    assert.doesNotMatch(exactDiff, /platform\.txt/)
   } finally {
     await rm(setup.root, { recursive: true, force: true })
   }

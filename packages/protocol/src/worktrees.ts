@@ -29,6 +29,8 @@ export interface TaskWorktree {
   readonly branchName: string
   readonly baseRef: string
   readonly baseCommit: string
+  /** Current base being merged into a previously reviewed Task after an Integration conflict. */
+  readonly reconciliationBaseCommit?: string
   readonly headCommit?: string
   readonly integratedCommit?: string
   readonly status: TaskWorktreeStatus

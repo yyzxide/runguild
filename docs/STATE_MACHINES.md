@@ -185,6 +185,9 @@ but cannot advance to `model_complete` or alter the Review.
 ~~~text
 provisioning -> ready -> committed -> integrating -> integrated
       |           |-----> integrated (clean baseline, no code change)
+      |           |         |      conflict -> ready (pending base merge)
+      |           |         |                    |
+      |           |         |                    +-> committed -> reviewing again
       |           |         |             |
       +-----------+---------+-------------+-> failed
 
@@ -198,6 +201,15 @@ Provision, integration, and cleanup transitions each require their current
 expiring fencing token. `committed` records the exact reviewable HEAD;
 integration accepts a clean fast-forward or a conflict-free server-owned merge
 that retains that exact HEAD as a parent. Conflicts do not change the base ref.
+Instead, the Integration Worker materializes a pending merge of the current base
+inside the isolated Task Worktree, supersedes the old approved Submission, and
+returns the Task to `ready` while attempts remain (`failed` otherwise). This
+removes a deterministically conflicting commit from the Integration queue. The
+Builder must resolve the pending merge, produce a new commit, rerun verification,
+freeze a new Artifact Version, and obtain a fresh independent Review. The
+persisted `reconciliation_base_commit` becomes the new evidence baseline only
+after `repo.commit` proves that the resolution commit contains it; platform-only
+changes are therefore not misreported as Task diff Evidence.
 A Task with a Worktree cannot complete before `integrated`, and cleanup never
 deletes a dirty Worktree. A new Run attempt for the same Task reuses the
 Worktree row's persisted `base_commit` even if its named base branch has

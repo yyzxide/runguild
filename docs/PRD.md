@@ -200,6 +200,9 @@ The first portfolio-quality release is accepted when automated tests prove:
 10. Concurrent Builder tasks receive distinct Worktrees and branches.
 11. A reviewed code Task cannot complete before its exact commit is integrated.
 12. Integration rejects dirty, divergent, or mismatched Worktrees.
+    A deterministic content conflict stops automatic Integration retry,
+    preserves the source ref, and requires a new Builder commit, exact evidence,
+    Artifact Version, and independent Review against the current base.
 13. A crash between commit and Evidence persistence is recoverable without a
     duplicate commit.
 14. Cleanup never removes an uncommitted dirty Worktree.

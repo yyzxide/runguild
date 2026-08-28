@@ -87,6 +87,15 @@ function fakeStore() {
       record = { ...record, status: 'committed', lastError: input.error }
       return record
     },
+    async markIntegrationConflict(input) {
+      record = {
+        ...record,
+        status: 'ready',
+        reconciliationBaseCommit: input.reconciliationBaseCommit,
+        lastError: input.error,
+      }
+      return { worktree: record, taskStatus: 'ready' }
+    },
     async reserveCleanup() {
       if (record.status === 'removed') return { kind: 'removed', worktree: record }
       record = { ...record, status: 'cleanup_pending' }
@@ -311,11 +320,19 @@ test('Git integration rejects conflicts without changing the current base branch
     )
     const sourceHead = await git(repositoryPath, 'rev-parse', 'HEAD')
 
-    await assert.rejects(manager.integrate({ taskId: input.taskId }), /conflicts with the current base/)
+    const conflict = await manager.integrate({ taskId: input.taskId })
+    assert.equal(conflict.kind, 'conflict')
+    assert.equal(conflict.taskStatus, 'ready')
     assert.equal(await git(repositoryPath, 'rev-parse', 'HEAD'), sourceHead)
     assert.equal(await git(repositoryPath, 'status', '--porcelain=v1'), '')
     assert.equal(await readFile(join(repositoryPath, 'README.md'), 'utf8'), 'current base change\n')
-    assert.equal(store.record.status, 'committed')
+    assert.equal(store.record.status, 'ready')
+    assert.equal(store.record.reconciliationBaseCommit, sourceHead)
+    assert.match(
+      await readFile(join(assigned.worktree.worktreePath, 'README.md'), 'utf8'),
+      /<<<<<<< HEAD[\s\S]*reviewed Task change[\s\S]*current base change[\s\S]*>>>>>>>/,
+    )
+    assert.equal(await git(assigned.worktree.worktreePath, 'rev-parse', 'MERGE_HEAD'), sourceHead)
     assert.match(store.record.lastError.message, /conflicts with the current base/)
   } finally {
     await rm(temporary, { recursive: true, force: true })

@@ -35,6 +35,7 @@ async function setup(database) {
     '0014_reviewer_execution.sql',
     '0015_worktree_setup.sql',
     '0016_submission_evidence.sql',
+    '0017_integration_conflict_recovery.sql',
   ]) {
     await database.exec(await readFile(new URL('../migrations/' + migration, import.meta.url), 'utf8'))
   }

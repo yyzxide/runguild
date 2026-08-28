@@ -29,6 +29,10 @@ The following are host or operator-state issues, not RunGuild product defects:
 There are currently **no application-code branches or weakened safety checks
 added only for this company VM**. Configurable published ports, absolute-path
 validation, and opt-in local Worker control are portable operational features.
+The Integration conflict-recovery state machine and migration
+`0017_integration_conflict_recovery.sql` were prompted by a real Mission whose
+branch had fallen behind `main`; they are portable Git correctness fixes, not VM
+workarounds.
 
 ## Local state that Git does not move
 

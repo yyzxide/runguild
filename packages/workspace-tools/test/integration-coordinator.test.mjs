@@ -24,7 +24,12 @@ function worktree(taskId) {
 
 test('Integration coordinator isolates busy/failing Tasks and completes only integrated gates', async () => {
   const completed = []
-  const candidates = [worktree('task_success'), worktree('task_busy'), worktree('task_failed')]
+  const candidates = [
+    worktree('task_success'),
+    worktree('task_busy'),
+    worktree('task_conflict'),
+    worktree('task_failed'),
+  ]
   const coordinator = new IntegrationCoordinator({
     worktrees: {
       async listApprovedPendingIntegration(limit) {
@@ -38,6 +43,13 @@ test('Integration coordinator isolates busy/failing Tasks and completes only int
     manager: {
       async integrate(input) {
         if (input.taskId === 'task_busy') return { kind: 'busy', retryAfterMs: 1_000 }
+        if (input.taskId === 'task_conflict') {
+          return {
+            kind: 'conflict',
+            worktree: { ...candidates[2], status: 'ready' },
+            taskStatus: 'ready',
+          }
+        }
         if (input.taskId === 'task_failed') throw new Error('stale base')
         return { kind: 'integrated', worktree: { ...candidates[0], status: 'integrated' } }
       },
@@ -54,10 +66,11 @@ test('Integration coordinator isolates busy/failing Tasks and completes only int
   })
   const result = await coordinator.tick({ limit: 10, leaseSeconds: 60 })
   assert.deepEqual(result, {
-    discovered: 3,
+    discovered: 4,
     integrated: 1,
     completed: 1,
     busy: 1,
+    conflicts: 1,
     failed: 1,
     gateRejected: 0,
     cleanupDiscovered: 1,

@@ -179,6 +179,17 @@ export function executionMessages(
           'create an immutable Artifact Version, commit repository changes when present, and submit that exact Version for review.',
       ]
     : ['Independent review is not required for this Task.']
+  const integrationRecovery = context.integrationRecovery === undefined
+    ? []
+    : [
+        'Integration recovery is active for this Run.',
+        'The previously approved Task commit conflicted with current base commit ' +
+          context.integrationRecovery.baseCommit + '.',
+        'The Worktree contains a pending Git merge and may contain conflict markers. Inspect repo.status and the affected files, ' +
+          'resolve every conflict while preserving both the current base and the Task intent, then run verification and call repo.commit.',
+        'The old Submission was superseded. Create and submit a new Artifact Version so the resolution receives independent Review.',
+        'Durable Integration error: ' + JSON.stringify(context.integrationRecovery.error),
+      ]
   const implementationPolicy = requiresFilePatch(context)
     ? '\n- This Task requires file_diff evidence. Runtime permits at most ' +
       String(IMPLEMENTATION_DISCOVERY_HOP_LIMIT) +
@@ -211,6 +222,7 @@ export function executionMessages(
         'Constraints: ' + JSON.stringify(context.missionConstraints),
         'Assigned task: ' + context.taskTitle,
         context.taskDescription,
+        ...integrationRecovery,
         ...artifactLines,
         ...reviewInstructions,
         'Acceptance criteria:',

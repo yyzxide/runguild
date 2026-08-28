@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type {
+  CorrelationId,
   IsoTimestamp,
   MissionId,
   ProjectId,
@@ -11,6 +12,7 @@ import type {
 } from '@runguild/protocol'
 import type { Pool } from 'pg'
 
+import { appendDomainEvent } from './events.js'
 import { canonicalJson } from './json.js'
 import { withTransaction } from './transaction.js'
 
@@ -24,6 +26,7 @@ interface WorktreeRow {
   readonly branch_name: string
   readonly base_ref: string
   readonly base_commit: string
+  readonly reconciliation_base_commit: string | null
   readonly head_commit: string | null
   readonly integrated_commit: string | null
   readonly status: TaskWorktreeStatus
@@ -42,6 +45,7 @@ interface WorktreeRow {
 const WORKTREE_COLUMNS =
   'task_id, workspace_id, mission_id, project_id, repository_path, worktree_path, ' +
   'branch_name, base_ref, base_commit, head_commit, integrated_commit, status, generation, ' +
+  'reconciliation_base_commit, ' +
   'provision_token, provision_expires_at, integration_token, integration_expires_at, ' +
   'cleanup_token, cleanup_expires_at, ' +
   'last_error, created_at, updated_at'
@@ -57,6 +61,9 @@ function asWorktree(row: WorktreeRow): TaskWorktree {
     branchName: row.branch_name,
     baseRef: row.base_ref,
     baseCommit: row.base_commit,
+    ...(row.reconciliation_base_commit === null
+      ? {}
+      : { reconciliationBaseCommit: row.reconciliation_base_commit }),
     ...(row.head_commit === null ? {} : { headCommit: row.head_commit }),
     ...(row.integrated_commit === null ? {} : { integratedCommit: row.integrated_commit }),
     status: row.status,
@@ -254,7 +261,9 @@ export class TaskWorktreeRepository {
   }): Promise<TaskWorktree> {
     if (!/^[0-9a-f]{40,64}$/.test(input.headCommit)) throw new Error('Invalid Worktree commit')
     const result = await this.pool.query<WorktreeRow>(
-      "UPDATE task_worktrees SET status = 'committed', head_commit = $2, updated_at = NOW() " +
+      "UPDATE task_worktrees SET status = 'committed', head_commit = $2, " +
+      'base_commit = COALESCE(reconciliation_base_commit, base_commit), ' +
+      'reconciliation_base_commit = NULL, last_error = NULL, updated_at = NOW() ' +
       "WHERE task_id = $1 AND status IN ('ready', 'committed') RETURNING " + WORKTREE_COLUMNS,
       [input.taskId, input.headCommit],
     )
@@ -377,6 +386,92 @@ export class TaskWorktreeRepository {
       [input.taskId, input.integrationToken, canonicalJson(input.error)],
     )
     return result.rows[0] ? asWorktree(result.rows[0]) : null
+  }
+
+  async markIntegrationConflict(input: {
+    readonly taskId: TaskId
+    readonly integrationToken: string
+    readonly reconciliationBaseCommit: string
+    readonly error: Readonly<Record<string, unknown>>
+    readonly correlationId: CorrelationId
+  }): Promise<{ readonly worktree: TaskWorktree; readonly taskStatus: 'ready' | 'failed' }> {
+    if (!/^[0-9a-f]{40,64}$/.test(input.reconciliationBaseCommit)) {
+      throw new Error('Invalid Integration reconciliation base commit')
+    }
+    return withTransaction(this.pool, async (client) => {
+      const scoped = await client.query<WorktreeRow & {
+        readonly project_id: string
+        readonly mission_status: string
+        readonly task_status: string
+        readonly attempt_count: number
+        readonly max_attempts: number
+      }>(
+        'SELECT ' + WORKTREE_COLUMNS.split(', ').map((column) => 'w.' + column).join(', ') + ', ' +
+        'm.status AS mission_status, t.status AS task_status, t.attempt_count, t.max_attempts ' +
+        'FROM task_worktrees w JOIN tasks t ON t.id = w.task_id ' +
+        'JOIN missions m ON m.id = w.mission_id ' +
+        'WHERE w.task_id = $1 FOR UPDATE OF w, t',
+        [input.taskId],
+      )
+      const row = scoped.rows[0]
+      if (!row || row.status !== 'integrating' || row.integration_token !== input.integrationToken) {
+        throw new Error('Task Worktree integration token is stale')
+      }
+      if (!['running', 'reviewing'].includes(row.mission_status) || row.task_status !== 'reviewing') {
+        throw new Error('Task is not awaiting an approved Integration')
+      }
+      const gate = await client.query<{ readonly id: string }>(
+        'SELECT s.id FROM task_submissions s JOIN reviews r ON r.submission_id = s.id ' +
+        "WHERE s.task_id = $1 AND s.status = 'approved' AND r.status = 'approved' " +
+        'FOR UPDATE OF s, r',
+        [input.taskId],
+      )
+      const submission = gate.rows[0]
+      if (!submission) throw new Error('Approved Integration gate disappeared')
+
+      const taskStatus = row.attempt_count < row.max_attempts ? 'ready' : 'failed'
+      await client.query(
+        "UPDATE task_submissions SET status = 'superseded', updated_at = NOW() " +
+        "WHERE id = $1 AND status = 'approved'",
+        [submission.id],
+      )
+      await client.query(
+        'UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1 AND status = $3',
+        [input.taskId, taskStatus, 'reviewing'],
+      )
+      const updated = await client.query<WorktreeRow>(
+        "UPDATE task_worktrees SET status = 'ready', reconciliation_base_commit = $3, " +
+        'integration_token = NULL, integration_expires_at = NULL, last_error = $4::jsonb, ' +
+        'updated_at = NOW() WHERE task_id = $1 AND status = $5 AND integration_token = $2 ' +
+        'RETURNING ' + WORKTREE_COLUMNS,
+        [
+          input.taskId,
+          input.integrationToken,
+          input.reconciliationBaseCommit,
+          canonicalJson(input.error),
+          'integrating',
+        ],
+      )
+      const worktree = updated.rows[0]
+      if (!worktree) throw new Error('Task Worktree Integration conflict transition was not persisted')
+      await appendDomainEvent(client, {
+        type: 'task.status_changed',
+        workspaceId: row.workspace_id as WorkspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: row.mission_id as MissionId,
+        actor: { kind: 'system', id: 'git-integration-gate' },
+        correlationId: input.correlationId,
+        payload: {
+          taskId: input.taskId,
+          from: 'reviewing',
+          to: taskStatus,
+          reason: taskStatus === 'ready'
+            ? 'Integration conflict requires a new Builder commit and independent Review'
+            : 'Integration conflict requires human retry because the Task attempt budget is exhausted',
+        },
+      })
+      return { worktree: asWorktree(worktree), taskStatus }
+    })
   }
 
   async listCompletedPendingCleanup(limit: number): Promise<readonly TaskWorktree[]> {

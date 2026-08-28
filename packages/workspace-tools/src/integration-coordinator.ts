@@ -26,6 +26,7 @@ export interface IntegrationTickResult {
   readonly integrated: number
   readonly completed: number
   readonly busy: number
+  readonly conflicts: number
   readonly failed: number
   readonly gateRejected: number
   readonly cleanupDiscovered: number
@@ -45,6 +46,7 @@ export class IntegrationCoordinator {
     let integrated = 0
     let completed = 0
     let busy = 0
+    let conflicts = 0
     let failed = 0
     let gateRejected = 0
     for (const worktree of candidates) {
@@ -55,6 +57,10 @@ export class IntegrationCoordinator {
         })
         if (result.kind === 'busy') {
           busy += 1
+          continue
+        }
+        if (result.kind === 'conflict') {
+          conflicts += 1
           continue
         }
         integrated += 1
@@ -92,6 +98,7 @@ export class IntegrationCoordinator {
       integrated,
       completed,
       busy,
+      conflicts,
       failed,
       gateRejected,
       cleanupDiscovered: cleanupCandidates.length,
