@@ -50,11 +50,3 @@ export const experiments = [
   { repetition: '配对 03', single: { success: true, cost: 1.96, time: 35 }, multi: { success: true, cost: 1.58, time: 25 } },
 ] as const
 
-export const traceEvents = [
-  { time: '09:44:32.018', duration: '82毫秒', type: '运行', title: 'Run 已领取', detail: '已消费调度令牌；任务租约有效期 60 秒。', state: 'verified' },
-  { time: '09:44:32.100', duration: '11毫秒', type: '上下文', title: '执行上下文已冻结', detail: 'Mission、任务、模型策略、验收条件和 2 个 Skill 版本已哈希。', state: 'verified' },
-  { time: '09:44:32.111', duration: '4.8秒', type: '模型', title: '第 01 次模型调用', detail: '12,440 输入 · 612 输出 · response rsp_6ab…91f', state: 'verified' },
-  { time: '09:44:36.911', duration: '184毫秒', type: '工具', title: 'repo.search', detail: '幂等键已保留；返回 14 个范围内匹配。', state: 'verified' },
-  { time: '09:53:11.442', duration: '2.1秒', type: '工具', title: 'file.patch', detail: '在分配的工作树中修改 7 个文件；精确 diff 哈希已持久化。', state: 'verified' },
-  { time: '09:57:11.209', duration: '执行中', type: '模型', title: '第 08 次模型调用', detail: '等待 test.run 结果；任务租约已续期。', state: 'active' },
-] as const

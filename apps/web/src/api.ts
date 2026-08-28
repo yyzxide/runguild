@@ -110,6 +110,78 @@ export interface ProjectOperatorOverview {
   }[]
 }
 
+export interface RunTraceSummary {
+  readonly runId: string
+  readonly status: string
+  readonly attempt: number
+  readonly currentHop: number
+  readonly maxHops: number
+  readonly startedAt: string | null
+  readonly finishedAt: string | null
+  readonly createdAt: string
+  readonly agent: { readonly id: string; readonly name: string; readonly role: string | null }
+  readonly task: { readonly id: string; readonly title: string; readonly role: string | null }
+  readonly mission: { readonly id: string; readonly title: string }
+}
+
+export interface RunTraceEventSummary {
+  readonly seq: number
+  readonly id: string
+  readonly runId: string
+  readonly hop: number
+  readonly kind: string
+  readonly data: Readonly<Record<string, unknown>>
+  readonly createdAt: string
+}
+
+export interface RunTraceLlmCallSummary {
+  readonly id: string
+  readonly runId: string
+  readonly hop: number
+  readonly provider: string
+  readonly model: string
+  readonly status: string
+  readonly inputTokens: number | null
+  readonly outputTokens: number | null
+  readonly cachedInputTokens: number | null
+  readonly estimatedCostUsd: number | null
+  readonly latencyMs: number | null
+  readonly errorCode: string | null
+  readonly startedAt: string
+  readonly finishedAt: string | null
+}
+
+export interface RunTraceToolExecutionSummary {
+  readonly id: string
+  readonly runId: string
+  readonly action: string
+  readonly status: string
+  readonly effectState: string | null
+  readonly errorCode: string | null
+  readonly startedAt: string | null
+  readonly finishedAt: string | null
+}
+
+export interface RunTraceContextSummary {
+  readonly modelProvider: string | null
+  readonly modelName: string | null
+  readonly taskTitle: string
+  readonly missionTitle: string
+  readonly tokenBudget: number | null
+  readonly estimatedTokens: number | null
+  readonly compacted: boolean | null
+}
+
+export interface RunTraceDetail extends RunTraceSummary {
+  readonly modelProvider: string | null
+  readonly modelName: string | null
+  readonly contextSummary: RunTraceContextSummary
+  readonly completionSummary: string | null
+  readonly events: readonly RunTraceEventSummary[]
+  readonly llmCalls: readonly RunTraceLlmCallSummary[]
+  readonly toolExecutions: readonly RunTraceToolExecutionSummary[]
+}
+
 export type WorkerKind = 'scheduler' | 'agent' | 'integration' | 'evaluation'
 
 export interface ProjectRuntimeConfiguration {
@@ -291,6 +363,21 @@ export const missionApi = {
   getOperatorOverview(identity: TestIdentity): Promise<ProjectOperatorOverview> {
     return request(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/operator-overview`,
+      { headers: actorHeaders(identity.userId) },
+    )
+  },
+
+  async listRunTraces(identity: TestIdentity): Promise<readonly RunTraceSummary[]> {
+    const result = await request<{ readonly runs: readonly RunTraceSummary[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces`,
+      { headers: actorHeaders(identity.userId) },
+    )
+    return result.runs
+  },
+
+  getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces/${encodeURIComponent(runId)}`,
       { headers: actorHeaders(identity.userId) },
     )
   },

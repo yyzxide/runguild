@@ -148,8 +148,10 @@ The control-plane foundation is executable:
   Mission can move from `reviewing` to `completed`;
 - a real Team Room with message selection and Planner-to-Mission progress,
   explicit Agent recipient selection and delivery routing, plus a live Mission
-  dependency cockpit; Artifact, Evaluation, and Trace surfaces remain secondary
-  prototypes until their query APIs replace the current sample projections;
+  dependency cockpit; the Trace surface now reads the real project-scoped Run
+  Trace query API with redacted/摘要 data; Artifact and Evaluation surfaces
+  remain secondary prototypes until their query APIs replace the sample
+  projections;
 - PostgreSQL/PGlite migration and orchestration tests.
 
 The local suite covers protocol, migrations, Conversation routing, Mission

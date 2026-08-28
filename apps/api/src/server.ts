@@ -8,6 +8,7 @@ import {
   EvaluationRepository,
   ReviewRepository,
   RuntimeRepository,
+  RunTraceRepository,
   SkillRepository,
   TaskRepository,
   ToolExecutionRepository,
@@ -71,6 +72,7 @@ const app = createApiApp({
   reviews: new ReviewRepository(pool),
   skills: new SkillRepository(pool),
   evaluations: new EvaluationRepository(pool),
+  runTraces: new RunTraceRepository(pool),
   ...(developmentSetup ? { developmentSetup } : {}),
   ...(localRuntimeControl ? { localRuntimeControl } : {}),
   healthcheck: async () => {

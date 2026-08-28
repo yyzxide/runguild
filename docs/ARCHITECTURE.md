@@ -194,6 +194,7 @@ nudge and consumes another bounded hop.
 | Presence and carets | None | Awareness and Redis |
 | Tool side effects | PostgreSQL tool execution record plus target system | Event stream |
 | Run trace and cost | PostgreSQL | In-memory telemetry buffer |
+| Project-scoped redacted Run Trace query | PostgreSQL agent_runs/events/LLM/tool ledgers | Web Trace projection |
 | Evaluation Scenario, Trial, and report inputs | PostgreSQL immutable Scenario Version plus Run ledgers | Report projection |
 
 ## 5. Mission execution flow

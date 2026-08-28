@@ -52,6 +52,7 @@ import {
   type EvaluationRepository,
   type RuntimeRepository,
   type ReviewRepository,
+  type RunTraceRepository,
   type SkillRepository,
   type TaskRepository,
   type ToolExecutionRepository,
@@ -88,6 +89,7 @@ type EvaluationService = Pick<
   EvaluationRepository,
   'createExperiment' | 'createScenario' | 'createScenarioVersion' | 'getExperiment'
 >
+type RunTraceService = Pick<RunTraceRepository, 'listRecentRuns' | 'getRun'>
 type ArtifactService = Pick<
   ArtifactRepository,
   'authorizeActor' | 'create' | 'appendUpdate' | 'syncState' | 'createVersion' | 'readVersion'
@@ -107,6 +109,7 @@ export interface ApiDependencies {
   readonly reviews: ReviewService
   readonly skills: SkillService
   readonly evaluations: EvaluationService
+  readonly runTraces: RunTraceService
   readonly developmentSetup?: DevelopmentSetupService
   readonly localRuntimeControl?: LocalRuntimeControl
   readonly healthcheck?: () => Promise<void>
@@ -469,6 +472,41 @@ export function createApiApp(dependencies: ApiDependencies) {
         workers: [],
       },
     })
+  }))
+
+  app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/run-traces', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_run_trace_required' } })
+      return
+    }
+    const limit = z.coerce.number().int().min(1).max(100).default(20).parse(req.query.limit ?? 20)
+    const runs = await dependencies.runTraces.listRecentRuns({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      projectId: idSchema.parse(req.params.projectId) as ProjectId,
+      actorId: actorRef.id,
+    }, limit)
+    res.json({ runs })
+  }))
+
+  app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/run-traces/:runId', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_run_trace_required' } })
+      return
+    }
+    const run = await dependencies.runTraces.getRun({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      projectId: idSchema.parse(req.params.projectId) as ProjectId,
+      actorId: actorRef.id,
+    }, idSchema.parse(req.params.runId) as RunId)
+    if (!run) {
+      res.status(404).json({ error: { code: 'run_not_found_or_forbidden' } })
+      return
+    }
+    res.json({ run })
   }))
 
   app.put('/api/v1/workspaces/:workspaceId/projects/:projectId/runtime-config', route(async (req, res) => {

@@ -153,6 +153,52 @@ function fakeProjectRuntimeConfigs() {
   }
 }
 
+function fakeRunTraces() {
+  const calls = []
+  const run = {
+    runId: 'run_trace_1', status: 'completed', attempt: 1, currentHop: 3, maxHops: 5,
+    startedAt: '2030-01-01T00:00:00.000Z', finishedAt: '2030-01-01T00:10:00.000Z',
+    createdAt: '2030-01-01T00:00:00.000Z',
+    agent: { id: 'builder_api', name: '构建 Agent', role: 'builder' },
+    task: { id: 'task_build', title: 'Build', role: 'builder' },
+    mission: { id: 'mission_created', title: 'Mission' },
+    modelProvider: 'openai', modelName: 'gpt-test',
+    contextSummary: {
+      modelProvider: 'openai', modelName: 'gpt-test',
+      taskTitle: 'Build', missionTitle: 'Mission',
+    },
+    completionSummary: 'Build completed',
+    events: [{
+      seq: 1, id: 'event_1', runId: 'run_trace_1', hop: 1, kind: 'observation',
+      data: { note: 'plan' }, createdAt: '2030-01-01T00:00:01.000Z',
+    }],
+    llmCalls: [{
+      id: 'llm_1', runId: 'run_trace_1', hop: 1, provider: 'openai', model: 'gpt-test',
+      status: 'completed', inputTokens: 1000, outputTokens: 500, cachedInputTokens: 0,
+      estimatedCostUsd: 0.01, latencyMs: 1200, errorCode: null,
+      startedAt: '2030-01-01T00:00:00.000Z', finishedAt: '2030-01-01T00:00:01.000Z',
+    }],
+    toolExecutions: [{
+      id: 'tool_1', runId: 'run_trace_1', action: 'file.read', status: 'success',
+      effectState: 'none', errorCode: null,
+      startedAt: '2030-01-01T00:00:01.000Z', finishedAt: '2030-01-01T00:00:02.000Z',
+    }],
+  }
+  return {
+    calls,
+    service: {
+      async listRecentRuns(scope, limit) {
+        calls.push(['list', scope, limit])
+        return [run]
+      },
+      async getRun(scope, runId) {
+        calls.push(['get', scope, runId])
+        return runId === 'run_trace_missing' ? null : run
+      },
+    },
+  }
+}
+
 function fakeLocalRuntimeControl() {
   const calls = []
   return {
@@ -493,10 +539,12 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   const development = fakeDevelopmentSetup()
   const conversations = fakeConversations()
   const conversationPlanning = fakeConversationPlanning()
+  const runTraces = fakeRunTraces()
   const app = createApiApp({
     missions: fake.service,
     projectOperator: projectOperator.service,
     projectRuntimeConfigs: projectRuntimeConfigs.service,
+    runTraces: runTraces.service,
     conversations: conversations.service,
     conversationPlanning: conversationPlanning.service,
     runControls: runtime.runControls,
@@ -532,6 +580,36 @@ test('mission API enforces actor identity and exposes command flow', async () =>
       headers: { 'x-actor-id': 'planner_api', 'x-actor-kind': 'agent' },
     })
     assert.equal(agentOverview.status, 403)
+
+    const runTracesList = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/run-traces', {
+      headers: { 'x-actor-id': 'user_api' },
+    })
+    assert.equal(runTracesList.status, 200)
+    const runTracesBody = await runTracesList.json()
+    assert.equal(runTracesBody.runs[0].runId, 'run_trace_1')
+    assert.deepEqual(runTraces.calls[0], ['list', {
+      workspaceId: 'ws', projectId: 'project_api', actorId: 'user_api',
+    }, 20])
+
+    const runTraceDetail = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/run-traces/run_trace_1', {
+      headers: { 'x-actor-id': 'user_api' },
+    })
+    assert.equal(runTraceDetail.status, 200)
+    const runTraceBody = await runTraceDetail.json()
+    assert.equal(runTraceBody.run.events[0].seq, 1)
+    assert.deepEqual(runTraces.calls[1], ['get', {
+      workspaceId: 'ws', projectId: 'project_api', actorId: 'user_api',
+    }, 'run_trace_1'])
+
+    const runTraceMissing = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/run-traces/run_trace_missing', {
+      headers: { 'x-actor-id': 'user_api' },
+    })
+    assert.equal(runTraceMissing.status, 404)
+
+    const agentRunTraces = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/run-traces', {
+      headers: { 'x-actor-id': 'planner_api', 'x-actor-kind': 'agent' },
+    })
+    assert.equal(agentRunTraces.status, 403)
 
     const runtimeConfig = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/runtime-config', {
       headers: { 'x-actor-id': 'user_api' },
