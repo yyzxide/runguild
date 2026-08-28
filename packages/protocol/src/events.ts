@@ -113,6 +113,13 @@ export interface DomainEventPayloads {
     readonly to: ReviewStatus
     readonly evidence: readonly EvidenceRef[]
   }
+  'review.execution_retried': {
+    readonly reviewId: ReviewId
+    readonly from: 'failed'
+    readonly to: 'queued' | 'model_complete'
+    readonly reason: string
+    readonly maxAttempts: number
+  }
 }
 
 export type DomainEventType = keyof DomainEventPayloads

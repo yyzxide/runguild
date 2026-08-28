@@ -344,6 +344,103 @@ test('evidence-only retry freezes exact commit and clean tested-HEAD evidence fr
   }
 })
 
+test('human retry requeues only an exhausted Reviewer execution and preserves its frozen snapshot', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const pool = poolAdapter(database)
+    const reviews = new ReviewRepository(pool)
+    const executions = new ReviewerExecutionRepository(pool)
+    await database.exec(
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) " +
+      "VALUES ('conversation_retry_review', 'ws_review', 'project_review', 'mission_room', 'Retry room');" +
+      "INSERT INTO conversation_members (workspace_id, conversation_id, participant_kind, participant_id) VALUES " +
+      "('ws_review', 'conversation_retry_review', 'agent', 'agent_builder'), " +
+      "('ws_review', 'conversation_retry_review', 'agent', 'agent_reviewer');" +
+      "UPDATE missions SET conversation_id = 'conversation_retry_review' WHERE id = 'mission_review';",
+    )
+    const submission = await submit(reviews)
+    const selected = await database.query(
+      "SELECT id FROM reviews WHERE submission_id = 'submission_review'",
+    )
+    const reviewId = selected.rows[0].id
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const claimed = await executions.claim({
+        reviewId,
+        reviewerAgentId: 'agent_reviewer',
+        leaseSeconds: 60,
+      })
+      assert.equal(claimed.kind, 'work')
+      assert.equal(claimed.work.attempt, attempt)
+      assert.equal((await executions.fail({
+        reviewId,
+        reviewerAgentId: 'agent_reviewer',
+        leaseToken: claimed.work.leaseToken,
+        message: 'model input projection failed',
+      })).retryable, attempt < 3)
+    }
+    const failed = await database.query(
+      'SELECT status, attempt, max_attempts, materials_snapshot FROM review_executions WHERE review_id = $1',
+      [reviewId],
+    )
+    assert.equal(failed.rows[0].status, 'failed')
+    const frozenSnapshot = JSON.stringify(failed.rows[0].materials_snapshot)
+
+    assert.deepEqual(await executions.retryFailed({
+      workspaceId: 'ws_review',
+      reviewId,
+      requestedBy: 'user_other',
+      reason: 'Foreign user must not reopen this execution.',
+      correlationId: 'correlation_foreign_retry',
+    }), { retried: false, reason: 'not_found_or_forbidden' })
+
+    assert.deepEqual(await executions.retryFailed({
+      workspaceId: 'ws_review',
+      reviewId,
+      requestedBy: 'user_reviewer',
+      reason: 'Deploy bounded duplicate-Evidence projection and retry once.',
+      correlationId: 'correlation_review_retry',
+    }), { retried: true, maxAttempts: 4 })
+    const requeued = await database.query(
+      'SELECT status, attempt, max_attempts, error, finished_at, materials_snapshot ' +
+      'FROM review_executions WHERE review_id = $1',
+      [reviewId],
+    )
+    assert.equal(requeued.rows[0].status, 'queued')
+    assert.equal(requeued.rows[0].attempt, 3)
+    assert.equal(requeued.rows[0].max_attempts, 4)
+    assert.equal(requeued.rows[0].error, null)
+    assert.equal(requeued.rows[0].finished_at, null)
+    assert.equal(JSON.stringify(requeued.rows[0].materials_snapshot), frozenSnapshot)
+    assert.equal((await database.query(
+      "SELECT COUNT(*)::int AS count FROM inbox_messages WHERE dedupe_key LIKE 'artifact-review-retry:%'",
+    )).rows[0].count, 1)
+    assert.equal((await database.query(
+      "SELECT COUNT(*)::int AS count FROM domain_events WHERE event_type = 'review.execution_retried'",
+    )).rows[0].count, 1)
+
+    const resumed = await executions.claim({
+      reviewId,
+      reviewerAgentId: 'agent_reviewer',
+      leaseSeconds: 60,
+    })
+    assert.equal(resumed.kind, 'work')
+    assert.equal(resumed.work.attempt, 4)
+    assert.equal(JSON.stringify(resumed.work.materials), frozenSnapshot)
+    assert.deepEqual(await executions.retryFailed({
+      workspaceId: 'ws_review',
+      reviewId,
+      requestedBy: 'user_reviewer',
+      reason: 'An active execution cannot be reopened.',
+      correlationId: 'correlation_active_retry',
+    }), { retried: false, reason: 'execution_not_failed' })
+    assert.equal(submission.status, 'in_review')
+  } finally {
+    await database.close()
+  }
+})
+
 test('Mission-room Reviewer receives durable work, defers until Task review, and resumes a stored model decision', async () => {
   const database = new PGlite()
   try {

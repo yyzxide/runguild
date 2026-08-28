@@ -329,7 +329,10 @@ groups identical `(kind, uri, content_hash)` payloads, emits their common metada
 once, and retains all equivalent Evidence ids, producer Runs, attempts, timestamps,
 and metadata deltas. This prevents acceptance-criterion and retry projections from
 multiplying the same diff without weakening the audit trail or raising the input
-safety limit. A crash after decision persistence resumes
+safety limit. Once the automatic retry budget is exhausted, only a Workspace
+human can add one bounded attempt through the Reviewer retry API. That transaction
+preserves the frozen snapshot and attempt history, records a domain event, and
+creates a new durable Inbox wake; it cannot reopen a completed Review. A crash after decision persistence resumes
 database finalization without another model call. Approval reuses the Task
 completion gate and dependency unlock transaction; `changes_requested` returns
 the Task to `ready`, while a terminal rejection fails it.

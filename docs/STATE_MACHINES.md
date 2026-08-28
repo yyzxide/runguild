@@ -172,6 +172,11 @@ id/Run plus metadata delta, so repeated acceptance-criterion bindings cannot
 exhaust the prompt safety budget while a genuinely oversized unique payload still
 requires human review.
 
+A human retry may move only `failed -> queued` (or `failed -> model_complete`
+when a decision was already persisted), adds exactly one bounded attempt, keeps
+the frozen material snapshot, and writes a fresh Inbox/outbox wake plus audit
+event. It cannot reopen terminal Review decisions or a Task outside `reviewing`.
+
 ## Task Worktree
 
 ~~~text

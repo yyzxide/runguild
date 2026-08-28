@@ -12,8 +12,10 @@ import type {
   ReviewId,
   TaskId,
   TaskSubmissionId,
+  UserId,
   WorkspaceId,
 } from '@runguild/protocol'
+import { EVENT_TOPICS } from '@runguild/protocol'
 import type { Pool, PoolClient } from 'pg'
 
 import { canonicalJson } from './json.js'
@@ -127,6 +129,14 @@ export type ClaimReviewerExecutionResult =
   | { readonly kind: 'not_ready'; readonly taskStatus: string }
   | { readonly kind: 'terminal'; readonly status: ExecutionRow['status'] }
 
+export type RetryFailedReviewerExecutionResult =
+  | { readonly retried: true; readonly maxAttempts: number }
+  | {
+      readonly retried: false
+      readonly reason: 'not_found_or_forbidden' | 'execution_not_failed' | 'review_not_pending'
+        | 'mission_not_running' | 'task_not_reviewing' | 'reviewer_inactive' | 'retry_limit'
+    }
+
 export interface CompleteReviewerModelInput {
   readonly reviewId: ReviewId
   readonly reviewerAgentId: AgentId
@@ -169,6 +179,122 @@ function validateDecision(decision: ReviewerDecision): void {
 
 export class ReviewerExecutionRepository {
   constructor(private readonly pool: Pool) {}
+
+  async retryFailed(input: {
+    readonly workspaceId: WorkspaceId
+    readonly reviewId: ReviewId
+    readonly requestedBy: UserId
+    readonly reason: string
+    readonly correlationId: CorrelationId
+  }): Promise<RetryFailedReviewerExecutionResult> {
+    const reason = input.reason.trim()
+    if (!reason || reason.length > 2_000) {
+      throw new Error('Reviewer retry reason must be between 1 and 2000 characters')
+    }
+    return withTransaction(this.pool, async (client) => {
+      const found = await client.query<{
+        readonly execution_status: ExecutionRow['status']
+        readonly review_status: ArtifactReview['status']
+        readonly mission_status: string
+        readonly task_status: string
+        readonly reviewer_status: string
+        readonly project_id: string
+        readonly mission_id: string
+        readonly task_id: string
+        readonly submission_id: string
+        readonly reviewer_agent_id: string
+        readonly decision: ReviewerDecision | null
+        readonly max_attempts: number
+      }>(
+        'SELECT execution.status AS execution_status, review.status AS review_status, ' +
+        'mission.status AS mission_status, task.status AS task_status, agent.status AS reviewer_status, ' +
+        'mission.project_id, execution.mission_id, execution.task_id, execution.submission_id, ' +
+        'execution.reviewer_agent_id, execution.decision, execution.max_attempts ' +
+        'FROM review_executions execution ' +
+        'JOIN reviews review ON review.id = execution.review_id ' +
+        'JOIN missions mission ON mission.id = execution.mission_id ' +
+        'JOIN tasks task ON task.id = execution.task_id ' +
+        'JOIN agents agent ON agent.id = execution.reviewer_agent_id AND agent.workspace_id = execution.workspace_id ' +
+        'JOIN users requester ON requester.id = $3 AND requester.workspace_id = execution.workspace_id ' +
+        'WHERE execution.review_id = $1 AND execution.workspace_id = $2 FOR UPDATE OF execution',
+        [input.reviewId, input.workspaceId, input.requestedBy],
+      )
+      const row = found.rows[0]
+      if (!row) return { retried: false, reason: 'not_found_or_forbidden' }
+      if (row.execution_status !== 'failed') return { retried: false, reason: 'execution_not_failed' }
+      if (!['requested', 'in_progress'].includes(row.review_status)) {
+        return { retried: false, reason: 'review_not_pending' }
+      }
+      if (row.mission_status !== 'running') return { retried: false, reason: 'mission_not_running' }
+      if (row.task_status !== 'reviewing') return { retried: false, reason: 'task_not_reviewing' }
+      if (row.reviewer_status !== 'active') return { retried: false, reason: 'reviewer_inactive' }
+      if (row.max_attempts >= 10) return { retried: false, reason: 'retry_limit' }
+
+      const maxAttempts = row.max_attempts + 1
+      const status = row.decision === null ? 'queued' : 'model_complete'
+      await client.query(
+        'UPDATE review_executions SET status = $2, max_attempts = $3, lease_token = NULL, ' +
+        'lease_expires_at = NULL, error = NULL, finished_at = NULL, updated_at = NOW() WHERE review_id = $1',
+        [input.reviewId, status, maxAttempts],
+      )
+      await client.query(
+        "UPDATE reviews SET summary = '' WHERE id = $1 AND status IN ('requested', 'in_progress')",
+        [input.reviewId],
+      )
+
+      const inboxPayload = {
+        schemaVersion: 1,
+        type: 'artifact.review_requested',
+        reviewId: input.reviewId,
+        submissionId: row.submission_id as TaskSubmissionId,
+        missionId: row.mission_id as MissionId,
+        taskId: row.task_id as TaskId,
+      }
+      const payloadJson = canonicalJson(inboxPayload)
+      const payloadHash = createHash('sha256').update(payloadJson).digest('hex')
+      await client.query(
+        'INSERT INTO inbox_messages ' +
+        '(id, workspace_id, agent_id, mission_id, kind, payload, payload_hash, dedupe_key) ' +
+        "VALUES ($1, $2, $3, $4, 'artifact.review_requested', $5::jsonb, $6, $7)",
+        [
+          'inbox_' + randomUUID(),
+          input.workspaceId,
+          row.reviewer_agent_id,
+          row.mission_id,
+          payloadJson,
+          payloadHash,
+          'artifact-review-retry:' + input.reviewId + ':' + maxAttempts,
+        ],
+      )
+      await client.query(
+        'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
+        [
+          'wake_' + randomUUID(),
+          EVENT_TOPICS.agentWake,
+          row.reviewer_agent_id,
+          canonicalJson({
+            schemaVersion: 1,
+            type: 'agent.wake',
+            workspaceId: input.workspaceId,
+            missionId: row.mission_id,
+            agentId: row.reviewer_agent_id,
+            reason: 'artifact.review_retried',
+            reviewId: input.reviewId,
+          }),
+        ],
+      )
+      await appendDomainEvent(client, {
+        type: 'review.execution_retried',
+        workspaceId: input.workspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: row.mission_id as MissionId,
+        actor: { kind: 'user', id: input.requestedBy },
+        correlationId: input.correlationId,
+        payload: { reviewId: input.reviewId, from: 'failed', to: status, reason, maxAttempts },
+      })
+      return { retried: true, maxAttempts }
+    })
+  }
 
   async claim(input: {
     readonly reviewId: ReviewId

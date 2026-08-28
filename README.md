@@ -191,6 +191,7 @@ packages/
 - [Architecture](docs/ARCHITECTURE.md)
 - [State machines](docs/STATE_MACHINES.md)
 - [Protocol contract](docs/PROTOCOL.md)
+- [Environment and machine migration](docs/ENVIRONMENT.md)
 
 ## Local checks
 
@@ -351,6 +352,7 @@ GET  /api/v1/workspaces/:workspaceId/conversation-planning-requests/:requestId
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan/approve
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/delivery/approve
+POST /api/v1/workspaces/:workspaceId/reviews/:reviewId/retry
 GET  /api/v1/workspaces/:workspaceId/missions/:missionId
 POST /api/v1/workspaces/:workspaceId/runs/:runId/controls
 POST /api/v1/workspaces/:workspaceId/tool-approvals/:approvalId/resolve
