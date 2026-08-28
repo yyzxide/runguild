@@ -65,6 +65,7 @@ test('Artifact Reviewer persists one model decision before recording the indepen
           calls.push(['model.called', request.tools[0].action])
           assert.equal(request.toolChoice, 'required')
           assert.equal(request.parallelToolCalls, false)
+          assert.equal(request.reasoningEffort, 'none')
           return {
             content: '', finishReason: 'tool_calls',
             toolCalls: [{ id: 'call_1', action: 'review.submit_decision', input: decision }],

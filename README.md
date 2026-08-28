@@ -117,7 +117,9 @@ The control-plane foundation is executable:
   every selected Evidence id, while the bounded model projection emits repeated
   content-addressed payloads once and retains every equivalent id and producer;
   Planner/Reviewer control-plane calls require one non-parallel structured Tool
-  Call, invalid Reviewer responses persist their text, Tool Calls, usage, and
+  Call and explicitly disable reasoning for compatible endpoints whose Thinking
+  mode rejects required tool choice; execution Agents still inherit their
+  configured reasoning effort. Invalid Reviewer responses persist text, Tool Calls, usage, and
   provider request id for diagnosis, and a persisted valid decision resumes
   without a second model call after a process crash;
 - deterministic per-Task Git Worktree provisioning with database fencing,

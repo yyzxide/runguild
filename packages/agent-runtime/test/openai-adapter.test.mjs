@@ -91,9 +91,11 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
   })
 })
 
-test('OpenAI adapter can require one-at-a-time structured tool output for control-plane calls', async () => {
+test('OpenAI adapter can require non-thinking one-at-a-time structured control-plane output', async () => {
   const fake = fakeClient([response({ id: 'resp_required' })])
-  const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '', model: 'model-test', client: fake.client, reasoningEffort: 'medium',
+  })
 
   await adapter.complete({
     messages: [{ role: 'user', content: 'Return a structured decision.' }],
@@ -104,10 +106,12 @@ test('OpenAI adapter can require one-at-a-time structured tool output for contro
     }],
     toolChoice: 'required',
     parallelToolCalls: false,
+    reasoningEffort: 'none',
   })
 
   assert.equal(fake.requests[0].body.tool_choice, 'required')
   assert.equal(fake.requests[0].body.parallel_tool_calls, false)
+  assert.deepEqual(fake.requests[0].body.reasoning, { effort: 'none' })
 })
 
 test('OpenAI continuation sends only post-response tool outputs and repeats instructions', async () => {

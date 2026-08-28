@@ -37,6 +37,7 @@ export interface ModelRequest {
   readonly tools: readonly ModelToolDefinition[]
   readonly toolChoice?: 'auto' | 'required'
   readonly parallelToolCalls?: boolean
+  readonly reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh'
   readonly context?: ModelContextMetadata
   readonly abortSignal?: AbortSignal
   readonly continuation?: ModelContinuation

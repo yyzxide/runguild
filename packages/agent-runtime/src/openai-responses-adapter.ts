@@ -240,6 +240,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
       && continuation?.provider === this.provider
       && continuation.model === this.model
     const instructions = systemInstructions(request.messages)
+    const reasoningEffort = request.reasoningEffort ?? this.options.reasoningEffort
     const body: ResponseCreateParamsNonStreaming = {
       model: this.model,
       input: toResponseInput(request, useContinuation),
@@ -258,9 +259,9 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
       ...(this.options.maxOutputTokens === undefined
         ? {}
         : { max_output_tokens: this.options.maxOutputTokens }),
-      ...(this.options.reasoningEffort === undefined
+      ...(reasoningEffort === undefined
         ? {}
-        : { reasoning: { effort: this.options.reasoningEffort } }),
+        : { reasoning: { effort: reasoningEffort } }),
     }
     const response = await this.client.responses.create(
       body,

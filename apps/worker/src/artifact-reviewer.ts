@@ -231,6 +231,7 @@ export class ArtifactReviewer {
           tools: [REVIEW_DECISION_TOOL_DEFINITION],
           toolChoice: 'required',
           parallelToolCalls: false,
+          reasoningEffort: 'none',
           abortSignal: abortController.signal,
         })
         const latencyMs = Math.max(0, Date.now() - startedAt)
