@@ -40,7 +40,11 @@ import {
   createWorkspaceToolHandlers,
 } from '@runguild/workspace-tools'
 
-import { AgentInboxProcessor } from './agent-loop.js'
+import {
+  AgentInboxProcessor,
+  IMPLEMENTATION_DISCOVERY_HOP_LIMIT,
+  requiresFilePatch,
+} from './agent-loop.js'
 import { ArtifactReviewer } from './artifact-reviewer.js'
 import { ConversationPlanner } from './conversation-planner.js'
 import { startWorkerHeartbeat } from './worker-heartbeat.js'
@@ -269,6 +273,15 @@ async function createRuntime(
       ...ARTIFACT_TOOL_DEFINITIONS,
       ...CONVERSATION_TOOL_DEFINITIONS,
     ],
+    ...(requiresFilePatch(context)
+      ? {
+          implementationGate: {
+            maxDiscoveryHops: IMPLEMENTATION_DISCOVERY_HOP_LIMIT,
+            discoveryActions: ['repo.status', 'repo.search', 'repo.diff', 'file.read'],
+            implementationActions: ['file.patch'],
+          },
+        }
+      : {}),
   })
 }
 
@@ -293,6 +306,7 @@ const processor = new AgentInboxProcessor({
   tasks,
   contexts,
   createRuntime,
+  allowedTestCommands,
   planner,
   reviewer,
 }, {
@@ -319,6 +333,7 @@ const heartbeat = await startWorkerHeartbeat({
 })
 const stop = () => {
   stopping = true
+  workerAbortController.abort(new Error('Agent Worker received a shutdown signal'))
 }
 process.once('SIGINT', stop)
 process.once('SIGTERM', stop)

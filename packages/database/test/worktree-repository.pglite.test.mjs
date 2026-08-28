@@ -16,6 +16,7 @@ const migrationUrls = [
   new URL('../migrations/0007_worktrees.sql', import.meta.url),
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -38,12 +39,36 @@ async function setup(database) {
     "INSERT INTO workspaces (id, name) VALUES ('ws_tree', 'Worktrees');" +
     "INSERT INTO projects (id, workspace_id, name) VALUES " +
     "('project_tree', 'ws_tree', 'Project'), ('project_other', 'ws_tree', 'Other');" +
+    "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
+    "('builder_tree', 'ws_tree', 'Builder', 'builder', 'openai', 'test'), " +
+    "('reviewer_tree', 'ws_tree', 'Reviewer', 'reviewer', 'openai', 'test');" +
     "INSERT INTO missions (id, workspace_id, project_id, title, goal, status, created_by) VALUES " +
     "('mission_tree', 'ws_tree', 'project_tree', 'Mission', 'Goal', 'running', 'user');" +
     "INSERT INTO tasks (id, mission_id, title, status) VALUES " +
     "('task_tree', 'mission_tree', 'One', 'running'), " +
     "('task_recovery', 'mission_tree', 'Two', 'running'), " +
-    "('task_scope', 'mission_tree', 'Three', 'running');",
+    "('task_scope', 'mission_tree', 'Three', 'running'), " +
+    "('task_conflict', 'mission_tree', 'Conflict', 'reviewing');" +
+    "INSERT INTO agent_runs " +
+    "(id, workspace_id, mission_id, task_id, agent_id, attempt, status) VALUES " +
+    "('run_conflict', 'ws_tree', 'mission_tree', 'task_conflict', 'builder_tree', 1, 'succeeded');" +
+    "INSERT INTO artifacts (id, workspace_id, project_id, mission_id, title, created_by) VALUES " +
+    "('artifact_conflict', 'ws_tree', 'project_tree', 'mission_tree', 'Conflict', 'builder_tree');" +
+    "INSERT INTO artifact_versions " +
+    "(id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash, " +
+    "created_by_kind, created_by_id, created_by_run_id) VALUES " +
+    "('version_conflict', 'artifact_conflict', 1, '{}'::jsonb, decode('00', 'hex'), " +
+    "'content_conflict', 'state_conflict', 'agent', 'builder_tree', 'run_conflict');" +
+    "INSERT INTO task_submissions " +
+    "(id, workspace_id, mission_id, task_id, run_id, artifact_version_id, submitted_by_agent_id, " +
+    "status, evidence_bundle_hash) VALUES " +
+    "('submission_conflict', 'ws_tree', 'mission_tree', 'task_conflict', 'run_conflict', " +
+    "'version_conflict', 'builder_tree', 'approved', 'bundle_conflict');" +
+    "INSERT INTO reviews " +
+    "(id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, reviewer_kind, " +
+    "reviewer_id, status, findings, summary) VALUES " +
+    "('review_conflict', 'ws_tree', 'mission_tree', 'task_conflict', 'submission_conflict', " +
+    "'reviewer_tree', 'agent', 'reviewer_tree', 'approved', '[]'::jsonb, 'Approved');",
   )
 }
 
@@ -152,6 +177,53 @@ test('clean baseline Worktree can be finalized without entering the integration 
     assert.equal(integrated.status, 'integrated')
     assert.equal(integrated.integratedCommit, 'a'.repeat(40))
     assert.deepEqual(await repository.listApprovedPendingIntegration(10), [])
+  } finally {
+    await database.close()
+  }
+})
+
+test('Integration conflict supersedes the old approval and returns the exact merge to Builder review', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new TaskWorktreeRepository(poolAdapter(database))
+    const reserved = await repository.reserve(reservation('task_conflict'))
+    await repository.markReady({
+      taskId: 'task_conflict', provisionToken: reserved.provisionToken, headCommit: 'a'.repeat(40),
+    })
+    await repository.recordCommit({ taskId: 'task_conflict', headCommit: 'b'.repeat(40) })
+    const integration = await repository.reserveIntegration({ taskId: 'task_conflict', leaseSeconds: 60 })
+    const recovered = await repository.markIntegrationConflict({
+      taskId: 'task_conflict',
+      integrationToken: integration.integrationToken,
+      reconciliationBaseCommit: 'c'.repeat(40),
+      error: { code: 'worktree_integration_conflict', message: 'README conflicts' },
+      correlationId: 'integration_conflict_test',
+    })
+    assert.equal(recovered.taskStatus, 'ready')
+    assert.equal(recovered.worktree.status, 'ready')
+    assert.equal(recovered.worktree.reconciliationBaseCommit, 'c'.repeat(40))
+    assert.equal(recovered.worktree.lastError.code, 'worktree_integration_conflict')
+    assert.deepEqual(await repository.listApprovedPendingIntegration(10), [])
+
+    const task = await database.query("SELECT status FROM tasks WHERE id = 'task_conflict'")
+    assert.equal(task.rows[0].status, 'ready')
+    const submission = await database.query(
+      "SELECT status FROM task_submissions WHERE id = 'submission_conflict'",
+    )
+    assert.equal(submission.rows[0].status, 'superseded')
+    const events = await database.query(
+      "SELECT payload FROM domain_events WHERE event_type = 'task.status_changed' " +
+      "AND payload->>'taskId' = 'task_conflict'",
+    )
+    assert.equal(events.rows.at(-1).payload.to, 'ready')
+
+    const committed = await repository.recordCommit({
+      taskId: 'task_conflict', headCommit: 'd'.repeat(40),
+    })
+    assert.equal(committed.baseCommit, 'c'.repeat(40))
+    assert.equal(committed.reconciliationBaseCommit, undefined)
+    assert.equal(committed.lastError, undefined)
   } finally {
     await database.close()
   }

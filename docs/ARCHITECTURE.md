@@ -176,6 +176,22 @@ checks evidence and review gates before the Runtime writes `succeeded`. A
 normal model stop, text such as "done", or an empty response only produces a
 nudge and consumes another bounded hop.
 
+A provider response that ends because of an output limit, content filter, or
+provider error without a complete Tool Call fails the Run immediately after
+the redacted call ledger is persisted. The Runtime does not spend later hops
+retrying structurally incomplete output. Stopping an Agent Worker also aborts
+its active model/tool signal instead of waiting for the entire Run loop.
+
+Builder Tasks that require `file_diff` Evidence also use a deterministic,
+repeating implementation phase gate. The Runtime permits four discovery hops
+before the first successful `file.patch`, then opens one new four-hop discovery
+window after each later successful patch. When a window expires, repository
+read and search Tool definitions are hidden until another `file.patch`
+succeeds. Calls from a stale provider response are rejected before the Tool
+Gateway executes them. The gate derives the latest successful implementation
+hop from the durable transcript rather than Worker memory, so restart and
+replay preserve the same window.
+
 ## 4. Source-of-truth boundaries
 
 | Concern | Durable truth | Acceleration only |
@@ -224,7 +240,9 @@ nudge and consumes another bounded hop.
 10. Independent approval admits that HEAD to the integration worker, which
    fast-forwards when possible. If the base advanced independently, it may
    create a conflict-free merge commit that retains the exact reviewed HEAD as
-   a parent; any conflict rejects integration without changing the base ref.
+   a parent. A content conflict leaves the base ref unchanged, materializes a
+   pending merge in the isolated Task Worktree, supersedes the old approval,
+   and sends the Task through Builder evidence and independent Review again.
 11. Task completion evaluates evidence, review, and integration gates; the model cannot write
    the terminal Task state directly.
 12. Completing a task unlocks dependents in the same transaction. The
@@ -283,7 +301,14 @@ a snapshot/update/removal lifecycle, and never enters Artifact history.
 Review is bound to exact state rather than the living room. The producing Run
 creates a Version, records `artifact_version` Evidence with the same content
 hash, and submits that Version. Submission computes a deterministic Evidence
-bundle hash. Because the Runtime marks a Run `waiting_tool` while any ordinary
+bundle hash and freezes every selected Evidence id in
+`task_submission_evidence`. The current Run's Evidence is included, while a
+retry may reuse the exact Artifact Version and commit Evidence from an earlier
+Run of the same Task. Prior `test_run` / matching command Evidence is reusable
+only when the test recorded a clean, stable Worktree with the same committed
+HEAD and tree as the submitted Worktree. Stale commits, dirty test snapshots,
+and cross-Task Evidence are rejected. Because the Runtime marks a Run
+`waiting_tool` while any ordinary
 Tool Call is executing, the submission gate accepts that transient owner state
 in addition to `running`, `waiting_human`, and `succeeded`; it still rejects
 foreign Runs, stale Versions, uncommitted Worktrees, and mismatched Evidence.
@@ -298,12 +323,32 @@ Reviewer execution is deliberately not represented as another Task Run: it has
 its own fenced lease, retry budget, frozen material snapshot, prompt/response,
 model identity, provider request id, Token/cost/latency usage, error, and hashed
 decision. Its material snapshot contains the exact immutable Artifact Version,
-Task criteria, Evidence bundle inputs, relevant successful tool/test results,
+Task criteria, the submission's frozen Evidence ids with producer Run status
+and attempt, relevant successful tool/test results,
 Worktree state, and cumulative `base_commit -> HEAD` diff. The model must call
-`review.submit_decision` exactly once. A crash after decision persistence resumes
+`review.submit_decision` exactly once. The immutable database snapshot keeps
+every Evidence row. Before model invocation, a deterministic bounded projection
+groups identical `(kind, uri, content_hash)` payloads, emits their common metadata
+once, and retains all equivalent Evidence ids, producer Runs, attempts, timestamps,
+and metadata deltas. This prevents acceptance-criterion and retry projections from
+multiplying the same diff without weakening the audit trail or raising the input
+safety limit. Once the automatic retry budget is exhausted, only a Workspace
+human can add one bounded attempt through the Reviewer retry API. That transaction
+preserves the frozen snapshot and attempt history, records a domain event, and
+creates a new durable Inbox wake; it cannot reopen a completed Review. A crash after decision persistence resumes
 database finalization without another model call. Approval reuses the Task
 completion gate and dependency unlock transaction; `changes_requested` returns
 the Task to `ready`, while a terminal rejection fails it.
+
+Planner and Reviewer model requests require a structured Tool Call and disable
+parallel Tool Calls because each control-plane transition accepts exactly one
+decision. They also request reasoning effort `none`: some compatible endpoints,
+including DeepSeek V4 Thinking mode, support tools but reject required tool
+choice. This per-request override does not change execution-Agent reasoning.
+A compatible provider may still violate the structured contract. Reviewer
+validation therefore remains strict, but the invalid response snapshot, usage,
+latency, provider request id, and error are persisted before the attempt fails;
+text-only approval can never become a database Review decision.
 
 ## 7. Coordination invariants
 
@@ -399,8 +444,18 @@ clean matching checkout. A non-checked-out Evaluation ref is merged in a
 bounded temporary integration Worktree and advanced with an atomic
 compare-and-swap, without changing the project checkout. A crash after Git but
 before PostgreSQL is recovered by proving the reviewed HEAD is already an
-ancestor of the current base. Conflicts leave the base unchanged and remain a
-failed integration for human resolution. Cleanup removes only a clean
+ancestor of the current base. A content conflict aborts the attempted source
+merge, then merges that exact current base with `--no-commit` inside the Task
+Worktree. PostgreSQL atomically stores `reconciliation_base_commit`, supersedes
+the old approved Submission, and returns the Task to `ready` (or `failed` when
+its attempt budget is exhausted), so the Integration queue cannot poll the same
+deterministic conflict forever. The next Builder Run receives the durable
+recovery reason, resolves the pending merge with bounded file tools, and must
+create a new commit, test Evidence, Artifact Version, and independently reviewed
+Submission. `repo.commit` proves the new HEAD contains the recorded current base
+and calculates Task diff Evidence from that base, excluding unrelated platform
+changes. Failures outside this content-conflict path retain fenced replay so a
+crash after the Git ref moved can still reconcile safely. Cleanup removes only a clean
 integrated Worktree and deletes a Task branch only after proving its reviewed
 HEAD is contained by the recorded base ref.
 
@@ -449,6 +504,14 @@ System instructions are sent again on each continued request. Tool Calls and
 Tool Results remain in the local durable transcript, so provider continuation
 is an optimization rather than the source of truth.
 
+Some compatible endpoints return literal newlines or tabs inside the JSON
+string that carries function arguments. The adapter retries parsing only after
+escaping those control characters while they are inside a quoted JSON string.
+It does not repair structure, quotes, delimiters, non-object inputs, or unknown
+function names, and the official OpenAI path never enables this compatibility
+pass. The normalized object still enters the ordinary typed Tool Gateway and
+durable Tool Call ledger.
+
 Read-only repository tools also persist verifiable Evidence: repository search
 emits both a bounded source `citation` and its exact `command_result`, file
 reads emit line-addressed citations, repository status emits a command result,
@@ -458,10 +521,14 @@ produce; the completion gate never treats model prose as Evidence.
 
 `file.patch` accepts only bounded unified diffs and still delegates path,
 context, and application validation to `git apply --check`. Before that check,
-it deterministically recalculates only each hunk header's old/new line counts;
-this repairs a common model formatting error without changing file paths,
-starting lines, context, or patch content, and the normalization is recorded in
-the resulting `file_diff` Evidence.
+it deterministically recalculates each hunk header's old/new line counts and
+appends the patch-format trailing newline when the model omits it. A stale hunk
+start may also be rebased to the current file only when the hunk's complete
+old-side text has exactly one match. Ambiguous matches are rejected before
+`git apply --check`; missing old-side text is not guessed and proceeds only to
+the strict forward/reverse checks needed for replay-safe patches. Count, start,
+and trailing-newline normalizations are recorded in the resulting `file_diff`
+Evidence.
 
 Each Scheduler tick reaps expired Task leases before dispatching ready work.
 A terminal or abandoned Run therefore releases its lease durably and moves the

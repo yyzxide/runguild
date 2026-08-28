@@ -31,6 +31,7 @@ interface FrozenExecutionContext {
   readonly defaultBranch: string
   readonly expectedBaseCommit?: string
   readonly allowBaseRefAdvance?: boolean
+  readonly integrationRecovery?: AgentExecutionContext['integrationRecovery']
   readonly missionTitle: string
   readonly missionGoal: string
   readonly missionConstraints: readonly unknown[]
@@ -66,6 +67,10 @@ export interface AgentExecutionContext {
   readonly defaultBranch: string
   readonly expectedBaseCommit?: string
   readonly allowBaseRefAdvance?: boolean
+  readonly integrationRecovery?: {
+    readonly baseCommit: string
+    readonly error: Readonly<Record<string, unknown>>
+  }
   readonly missionTitle: string
   readonly missionGoal: string
   readonly missionConstraints: readonly unknown[]
@@ -95,6 +100,8 @@ function isFrozen(value: unknown): value is FrozenExecutionContext {
     && typeof item['defaultBranch'] === 'string'
     && (item['expectedBaseCommit'] === undefined || typeof item['expectedBaseCommit'] === 'string')
     && (item['allowBaseRefAdvance'] === undefined || typeof item['allowBaseRefAdvance'] === 'boolean')
+    && (item['integrationRecovery'] === undefined
+      || (typeof item['integrationRecovery'] === 'object' && item['integrationRecovery'] !== null))
     && typeof item['missionTitle'] === 'string'
     && typeof item['missionGoal'] === 'string'
     && Array.isArray(item['missionConstraints'])
@@ -128,6 +135,8 @@ export class ExecutionContextRepository {
         default_branch: string
         expected_base_commit: string | null
         allow_base_ref_advance: boolean
+        reconciliation_base_commit: string | null
+        worktree_last_error: Readonly<Record<string, unknown>> | null
         mission_title: string
         mission_goal: string
         constraints: readonly unknown[]
@@ -142,6 +151,7 @@ export class ExecutionContextRepository {
         'a.role AS agent_role, a.model_provider, a.model_name, m.title AS mission_title, ' +
         'm.goal AS mission_goal, m.constraints, m.created_by AS mission_created_by, ' +
         "t.title AS task_title, t.description AS task_description, t.review_required, " +
+        'tw.reconciliation_base_commit, tw.last_error AS worktree_last_error, ' +
         "CASE WHEN et.id IS NULL THEN p.default_branch " +
         "ELSE 'evaluation/trial-' || et.id END AS default_branch, " +
         "ev.definition->>'baselineCommit' AS expected_base_commit, " +
@@ -149,6 +159,7 @@ export class ExecutionContextRepository {
         'FROM agent_runs r JOIN agents a ON a.id = r.agent_id ' +
         'JOIN missions m ON m.id = r.mission_id JOIN projects p ON p.id = m.project_id ' +
         'JOIN tasks t ON t.id = r.task_id ' +
+        'LEFT JOIN task_worktrees tw ON tw.task_id = t.id ' +
         'LEFT JOIN evaluation_trials et ON et.mission_id = r.mission_id ' +
         'LEFT JOIN evaluation_scenario_versions ev ON ev.id = et.scenario_version_id ' +
         'WHERE r.id = $1 AND r.agent_id = $2 FOR UPDATE OF r',
@@ -244,6 +255,14 @@ export class ExecutionContextRepository {
           defaultBranch: row.default_branch,
           ...(row.expected_base_commit === null ? {} : { expectedBaseCommit: row.expected_base_commit }),
           ...(row.allow_base_ref_advance ? { allowBaseRefAdvance: true } : {}),
+          ...(row.reconciliation_base_commit === null
+            ? {}
+            : {
+                integrationRecovery: {
+                  baseCommit: row.reconciliation_base_commit,
+                  error: row.worktree_last_error ?? {},
+                },
+              }),
           missionTitle: row.mission_title,
           missionGoal: row.mission_goal,
           missionConstraints: row.constraints,
@@ -313,6 +332,9 @@ export class ExecutionContextRepository {
         defaultBranch: frozen.defaultBranch,
         ...(frozen.expectedBaseCommit === undefined ? {} : { expectedBaseCommit: frozen.expectedBaseCommit }),
         ...(frozen.allowBaseRefAdvance === undefined ? {} : { allowBaseRefAdvance: frozen.allowBaseRefAdvance }),
+        ...(frozen.integrationRecovery === undefined
+          ? {}
+          : { integrationRecovery: frozen.integrationRecovery }),
         missionTitle: frozen.missionTitle,
         missionGoal: frozen.missionGoal,
         missionConstraints: frozen.missionConstraints,

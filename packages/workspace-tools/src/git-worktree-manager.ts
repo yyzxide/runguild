@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
@@ -8,6 +8,7 @@ import type {
   TaskWorktreeRepository,
 } from '@runguild/database'
 import type {
+  CorrelationId,
   MissionId,
   ProjectId,
   TaskId,
@@ -20,7 +21,7 @@ const MAX_GIT_OUTPUT_BYTES = 256 * 1024
 type TaskWorktreeStore = Pick<
   TaskWorktreeRepository,
   'markCleanupFailed' | 'markFailed' | 'markIntegrated' | 'markIntegrationFailed' |
-  'markInvalid' | 'markReady' | 'markRemoved' | 'reserve' | 'reserveCleanup' |
+  'markIntegrationConflict' | 'markInvalid' | 'markReady' | 'markRemoved' | 'reserve' | 'reserveCleanup' |
   'reserveIntegration'
 >
 
@@ -29,6 +30,8 @@ interface CommandResult {
   readonly stdout: string
   readonly stderr: string
 }
+
+class IntegrationConflictError extends Error {}
 
 export interface EnsureTaskWorktreeInput {
   readonly workspaceId: WorkspaceId
@@ -47,6 +50,7 @@ export type EnsureTaskWorktreeResult =
 
 export type IntegrateTaskWorktreeResult =
   | { readonly kind: 'integrated'; readonly worktree: TaskWorktree }
+  | { readonly kind: 'conflict'; readonly worktree: TaskWorktree; readonly taskStatus: 'ready' | 'failed' }
   | { readonly kind: 'busy'; readonly retryAfterMs: number }
 
 export type CleanupTaskWorktreeResult =
@@ -236,10 +240,18 @@ export class GitWorktreeManager {
     if (reservation.kind === 'busy') return reservation
     if (reservation.kind === 'integrated') return reservation
     const record = reservation.worktree
+    let sourceHead: string | undefined
     try {
       const taskHead = await this.verify(record)
       if (!record.headCommit || taskHead !== record.headCommit) {
         throw new Error('Task Worktree HEAD differs from the reviewed committed HEAD')
+      }
+      const pendingMerge = await git(record.worktreePath, ['rev-parse', '--verify', 'MERGE_HEAD'], true)
+      if (pendingMerge.exitCode === 0 && record.reconciliationBaseCommit === undefined) {
+        const aborted = await git(record.worktreePath, ['merge', '--abort'], true)
+        if (aborted.exitCode !== 0) {
+          throw new Error('Interrupted Integration conflict preparation could not be rolled back')
+        }
       }
       const taskStatus = await git(record.worktreePath, ['status', '--porcelain=v1'], true)
       if (taskStatus.exitCode !== 0 || taskStatus.stdout.trim()) {
@@ -248,7 +260,7 @@ export class GitWorktreeManager {
       await this.cleanupTemporaryIntegrationWorktree(record.taskId)
       const sourceBranch = (await git(this.repositoryPath, ['branch', '--show-current'])).stdout.trim()
       const sourceRef = 'refs/heads/' + record.baseRef
-      const sourceHead = (
+      sourceHead = (
         await git(this.repositoryPath, ['rev-parse', '--verify', sourceRef + '^{commit}'])
       ).stdout.trim()
       if (sourceBranch === record.baseRef) {
@@ -318,6 +330,28 @@ export class GitWorktreeManager {
       })
       return { kind: 'integrated', worktree: integrated }
     } catch (error) {
+      if (error instanceof IntegrationConflictError && sourceHead !== undefined) {
+        try {
+          const recovery = await this.prepareIntegrationConflict({
+            record,
+            integrationToken: reservation.integrationToken,
+            sourceHead,
+            error,
+          })
+          return { kind: 'conflict', ...recovery }
+        } catch (recoveryError) {
+          await git(record.worktreePath, ['merge', '--abort'], true).catch(() => null)
+          await this.store.markIntegrationFailed({
+            taskId: record.taskId,
+            integrationToken: reservation.integrationToken,
+            error: {
+              code: 'worktree_integration_conflict_recovery_failed',
+              message: this.errorMessage(recoveryError),
+            },
+          }).catch(() => null)
+          throw recoveryError
+        }
+      }
       await this.store.markIntegrationFailed({
         taskId: record.taskId,
         integrationToken: reservation.integrationToken,
@@ -325,6 +359,39 @@ export class GitWorktreeManager {
       }).catch(() => null)
       throw error
     }
+  }
+
+  private async prepareIntegrationConflict(input: {
+    readonly record: TaskWorktree
+    readonly integrationToken: string
+    readonly sourceHead: string
+    readonly error: IntegrationConflictError
+  }): Promise<{ readonly worktree: TaskWorktree; readonly taskStatus: 'ready' | 'failed' }> {
+    const merged = await git(input.record.worktreePath, [
+      '-c', 'user.name=RunGuild Integration Recovery',
+      '-c', 'user.email=runguild-integration@example.invalid',
+      '-c', 'core.hooksPath=/dev/null',
+      '-c', 'commit.gpgSign=false',
+      'merge', '--no-ff', '--no-commit', '--no-verify', '--no-gpg-sign', input.sourceHead,
+    ], true)
+    const mergeHead = await git(input.record.worktreePath, ['rev-parse', '--verify', 'MERGE_HEAD'], true)
+    if (mergeHead.exitCode !== 0 || mergeHead.stdout.trim() !== input.sourceHead) {
+      const detail = (merged.stdout + '\n' + merged.stderr).trim().slice(0, 2_000)
+      throw new Error(
+        'Could not materialize the current base in the Task Worktree for conflict resolution' +
+        (detail ? ': ' + detail : ''),
+      )
+    }
+    return this.store.markIntegrationConflict({
+      taskId: input.record.taskId,
+      integrationToken: input.integrationToken,
+      reconciliationBaseCommit: input.sourceHead,
+      error: {
+        code: 'worktree_integration_conflict',
+        message: this.errorMessage(input.error),
+      },
+      correlationId: ('integration_conflict_' + randomUUID()) as CorrelationId,
+    })
   }
 
   private async mergeReviewedHead(input: {
@@ -361,7 +428,7 @@ export class GitWorktreeManager {
       if (merged.exitCode !== 0) {
         await git(mergePath, ['merge', '--abort'], true)
         const detail = (merged.stdout + '\n' + merged.stderr).trim().slice(0, 2_000)
-        throw new Error(
+        throw new IntegrationConflictError(
           'Reviewed Task conflicts with the current base branch' + (detail ? ': ' + detail : ''),
         )
       }

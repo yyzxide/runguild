@@ -82,7 +82,14 @@ async function fixture() {
         return taskId === worktree.taskId ? worktree : null
       },
       async recordCommit(input) {
-        worktree = { ...worktree, status: 'committed', headCommit: input.headCommit }
+        worktree = {
+          ...worktree,
+          status: 'committed',
+          headCommit: input.headCommit,
+          baseCommit: worktree.reconciliationBaseCommit ?? worktree.baseCommit,
+          reconciliationBaseCommit: undefined,
+          lastError: undefined,
+        }
         return worktree
       },
       async recordUnchangedIntegration(input) {
@@ -97,6 +104,7 @@ async function fixture() {
     command,
     handlers: new Map(handlers.map((handler) => [handler.action, handler])),
     get worktree() { return worktree },
+    setWorktree(next) { worktree = next },
   }
 }
 
@@ -167,11 +175,10 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
       'diff --git a/sample.txt b/sample.txt',
       '--- a/sample.txt',
       '+++ b/sample.txt',
-      '@@ -1,99 +1,101 @@',
+      '@@ -999,99 +999,101 @@',
       '-beta',
       '+gamma',
       ' second line',
-      '',
     ].join('\n')
     await patch.execute(
       { path: 'sample.txt', unifiedDiff: wrongCounts },
@@ -179,6 +186,26 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
     )
     assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'gamma\nsecond line\n')
     assert.equal(setup.evidence[2].draft.metadata.normalizedHunkCounts, true)
+    assert.equal(setup.evidence[2].draft.metadata.normalizedHunkStarts, true)
+    assert.equal(setup.evidence[2].draft.metadata.appendedTrailingNewline, true)
+
+    const ambiguous = [
+      'diff --git a/sample.txt b/sample.txt',
+      '--- a/sample.txt',
+      '+++ b/sample.txt',
+      '@@ -999,1 +999,1 @@',
+      '-second line',
+      '+ambiguous line',
+      '',
+    ].join('\n')
+    await writeFile(join(setup.root, 'sample.txt'), 'second line\nsecond line\n', 'utf8')
+    await assert.rejects(
+      patch.execute(
+        { path: 'sample.txt', unifiedDiff: ambiguous },
+        { request: request('file.patch', { path: 'sample.txt', unifiedDiff: ambiguous }, 'call_ambiguous') },
+      ),
+      /old-side context is ambiguous/,
+    )
 
     await assert.rejects(
       patch.execute(
@@ -204,6 +231,19 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
     assert.equal(result.output.stdout, 'tests ok\n')
     assert.equal(result.evidence[0].kind, 'test_run')
     assert.deepEqual(result.evidence.map((item) => item.kind), ['test_run', 'command_result'])
+    assert.equal(setup.evidence[0].draft.metadata.headCommit, setup.worktree.baseCommit)
+    assert.match(setup.evidence[0].draft.metadata.treeHash, /^[0-9a-f]{40}$/)
+    assert.equal(setup.evidence[0].draft.metadata.clean, true)
+    assert.equal(setup.evidence[0].draft.metadata.stable, true)
+    assert.match(setup.evidence[0].draft.metadata.stateHash, /^[0-9a-f]{64}$/)
+
+    await writeFile(join(setup.root, 'sample.txt'), 'dirty before test\n', 'utf8')
+    await run.execute(
+      { command: setup.command, timeoutMs: 10_000 },
+      { request: request('test.run', { command: setup.command, timeoutMs: 10_000 }, 'call_dirty_tests') },
+    )
+    assert.equal(setup.evidence[2].draft.metadata.clean, false)
+    assert.equal(setup.evidence[2].draft.metadata.stable, true)
 
     await assert.rejects(
       run.execute(
@@ -291,6 +331,58 @@ test('repository commit finalizes a clean unchanged Worktree without inventing a
     assert.equal(setup.worktree.status, 'integrated')
     assert.equal(setup.worktree.integratedCommit, setup.worktree.baseCommit)
     assert.equal((await execute('git', ['-C', setup.root, 'rev-list', '--count', 'HEAD'])).stdout.trim(), '1')
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('Integration resolution evidence is based on the reconciled current branch, not the stale Task base', async () => {
+  const setup = await fixture()
+  try {
+    const originalBase = setup.worktree.baseCommit
+    await writeFile(join(setup.root, 'sample.txt'), 'reviewed Task change\n', 'utf8')
+    await execute('git', ['-C', setup.root, 'add', 'sample.txt'])
+    await execute('git', [
+      '-C', setup.root,
+      '-c', 'user.name=RunGuild',
+      '-c', 'user.email=runguild@example.invalid',
+      'commit', '-m', 'old reviewed task',
+    ])
+    const oldTaskHead = (await execute('git', ['-C', setup.root, 'rev-parse', 'HEAD'])).stdout.trim()
+    await execute('git', ['-C', setup.root, 'switch', '-c', 'current-base', originalBase])
+    await writeFile(join(setup.root, 'platform.txt'), 'current platform\n', 'utf8')
+    await execute('git', ['-C', setup.root, 'add', 'platform.txt'])
+    await execute('git', [
+      '-C', setup.root,
+      '-c', 'user.name=RunGuild',
+      '-c', 'user.email=runguild@example.invalid',
+      'commit', '-m', 'advance platform',
+    ])
+    const currentBase = (await execute('git', ['-C', setup.root, 'rev-parse', 'HEAD'])).stdout.trim()
+    await execute('git', ['-C', setup.root, 'switch', 'main'])
+    await execute('git', ['-C', setup.root, 'merge', '--no-ff', '--no-commit', 'current-base'])
+    setup.setWorktree({
+      ...setup.worktree,
+      status: 'ready',
+      headCommit: oldTaskHead,
+      reconciliationBaseCommit: currentBase,
+      lastError: { code: 'worktree_integration_conflict' },
+    })
+
+    const committed = await setup.handlers.get('repo.commit').execute(
+      { message: 'Resolve Integration conflict' },
+      { request: request('repo.commit', {}, 'call_reconcile_commit') },
+    )
+    assert.equal(committed.output.committed, true)
+    assert.equal(setup.worktree.baseCommit, currentBase)
+    assert.equal(setup.worktree.reconciliationBaseCommit, undefined)
+    const parents = (await execute(
+      'git', ['-C', setup.root, 'rev-list', '--parents', '-n', '1', committed.output.commit],
+    )).stdout.trim().split(' ')
+    assert.deepEqual(parents, [committed.output.commit, oldTaskHead, currentBase])
+    const exactDiff = setup.evidence.at(-1).draft.metadata.diff
+    assert.match(exactDiff, /reviewed Task change/)
+    assert.doesNotMatch(exactDiff, /platform\.txt/)
   } finally {
     await rm(setup.root, { recursive: true, force: true })
   }

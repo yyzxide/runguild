@@ -27,7 +27,7 @@ const context = {
     key: 'tests',
     description: 'Tests pass.',
     required: true,
-    evidenceKinds: ['test_run'],
+    evidenceKinds: ['test_run', 'file_diff'],
   }],
 }
 
@@ -229,12 +229,47 @@ test('Worker ownership loss aborts the active Agent Runtime', async () => {
 })
 
 test('execution prompt includes mission scope and evidence requirements', () => {
-  const messages = executionMessages(context)
+  const messages = executionMessages(context, [['npm', 'test'], ['npm', 'run', 'build']])
   assert.equal(messages[0].role, 'system')
   assert.match(messages[0].content, /Never invent command results/)
   assert.match(messages[0].content, /repo\.commit even when no code changed/)
+  assert.match(messages[0].content, /\[\["npm","test"\],\["npm","run","build"\]\]/)
+  assert.match(messages[0].content, /globs are unsupported/)
+  assert.match(messages[0].content, /at most 4 discovery hops/)
+  assert.match(messages[0].content, /after each later successful file\.patch/)
+  assert.match(messages[0].content, /repo\.status, repo\.search, repo\.diff, and file\.read stay hidden/)
   assert.match(messages[1].content, /Build the feature/)
-  assert.match(messages[1].content, /tests: Tests pass\. \(evidence: test_run\)/)
+  assert.match(messages[1].content, /tests: Tests pass\. \(evidence: test_run, file_diff\)/)
+})
+
+test('execution prompt does not require file.patch without required file_diff evidence', () => {
+  const messages = executionMessages({
+    ...context,
+    acceptanceCriteria: [{
+      key: 'tests',
+      description: 'Tests pass.',
+      required: true,
+      evidenceKinds: ['test_run'],
+    }],
+  })
+  assert.doesNotMatch(messages[0].content, /Runtime hides repo\.status/)
+})
+
+test('execution prompt explains durable Integration conflict recovery and fresh Review', () => {
+  const messages = executionMessages({
+    ...context,
+    integrationRecovery: {
+      baseCommit: 'b'.repeat(40),
+      error: { code: 'worktree_integration_conflict', message: 'README conflicts' },
+    },
+  })
+
+  const taskPrompt = messages.at(-1).content
+  assert.match(taskPrompt, /Integration recovery is active/)
+  assert.match(taskPrompt, new RegExp('b{40}'))
+  assert.match(taskPrompt, /pending Git merge/)
+  assert.match(taskPrompt, /old Submission was superseded/)
+  assert.match(taskPrompt, /independent Review/)
 })
 
 test('execution prompt injects the exact frozen Skill Version below the runtime contract', () => {

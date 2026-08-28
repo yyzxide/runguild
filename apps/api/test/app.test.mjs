@@ -328,6 +328,19 @@ function fakeTaskControls() {
   }
 }
 
+function fakeReviewerExecutionControls() {
+  const calls = []
+  return {
+    calls,
+    service: {
+      async retryFailed(input) {
+        calls.push(input)
+        return { retried: true, maxAttempts: 4 }
+      },
+    },
+  }
+}
+
 function fakeArtifacts() {
   const calls = []
   return {
@@ -532,6 +545,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   const localRuntimeControl = fakeLocalRuntimeControl()
   const runtime = fakeRuntimeServices()
   const taskControls = fakeTaskControls()
+  const reviewerExecutions = fakeReviewerExecutionControls()
   const artifacts = fakeArtifacts()
   const reviews = fakeReviews()
   const skills = fakeSkills()
@@ -552,6 +566,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     toolApprovals: runtime.toolApprovals,
     artifacts: artifacts.service,
     reviews: reviews.service,
+    reviewerExecutions: reviewerExecutions.service,
     skills: skills.service,
     evaluations: evaluations.service,
     developmentSetup: development.service,
@@ -1063,6 +1078,14 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal(reviewed.status, 200)
     assert.equal((await reviewed.json()).review.status, 'approved')
 
+    const retriedReview = await fetch(baseUrl + '/api/v1/workspaces/ws/reviews/review_api/retry', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api' },
+      body: JSON.stringify({ reason: 'Retry after deploying a bounded prompt projection.' }),
+    })
+    assert.equal(retriedReview.status, 200)
+    assert.equal((await retriedReview.json()).maxAttempts, 4)
+
     const submission = await fetch(baseUrl + '/api/v1/workspaces/ws/submissions/submission_api', {
       headers: { 'x-actor-id': 'user_api' },
     })
@@ -1073,6 +1096,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   assert.deepEqual(fake.calls.map(([kind]) => kind), ['create', 'plan', 'approve', 'approve-delivery', 'get'])
   assert.equal(fake.calls[1][1].actor.kind, 'agent')
   assert.deepEqual(runtime.calls.map(([kind]) => kind), ['control', 'tool_approval'])
+  assert.equal(reviewerExecutions.calls[0].reviewId, 'review_api')
   assert.equal(runtime.calls[0][1].dedupeKey, 'steer_once')
   assert.deepEqual(artifacts.calls.map(([kind]) => kind), [
     'artifact.create',

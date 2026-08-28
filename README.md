@@ -60,7 +60,9 @@ The control-plane foundation is executable:
 - Transactional Outbox and Redis publisher worker;
 - typed events, tools, side effects, Evidence, and Artifact contracts;
 - bounded Agent Runtime with explicit completion, hop budgets, Steering, Cancel,
-  and a durable transcript that survives approval pauses;
+  a durable transcript that survives approval pauses, and a persisted
+  repeating discovery-to-implementation gate for Builder Tasks requiring
+  `file_diff`, reconstructed from the durable transcript after every patch;
 - provider-neutral model adapter and a redacted LLM call, token, latency, and
   cost ledger;
 - a production OpenAI Responses adapter with durable response continuation and
@@ -104,12 +106,22 @@ The control-plane foundation is executable:
   tools;
 - exact-version Submission bundles and independent human or authenticated
   Reviewer Agent decisions; code submissions additionally bind the exact
-  committed Worktree HEAD into the evidence bundle;
+  committed Worktree HEAD into the evidence bundle; every selected Evidence id
+  is frozen in `task_submission_evidence`, and an evidence-only retry may reuse
+  a prior Task Run's exact-commit Evidence plus a passing `test.run` only when
+  that test records the same clean, stable Git HEAD and tree;
 - automatic Mission-room Reviewer dispatch through durable Inbox messages and
   a separate `review_executions` lease/model ledger; frozen review input includes
   the exact Artifact Version, acceptance criteria, Evidence, relevant test/tool
-  results, and the cumulative base-to-HEAD Git diff, while a persisted model
-  decision resumes without a second model call after a process crash;
+  results, and the cumulative base-to-HEAD Git diff. The durable snapshot keeps
+  every selected Evidence id, while the bounded model projection emits repeated
+  content-addressed payloads once and retains every equivalent id and producer;
+  Planner/Reviewer control-plane calls require one non-parallel structured Tool
+  Call and explicitly disable reasoning for compatible endpoints whose Thinking
+  mode rejects required tool choice; execution Agents still inherit their
+  configured reasoning effort. Invalid Reviewer responses persist text, Tool Calls, usage, and
+  provider request id for diagnosis, and a persisted valid decision resumes
+  without a second model call after a process crash;
 - deterministic per-Task Git Worktree provisioning with database fencing,
   lease-expiry takeover, restart reconciliation, and strict repository/path/
   branch/ancestry validation;
@@ -124,9 +136,13 @@ The control-plane foundation is executable:
   an unnecessary Integration gate;
 - a separate integration worker that admits only approved committed Tasks,
   fast-forwards when possible or creates a hooks-disabled, conflict-free merge
-  whose parent is the exact reviewed HEAD; conflicts leave the base unchanged,
-  while successful integration completes the existing Task gate and safely
-  removes integrated Worktrees and branches;
+  whose parent is the exact reviewed HEAD; content conflicts leave the base
+  unchanged, materialize a pending merge in the isolated Task Worktree, remove
+  the deterministically conflicting commit from the Integration queue, and
+  supersede its approval so Builder tests, Artifact evidence, and independent
+  Review must run again against the current base; successful integration
+  completes the existing Task gate and safely removes integrated Worktrees and
+  branches;
 - immutable Evaluation Scenario Versions with a frozen Git baseline, paired
   single-Agent/multi-Agent plans, deterministic repetitions, and human-managed
   REST APIs;
@@ -185,6 +201,7 @@ packages/
 - [Architecture](docs/ARCHITECTURE.md)
 - [State machines](docs/STATE_MACHINES.md)
 - [Protocol contract](docs/PROTOCOL.md)
+- [Environment and machine migration](docs/ENVIRONMENT.md)
 
 ## Local checks
 
@@ -250,7 +267,12 @@ When `OPENAI_BASE_URL` points at an OpenAI-compatible endpoint, Agent Workers
 replay the complete durable transcript on every model hop instead of assuming
 that endpoint implements stateful `previous_response_id` continuation. The
 official OpenAI endpoint keeps the response-id optimization; Tool Calls and
-Tool Results remain persisted locally in both modes.
+Tool Results remain persisted locally in both modes. Compatible endpoints also
+receive one narrowly scoped arguments compatibility pass: literal ASCII control
+characters inside a JSON string are escaped before a second strict parse. This
+supports multiline patch bodies without accepting missing delimiters, broken
+quotes, non-object arguments, or unknown tools; the official endpoint remains
+strict-only.
 
 Run the API and scheduler worker:
 
@@ -340,6 +362,7 @@ GET  /api/v1/workspaces/:workspaceId/conversation-planning-requests/:requestId
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan/approve
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/delivery/approve
+POST /api/v1/workspaces/:workspaceId/reviews/:reviewId/retry
 GET  /api/v1/workspaces/:workspaceId/missions/:missionId
 POST /api/v1/workspaces/:workspaceId/runs/:runId/controls
 POST /api/v1/workspaces/:workspaceId/tool-approvals/:approvalId/resolve

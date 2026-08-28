@@ -130,16 +130,74 @@ function toResponseInput(request: ModelRequest, useContinuation: boolean): Respo
   return input
 }
 
+function escapeLiteralControlCharactersInJsonStrings(value: string): string {
+  let inString = false
+  let escaped = false
+  let normalized = ''
+  for (const character of value) {
+    if (!inString) {
+      normalized += character
+      if (character === '"') inString = true
+      continue
+    }
+    if (escaped) {
+      normalized += character
+      escaped = false
+      continue
+    }
+    if (character === '\\') {
+      normalized += character
+      escaped = true
+      continue
+    }
+    if (character === '"') {
+      normalized += character
+      inString = false
+      continue
+    }
+    const code = character.charCodeAt(0)
+    if (code <= 0x1f) {
+      normalized += character === '\b' ? '\\b'
+        : character === '\f' ? '\\f'
+          : character === '\n' ? '\\n'
+            : character === '\r' ? '\\r'
+              : character === '\t' ? '\\t'
+                : '\\u' + code.toString(16).padStart(4, '0')
+      continue
+    }
+    normalized += character
+  }
+  return normalized
+}
+
+function parseToolArguments(
+  value: string,
+  toolName: string,
+  allowControlCharacterRepair: boolean,
+): unknown {
+  try {
+    return JSON.parse(value)
+  } catch (strictError) {
+    if (allowControlCharacterRepair) {
+      const normalized = escapeLiteralControlCharactersInJsonStrings(value)
+      if (normalized !== value) {
+        try {
+          return JSON.parse(normalized)
+        } catch {
+          // Preserve the original strict parse error without exposing arguments.
+        }
+      }
+    }
+    throw new Error('OpenAI returned invalid JSON arguments for ' + toolName, { cause: strictError })
+  }
+}
+
 function parseToolCall(
   item: ResponseFunctionToolCall,
   actionsByProviderName: ReadonlyMap<string, ToolAction>,
+  allowControlCharacterRepair: boolean,
 ): ModelToolCall {
-  let input: unknown
-  try {
-    input = JSON.parse(item.arguments)
-  } catch (error) {
-    throw new Error('OpenAI returned invalid JSON arguments for ' + item.name, { cause: error })
-  }
+  const input = parseToolArguments(item.arguments, item.name, allowControlCharacterRepair)
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('OpenAI tool arguments must be a JSON object for ' + item.name)
   }
@@ -182,6 +240,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
       && continuation?.provider === this.provider
       && continuation.model === this.model
     const instructions = systemInstructions(request.messages)
+    const reasoningEffort = request.reasoningEffort ?? this.options.reasoningEffort
     const body: ResponseCreateParamsNonStreaming = {
       model: this.model,
       input: toResponseInput(request, useContinuation),
@@ -192,17 +251,17 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
         parameters: tool.inputSchema,
         strict: false,
       })),
-      tool_choice: 'auto',
-      parallel_tool_calls: true,
+      tool_choice: request.toolChoice ?? 'auto',
+      parallel_tool_calls: request.parallelToolCalls ?? true,
       store: true,
       ...(instructions === undefined ? {} : { instructions }),
       ...(useContinuation ? { previous_response_id: continuation.responseId } : {}),
       ...(this.options.maxOutputTokens === undefined
         ? {}
         : { max_output_tokens: this.options.maxOutputTokens }),
-      ...(this.options.reasoningEffort === undefined
+      ...(reasoningEffort === undefined
         ? {}
-        : { reasoning: { effort: this.options.reasoningEffort } }),
+        : { reasoning: { effort: reasoningEffort } }),
     }
     const response = await this.client.responses.create(
       body,
@@ -210,7 +269,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
     )
     const toolCalls = response.output
       .filter((item): item is ResponseFunctionToolCall => item.type === 'function_call')
-      .map((item) => parseToolCall(item, actionsByProviderName))
+      .map((item) => parseToolCall(item, actionsByProviderName, this.options.baseURL !== undefined))
     return {
       content: response.output_text,
       toolCalls,

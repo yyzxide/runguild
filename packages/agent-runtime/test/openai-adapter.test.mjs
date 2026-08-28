@@ -75,6 +75,8 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
   assert.equal(fake.requests[0].body.tools[0].name, 'repo__search')
   assert.match(fake.requests[0].body.tools[0].name, /^[a-zA-Z0-9_-]+$/)
   assert.equal(fake.requests[0].body.store, true)
+  assert.equal(fake.requests[0].body.tool_choice, 'auto')
+  assert.equal(fake.requests[0].body.parallel_tool_calls, true)
   assert.equal(result.providerRequestId, 'resp_first')
   assert.equal(result.finishReason, 'tool_calls')
   assert.deepEqual(result.toolCalls, [{
@@ -87,6 +89,29 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
     outputTokens: 5,
     cachedInputTokens: 3,
   })
+})
+
+test('OpenAI adapter can require non-thinking one-at-a-time structured control-plane output', async () => {
+  const fake = fakeClient([response({ id: 'resp_required' })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '', model: 'model-test', client: fake.client, reasoningEffort: 'medium',
+  })
+
+  await adapter.complete({
+    messages: [{ role: 'user', content: 'Return a structured decision.' }],
+    tools: [{
+      action: 'review.submit_decision',
+      description: 'Submit one decision.',
+      inputSchema: { type: 'object' },
+    }],
+    toolChoice: 'required',
+    parallelToolCalls: false,
+    reasoningEffort: 'none',
+  })
+
+  assert.equal(fake.requests[0].body.tool_choice, 'required')
+  assert.equal(fake.requests[0].body.parallel_tool_calls, false)
+  assert.deepEqual(fake.requests[0].body.reasoning, { effort: 'none' })
 })
 
 test('OpenAI continuation sends only post-response tool outputs and repeats instructions', async () => {
@@ -227,6 +252,68 @@ test('OpenAI adapter rejects malformed function arguments before the Runtime see
     }],
   })])
   const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+
+  await assert.rejects(
+    adapter.complete({
+      messages: [],
+      tools: [{
+        action: 'repo.search',
+        description: 'Search repository text.',
+        inputSchema: { type: 'object' },
+      }],
+    }),
+    /invalid JSON arguments/,
+  )
+})
+
+test('OpenAI-compatible endpoint normalizes literal control characters inside JSON string arguments', async () => {
+  const fake = fakeClient([response({
+    output: [{
+      type: 'function_call',
+      call_id: 'call_patch',
+      name: 'file__patch',
+      arguments: '{"path":"src/example.ts","patch":"first line\nsecond\tline"}',
+      status: 'completed',
+    }],
+  })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '',
+    model: 'compatible-model',
+    baseURL: 'https://compatible.example.test',
+    client: fake.client,
+  })
+
+  const result = await adapter.complete({
+    messages: [],
+    tools: [{
+      action: 'file.patch',
+      description: 'Apply a patch.',
+      inputSchema: { type: 'object' },
+    }],
+  })
+
+  assert.deepEqual(result.toolCalls[0].input, {
+    path: 'src/example.ts',
+    patch: 'first line\nsecond\tline',
+  })
+})
+
+test('OpenAI-compatible endpoint still rejects structurally malformed JSON arguments', async () => {
+  const fake = fakeClient([response({
+    output: [{
+      type: 'function_call',
+      call_id: 'call_bad',
+      name: 'repo__search',
+      arguments: '{"query":"unterminated\nstring}',
+      status: 'completed',
+    }],
+  })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '',
+    model: 'compatible-model',
+    baseURL: 'https://compatible.example.test',
+    client: fake.client,
+  })
 
   await assert.rejects(
     adapter.complete({

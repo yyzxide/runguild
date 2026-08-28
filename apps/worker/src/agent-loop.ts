@@ -58,6 +58,7 @@ export interface AgentInboxProcessorDependencies {
     context: AgentExecutionContext,
     abortSignal?: AbortSignal,
   ) => Promise<RuntimeRunner>
+  readonly allowedTestCommands?: readonly (readonly string[])[]
   readonly planner?: PlanningProcessor
   readonly reviewer?: ReviewProcessor
 }
@@ -76,6 +77,14 @@ interface TaskDispatchPayload {
   readonly dispatchToken: string
   readonly taskId: TaskId
   readonly missionId: MissionId
+}
+
+export const IMPLEMENTATION_DISCOVERY_HOP_LIMIT = 4
+
+export function requiresFilePatch(context: AgentExecutionContext): boolean {
+  return context.agentRole === 'builder' && context.acceptanceCriteria.some(
+    (criterion) => criterion.required && criterion.evidenceKinds.includes('file_diff'),
+  )
 }
 
 function dispatchPayload(value: unknown): TaskDispatchPayload {
@@ -118,7 +127,10 @@ function reviewPayload(value: unknown): ArtifactReviewRequestedInboxPayload {
   return payload as unknown as ArtifactReviewRequestedInboxPayload
 }
 
-export function executionMessages(context: AgentExecutionContext): readonly ModelMessage[] {
+export function executionMessages(
+  context: AgentExecutionContext,
+  allowedTestCommands: readonly (readonly string[])[] = [],
+): readonly ModelMessage[] {
   // Frozen contexts created before the Conversation Plane shipped do not have
   // this field. Treat them as an empty team-room transcript during replay.
   const teamMessages = context.conversationMessages ?? []
@@ -167,6 +179,23 @@ export function executionMessages(context: AgentExecutionContext): readonly Mode
           'create an immutable Artifact Version, commit repository changes when present, and submit that exact Version for review.',
       ]
     : ['Independent review is not required for this Task.']
+  const integrationRecovery = context.integrationRecovery === undefined
+    ? []
+    : [
+        'Integration recovery is active for this Run.',
+        'The previously approved Task commit conflicted with current base commit ' +
+          context.integrationRecovery.baseCommit + '.',
+        'The Worktree contains a pending Git merge and may contain conflict markers. Inspect repo.status and the affected files, ' +
+          'resolve every conflict while preserving both the current base and the Task intent, then run verification and call repo.commit.',
+        'The old Submission was superseded. Create and submit a new Artifact Version so the resolution receives independent Review.',
+        'Durable Integration error: ' + JSON.stringify(context.integrationRecovery.error),
+      ]
+  const implementationPolicy = requiresFilePatch(context)
+    ? '\n- This Task requires file_diff evidence. Runtime permits at most ' +
+      String(IMPLEMENTATION_DISCOVERY_HOP_LIMIT) +
+      ' discovery hops before the first successful file.patch and after each later successful file.patch. ' +
+      'When a window expires, repo.status, repo.search, repo.diff, and file.read stay hidden until another file.patch succeeds.'
+    : ''
   return [
     {
       role: 'system',
@@ -174,7 +203,13 @@ export function executionMessages(context: AgentExecutionContext): readonly Mode
         'You are the ' + context.agentRole + ' Agent for an isolated software mission. ' +
         'Inspect facts with tools, make bounded changes, run allowlisted verification, and report evidence. ' +
         'Before requesting done, call repo.commit even when no code changed so the Worktree can be verified and finalized. ' +
-        'Never invent command results or claim a file changed without a successful tool result.',
+        'Never invent command results or claim a file changed without a successful tool result.\n\n' +
+        'Execution policy:\n' +
+        '- test.run accepts only these exact argv arrays: ' + JSON.stringify(allowedTestCommands) + '.\n' +
+        '- Never add Shell operators such as &&, ||, ;, pipes, redirection, or extra environment-probe commands to argv.\n' +
+        '- repo.search paths are literal existing relative files or directories; globs are unsupported. Omit paths to search the whole Worktree.\n' +
+        '- Batch independent reads/searches in one response.' + implementationPolicy + '\n' +
+        '- Do not use test.run for environment discovery. Use it only for an exact configured verification command.',
     },
     ...skillMessages,
     ...conversationMessage,
@@ -187,6 +222,7 @@ export function executionMessages(context: AgentExecutionContext): readonly Mode
         'Constraints: ' + JSON.stringify(context.missionConstraints),
         'Assigned task: ' + context.taskTitle,
         context.taskDescription,
+        ...integrationRecovery,
         ...artifactLines,
         ...reviewInstructions,
         'Acceptance criteria:',
@@ -311,7 +347,7 @@ export class AgentInboxProcessor {
       const runtime = await this.dependencies.createRuntime(context, abortController.signal)
       outcome = await runtime.run({
         runId: run.runId,
-        initialMessages: executionMessages(context),
+        initialMessages: executionMessages(context, this.dependencies.allowedTestCommands),
         skills: (context.skills ?? []).map((skill) => ({
           skillId: skill.skillId,
           versionId: skill.versionId,
@@ -328,7 +364,7 @@ export class AgentInboxProcessor {
         await delay(this.options.waitingToolRetryMs ?? 1_000, undefined, { signal: abortController.signal })
         outcome = await runtime.run({
           runId: run.runId,
-          initialMessages: executionMessages(context),
+          initialMessages: executionMessages(context, this.dependencies.allowedTestCommands),
           skills: (context.skills ?? []).map((skill) => ({
             skillId: skill.skillId,
             versionId: skill.versionId,

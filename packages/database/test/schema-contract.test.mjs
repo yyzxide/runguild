@@ -15,6 +15,8 @@ const workerInstancesMigrationUrl = new URL('../migrations/0012_worker_instances
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
 const worktreeSetupMigrationUrl = new URL('../migrations/0015_worktree_setup.sql', import.meta.url)
+const submissionEvidenceMigrationUrl = new URL('../migrations/0016_submission_evidence.sql', import.meta.url)
+const integrationConflictRecoveryMigrationUrl = new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url)
 
 test('schema keeps durable coordination invariants in PostgreSQL', async () => {
   const sql = await readFile(migrationUrl, 'utf8')
@@ -60,6 +62,14 @@ test('Task Worktree schema fences provisioning and enforces repository scope', a
   assert.match(sql, /provision_token/)
   assert.match(sql, /UNIQUE \(repository_path, branch_name\)/)
   assert.match(sql, /trg_task_worktree_scope/)
+})
+
+test('Integration conflict recovery records a bounded reconciliation baseline', async () => {
+  const sql = await readFile(integrationConflictRecoveryMigrationUrl, 'utf8')
+
+  assert.match(sql, /reconciliation_base_commit TEXT/)
+  assert.match(sql, /ck_task_worktree_reconciliation_base/)
+  assert.match(sql, /status IN \('ready', 'committed'\)/)
 })
 
 test('Context schema versions Skills and persists exact per-hop model views', async () => {
@@ -166,4 +176,13 @@ test('Worktree setup schema gates first model use with exact argv, leases, and g
   assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, mission_id, task_id\)/)
   assert.match(sql, /uq_task_worktree_setup_succeeded/)
   assert.doesNotMatch(sql, /stdout\s+TEXT|stderr\s+TEXT/i)
+})
+
+test('Submission Evidence schema freezes only same-Task evidence references', async () => {
+  const sql = await readFile(submissionEvidenceMigrationUrl, 'utf8')
+
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS task_submission_evidence/)
+  assert.match(sql, /PRIMARY KEY \(submission_id, evidence_id\)/)
+  assert.match(sql, /enforce_task_submission_evidence_scope/)
+  assert.match(sql, /submission evidence is outside the Task scope/)
 })

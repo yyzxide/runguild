@@ -12,8 +12,10 @@ import type {
   ReviewId,
   TaskId,
   TaskSubmissionId,
+  UserId,
   WorkspaceId,
 } from '@runguild/protocol'
+import { EVENT_TOPICS } from '@runguild/protocol'
 import type { Pool, PoolClient } from 'pg'
 
 import { canonicalJson } from './json.js'
@@ -73,6 +75,10 @@ export interface ReviewMaterialSnapshot {
     readonly uri: string
     readonly contentHash: string | null
     readonly metadata: Readonly<Record<string, unknown>>
+    readonly producerRunId: string
+    readonly producerRunStatus: string
+    readonly producerAttempt: number
+    readonly createdAt: string
   }[]
   readonly successfulToolResults: readonly {
     readonly action: string
@@ -123,6 +129,14 @@ export type ClaimReviewerExecutionResult =
   | { readonly kind: 'not_ready'; readonly taskStatus: string }
   | { readonly kind: 'terminal'; readonly status: ExecutionRow['status'] }
 
+export type RetryFailedReviewerExecutionResult =
+  | { readonly retried: true; readonly maxAttempts: number }
+  | {
+      readonly retried: false
+      readonly reason: 'not_found_or_forbidden' | 'execution_not_failed' | 'review_not_pending'
+        | 'mission_not_running' | 'task_not_reviewing' | 'reviewer_inactive' | 'retry_limit'
+    }
+
 export interface CompleteReviewerModelInput {
   readonly reviewId: ReviewId
   readonly reviewerAgentId: AgentId
@@ -137,6 +151,22 @@ export interface CompleteReviewerModelInput {
   readonly outputTokens: number
   readonly estimatedCostUsd?: number
   readonly latencyMs: number
+}
+
+export interface RecordInvalidReviewerModelResponseInput {
+  readonly reviewId: ReviewId
+  readonly reviewerAgentId: AgentId
+  readonly leaseToken: string
+  readonly promptSnapshot: Readonly<Record<string, unknown>>
+  readonly responseSnapshot: Readonly<Record<string, unknown>>
+  readonly modelProvider: string
+  readonly modelName: string
+  readonly providerRequestId?: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly estimatedCostUsd?: number
+  readonly latencyMs: number
+  readonly errorMessage: string
 }
 
 function validateDecision(decision: ReviewerDecision): void {
@@ -165,6 +195,122 @@ function validateDecision(decision: ReviewerDecision): void {
 
 export class ReviewerExecutionRepository {
   constructor(private readonly pool: Pool) {}
+
+  async retryFailed(input: {
+    readonly workspaceId: WorkspaceId
+    readonly reviewId: ReviewId
+    readonly requestedBy: UserId
+    readonly reason: string
+    readonly correlationId: CorrelationId
+  }): Promise<RetryFailedReviewerExecutionResult> {
+    const reason = input.reason.trim()
+    if (!reason || reason.length > 2_000) {
+      throw new Error('Reviewer retry reason must be between 1 and 2000 characters')
+    }
+    return withTransaction(this.pool, async (client) => {
+      const found = await client.query<{
+        readonly execution_status: ExecutionRow['status']
+        readonly review_status: ArtifactReview['status']
+        readonly mission_status: string
+        readonly task_status: string
+        readonly reviewer_status: string
+        readonly project_id: string
+        readonly mission_id: string
+        readonly task_id: string
+        readonly submission_id: string
+        readonly reviewer_agent_id: string
+        readonly decision: ReviewerDecision | null
+        readonly max_attempts: number
+      }>(
+        'SELECT execution.status AS execution_status, review.status AS review_status, ' +
+        'mission.status AS mission_status, task.status AS task_status, agent.status AS reviewer_status, ' +
+        'mission.project_id, execution.mission_id, execution.task_id, execution.submission_id, ' +
+        'execution.reviewer_agent_id, execution.decision, execution.max_attempts ' +
+        'FROM review_executions execution ' +
+        'JOIN reviews review ON review.id = execution.review_id ' +
+        'JOIN missions mission ON mission.id = execution.mission_id ' +
+        'JOIN tasks task ON task.id = execution.task_id ' +
+        'JOIN agents agent ON agent.id = execution.reviewer_agent_id AND agent.workspace_id = execution.workspace_id ' +
+        'JOIN users requester ON requester.id = $3 AND requester.workspace_id = execution.workspace_id ' +
+        'WHERE execution.review_id = $1 AND execution.workspace_id = $2 FOR UPDATE OF execution',
+        [input.reviewId, input.workspaceId, input.requestedBy],
+      )
+      const row = found.rows[0]
+      if (!row) return { retried: false, reason: 'not_found_or_forbidden' }
+      if (row.execution_status !== 'failed') return { retried: false, reason: 'execution_not_failed' }
+      if (!['requested', 'in_progress'].includes(row.review_status)) {
+        return { retried: false, reason: 'review_not_pending' }
+      }
+      if (row.mission_status !== 'running') return { retried: false, reason: 'mission_not_running' }
+      if (row.task_status !== 'reviewing') return { retried: false, reason: 'task_not_reviewing' }
+      if (row.reviewer_status !== 'active') return { retried: false, reason: 'reviewer_inactive' }
+      if (row.max_attempts >= 10) return { retried: false, reason: 'retry_limit' }
+
+      const maxAttempts = row.max_attempts + 1
+      const status = row.decision === null ? 'queued' : 'model_complete'
+      await client.query(
+        'UPDATE review_executions SET status = $2, max_attempts = $3, lease_token = NULL, ' +
+        'lease_expires_at = NULL, error = NULL, finished_at = NULL, updated_at = NOW() WHERE review_id = $1',
+        [input.reviewId, status, maxAttempts],
+      )
+      await client.query(
+        "UPDATE reviews SET summary = '' WHERE id = $1 AND status IN ('requested', 'in_progress')",
+        [input.reviewId],
+      )
+
+      const inboxPayload = {
+        schemaVersion: 1,
+        type: 'artifact.review_requested',
+        reviewId: input.reviewId,
+        submissionId: row.submission_id as TaskSubmissionId,
+        missionId: row.mission_id as MissionId,
+        taskId: row.task_id as TaskId,
+      }
+      const payloadJson = canonicalJson(inboxPayload)
+      const payloadHash = createHash('sha256').update(payloadJson).digest('hex')
+      await client.query(
+        'INSERT INTO inbox_messages ' +
+        '(id, workspace_id, agent_id, mission_id, kind, payload, payload_hash, dedupe_key) ' +
+        "VALUES ($1, $2, $3, $4, 'artifact.review_requested', $5::jsonb, $6, $7)",
+        [
+          'inbox_' + randomUUID(),
+          input.workspaceId,
+          row.reviewer_agent_id,
+          row.mission_id,
+          payloadJson,
+          payloadHash,
+          'artifact-review-retry:' + input.reviewId + ':' + maxAttempts,
+        ],
+      )
+      await client.query(
+        'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
+        [
+          'wake_' + randomUUID(),
+          EVENT_TOPICS.agentWake,
+          row.reviewer_agent_id,
+          canonicalJson({
+            schemaVersion: 1,
+            type: 'agent.wake',
+            workspaceId: input.workspaceId,
+            missionId: row.mission_id,
+            agentId: row.reviewer_agent_id,
+            reason: 'artifact.review_retried',
+            reviewId: input.reviewId,
+          }),
+        ],
+      )
+      await appendDomainEvent(client, {
+        type: 'review.execution_retried',
+        workspaceId: input.workspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: row.mission_id as MissionId,
+        actor: { kind: 'user', id: input.requestedBy },
+        correlationId: input.correlationId,
+        payload: { reviewId: input.reviewId, from: 'failed', to: status, reason, maxAttempts },
+      })
+      return { retried: true, maxAttempts }
+    })
+  }
 
   async claim(input: {
     readonly reviewId: ReviewId
@@ -293,6 +439,32 @@ export class ReviewerExecutionRepository {
     if (result.rowCount !== 1) throw new Error('Reviewer lease was lost before model completion')
   }
 
+  async recordInvalidModelResponse(input: RecordInvalidReviewerModelResponseInput): Promise<void> {
+    const result = await this.pool.query(
+      'UPDATE review_executions SET prompt_snapshot = $4::jsonb, response_snapshot = $5::jsonb, ' +
+      'model_provider = $6, model_name = $7, provider_request_id = $8, input_tokens = $9, ' +
+      'output_tokens = $10, estimated_cost_usd = $11, latency_ms = $12, error = $13::jsonb, ' +
+      'updated_at = NOW() WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
+      "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW()",
+      [
+        input.reviewId,
+        input.reviewerAgentId,
+        input.leaseToken,
+        canonicalJson(input.promptSnapshot),
+        canonicalJson(input.responseSnapshot),
+        input.modelProvider,
+        input.modelName,
+        input.providerRequestId ?? null,
+        input.inputTokens,
+        input.outputTokens,
+        input.estimatedCostUsd ?? null,
+        input.latencyMs,
+        canonicalJson({ message: input.errorMessage }),
+      ],
+    )
+    if (result.rowCount !== 1) throw new Error('Reviewer lease was lost before invalid model response persistence')
+  }
+
   async renew(input: {
     readonly reviewId: ReviewId
     readonly reviewerAgentId: AgentId
@@ -383,13 +555,12 @@ export class ReviewerExecutionRepository {
       artifact_kind: string
       content_hash: string
       content: unknown
-      run_id: string
     }>(
       'SELECT mission.title AS mission_title, mission.goal AS mission_goal, mission.constraints AS mission_constraints, ' +
       'task.title AS task_title, task.description AS task_description, submission.note, ' +
       'submission.evidence_bundle_hash, submission.submitted_by_agent_id, submission.artifact_version_id, ' +
       'artifact.id AS artifact_id, artifact.title AS artifact_title, artifact.kind AS artifact_kind, ' +
-      'version.content_hash, version.content, submission.run_id ' +
+      'version.content_hash, version.content ' +
       'FROM task_submissions submission JOIN missions mission ON mission.id = submission.mission_id ' +
       'JOIN tasks task ON task.id = submission.task_id ' +
       'JOIN artifact_versions version ON version.id = submission.artifact_version_id ' +
@@ -414,16 +585,29 @@ export class ReviewerExecutionRepository {
         uri: string
         content_hash: string | null
         metadata: Readonly<Record<string, unknown>>
+        run_id: string
+        created_at: Date
+        producer_run_status: string
+        producer_attempt: number
       }>(
-        'SELECT id, kind, uri, content_hash, metadata FROM evidence ' +
-        'WHERE task_id = $1 AND run_id = $2 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY kind, id',
-        [row.task_id, item.run_id],
+        'SELECT evidence.id, evidence.kind, evidence.uri, evidence.content_hash, evidence.metadata, ' +
+        'evidence.run_id, evidence.created_at, producer.status AS producer_run_status, ' +
+        'producer.attempt AS producer_attempt FROM task_submission_evidence selected ' +
+        'JOIN evidence ON evidence.id = selected.evidence_id ' +
+        'JOIN agent_runs producer ON producer.id = evidence.run_id ' +
+        'WHERE selected.submission_id = $1 ORDER BY evidence.kind, evidence.id',
+        [row.submission_id],
       )
     const tools = await client.query<{ action: string; result: unknown }>(
-        "SELECT action, result FROM tool_executions WHERE run_id = $1 AND status = 'succeeded' " +
-        "AND action IN ('repo.status', 'repo.diff', 'repo.commit', 'test.run', 'shell.run') " +
-        'ORDER BY created_at, id',
-        [item.run_id],
+        'SELECT execution.action, execution.result FROM tool_executions execution ' +
+        "WHERE execution.status = 'succeeded' " +
+        "AND execution.action IN ('repo.status', 'repo.diff', 'repo.commit', 'test.run', 'shell.run') " +
+        'AND EXISTS (SELECT 1 FROM task_submission_evidence selected ' +
+        'JOIN evidence ON evidence.id = selected.evidence_id ' +
+        'WHERE selected.submission_id = $1 AND evidence.run_id = execution.run_id ' +
+        "AND evidence.metadata->>'toolCallId' = execution.request->>'id') " +
+        'ORDER BY execution.created_at, execution.id',
+        [row.submission_id],
       )
     const worktree = await client.query<{
         base_commit: string
@@ -482,6 +666,10 @@ export class ReviewerExecutionRepository {
         uri: record.uri,
         contentHash: record.content_hash,
         metadata: record.metadata,
+        producerRunId: record.run_id,
+        producerRunStatus: record.producer_run_status,
+        producerAttempt: record.producer_attempt,
+        createdAt: record.created_at.toISOString(),
       })),
       successfulToolResults: tools.rows,
     }

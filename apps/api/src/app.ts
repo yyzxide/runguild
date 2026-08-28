@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+// Merge-resolved: this file preserves both the base app wiring and the
+// Task-introduced project-scoped Run Trace list/detail routes (run-traces).
 import {
   AGENT_ROLES,
   CONVERSATION_KINDS,
@@ -53,11 +55,14 @@ import {
   type RuntimeRepository,
   type ReviewRepository,
   type RunTraceRepository,
+  type ReviewerExecutionRepository,
   type SkillRepository,
   type TaskRepository,
   type ToolExecutionRepository,
   type WorktreeSetupRepository,
 } from '@runguild/database'
+// Run Trace services are injected here; only project-scoped redacted summaries are exposed.
+// listRecentRuns/getRun join agent_runs→tasks→missions and never return keys or raw model bodies.
 import { buildEvaluationReport } from '@runguild/evaluation'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
@@ -84,6 +89,7 @@ type RunControlService = Pick<RuntimeRepository, 'createControl'>
 type TaskControlService = Pick<TaskRepository, 'retryFailedTask'>
 type ToolApprovalService = Pick<ToolExecutionRepository, 'resolveApproval'>
 type ReviewService = Pick<ReviewRepository, 'submitArtifactVersion' | 'reviewSubmission' | 'getSubmission'>
+type ReviewerExecutionControlService = Pick<ReviewerExecutionRepository, 'retryFailed'>
 type SkillService = Pick<SkillRepository, 'create' | 'createVersion' | 'assign' | 'listForAgent'>
 type EvaluationService = Pick<
   EvaluationRepository,
@@ -107,6 +113,7 @@ export interface ApiDependencies {
   readonly toolApprovals: ToolApprovalService
   readonly artifacts: ArtifactService
   readonly reviews: ReviewService
+  readonly reviewerExecutions: ReviewerExecutionControlService
   readonly skills: SkillService
   readonly evaluations: EvaluationService
   readonly runTraces: RunTraceService
@@ -1357,6 +1364,33 @@ export function createApiApp(dependencies: ApiDependencies) {
       res.json(result)
     }),
   )
+
+  app.post('/api/v1/workspaces/:workspaceId/reviews/:reviewId/retry', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_reviewer_retry_required' } })
+      return
+    }
+    const body = retryTaskSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const result = await dependencies.reviewerExecutions.retryFailed({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      reviewId: idSchema.parse(req.params.reviewId) as ReviewId,
+      requestedBy: actorRef.id,
+      reason: body.data.reason,
+      correlationId: ('review_retry_' + randomUUID()) as CorrelationId,
+    })
+    if (!result.retried) {
+      const status = result.reason === 'not_found_or_forbidden' ? 404 : 409
+      res.status(status).json({ error: { code: 'reviewer_retry_rejected', reason: result.reason } })
+      return
+    }
+    res.json(result)
+  }))
 
   app.get('/api/v1/workspaces/:workspaceId/submissions/:submissionId', route(async (req, res) => {
     const actorRef = requestActor(req, res)

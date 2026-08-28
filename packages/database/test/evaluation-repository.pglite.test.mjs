@@ -25,6 +25,7 @@ const migrationUrls = [
   new URL('../migrations/0007_worktrees.sql', import.meta.url),
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {

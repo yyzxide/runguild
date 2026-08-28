@@ -17,6 +17,7 @@ const migrationUrls = [
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
   new URL('../migrations/0010_conversations.sql', import.meta.url),
+  new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -121,7 +122,17 @@ test('execution context freezes Mission, Task, criteria, and exact Skill Version
       "UPDATE missions SET goal = 'Changed goal' WHERE id = 'mission_context';" +
       "UPDATE tasks SET description = 'Changed description', review_required = FALSE WHERE id = 'task_context';" +
       "INSERT INTO artifacts (id, workspace_id, project_id, mission_id, title, kind, created_by) " +
-      "VALUES ('artifact_later', 'ws_context', 'project_context', 'mission_context', 'Later', 'document', 'user_context');",
+      "VALUES ('artifact_later', 'ws_context', 'project_context', 'mission_context', 'Later', 'document', 'user_context');" +
+      "INSERT INTO task_worktrees " +
+      "(task_id, workspace_id, mission_id, project_id, repository_path, worktree_path, branch_name, " +
+      "base_ref, base_commit, reconciliation_base_commit, head_commit, status) VALUES " +
+      "('task_context', 'ws_context', 'mission_context', 'project_context', '/repo', '/trees/task', " +
+      "'agent/task', 'main', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', " +
+      "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'cccccccccccccccccccccccccccccccccccccccc', " +
+      "'ready');" +
+      "UPDATE task_worktrees SET last_error = " +
+      "'{\"code\":\"worktree_integration_conflict\",\"message\":\"conflict\"}'::jsonb " +
+      "WHERE task_id = 'task_context';",
     )
 
     const replay = await contexts.load('run_context_1', 'agent_context')
@@ -136,6 +147,8 @@ test('execution context freezes Mission, Task, criteria, and exact Skill Version
     assert.equal(nextRun.missionGoal, 'Changed goal')
     assert.equal(nextRun.reviewRequired, false)
     assert.equal(nextRun.missionArtifacts.length, 2)
+    assert.equal(nextRun.integrationRecovery.baseCommit, 'b'.repeat(40))
+    assert.equal(nextRun.integrationRecovery.error.code, 'worktree_integration_conflict')
     assert.notEqual(nextRun.frozenContextHash, first.frozenContextHash)
   } finally {
     await database.close()

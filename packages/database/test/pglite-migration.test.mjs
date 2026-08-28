@@ -20,6 +20,8 @@ const migrationUrls = [
   new URL('../migrations/0013_project_runtime_config.sql', import.meta.url),
   new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
   new URL('../migrations/0015_worktree_setup.sql', import.meta.url),
+  new URL('../migrations/0016_submission_evidence.sql', import.meta.url),
+  new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {

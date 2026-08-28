@@ -98,10 +98,26 @@ The Agent can report that its run is done, blocked, failed, or waiting for a
 human. The server validates this report and performs the actual state
 transition.
 
-Model responses are bounded by `max_hops`. A response without an explicit
-`run.set_status` cannot transition to succeeded. Pending Tool Calls and model
-messages are durable, so resuming a waiting Run does not require the model to
-reconstruct the missing action.
+Model responses are bounded by `max_hops`. A normal response without an
+explicit `run.set_status` cannot transition to succeeded. A response truncated
+by the output limit, content filter, or provider error without a complete Tool
+Call fails immediately instead of consuming more hops. Pending Tool Calls and
+model messages are durable, so resuming a waiting Run does not require the
+model to reconstruct the missing action. A Worker shutdown aborts the active
+model/tool signal before the process releases ownership.
+
+Every Agent hop also receives the Worker's exact `test.run` argv allowlist and
+the repository-tool path contract. Shell operators, invented environment probes,
+and glob paths are explicitly invalid. For a Builder Task that requires
+`file_diff` Evidence, the execution policy allows four discovery hops before
+the first successful `file.patch` and four more after every later successful
+patch. When the current window expires, the Runtime removes `repo.status`,
+`repo.search`, `repo.diff`, and `file.read` from the model-visible Tool
+definitions until another durable `file.patch` succeeds. It also rejects a
+stale or replayed discovery call at the Tool boundary. The current window is
+reconstructed from persisted assistant Tool Calls and Tool Results, so a crash
+cannot reset the budget or invent progress. Tasks without required `file_diff`
+Evidence do not receive this gate.
 
 ## Tool execution
 
@@ -128,7 +144,10 @@ requested or in_progress -> cancelled
 ~~~
 
 An approved Review always references one immutable Artifact Version and one
-Evidence bundle. New edits require a new version and a new review.
+Evidence bundle. The Submission freezes its selected Evidence ids. Evidence
+from an earlier retry is reusable only inside the same Task; code Evidence must
+match the exact committed HEAD, and test Evidence must bind to the same clean,
+stable HEAD and Git tree. New edits require a new version and a new review.
 
 The automatic Reviewer uses a separate durable execution state machine:
 
@@ -147,11 +166,28 @@ state finalizes the Review without another model call. A Review Inbox message
 that arrives before the producing Task enters `reviewing` remains unacknowledged
 and is retried rather than being lost.
 
+The frozen snapshot never discards duplicate Evidence ids. Its model-input
+projection groups identical content-addressed payloads and carries every source
+id/Run plus metadata delta, so repeated acceptance-criterion bindings cannot
+exhaust the prompt safety budget while a genuinely oversized unique payload still
+requires human review.
+
+A human retry may move only `failed -> queued` (or `failed -> model_complete`
+when a decision was already persisted), adds exactly one bounded attempt, keeps
+the frozen material snapshot, and writes a fresh Inbox/outbox wake plus audit
+event. It cannot reopen terminal Review decisions or a Task outside `reviewing`.
+An invalid model response remains inside the execution ledger with its raw text,
+Tool Calls, provider request id, Token usage, and latency. It consumes an attempt
+but cannot advance to `model_complete` or alter the Review.
+
 ## Task Worktree
 
 ~~~text
 provisioning -> ready -> committed -> integrating -> integrated
       |           |-----> integrated (clean baseline, no code change)
+      |           |         |      conflict -> ready (pending base merge)
+      |           |         |                    |
+      |           |         |                    +-> committed -> reviewing again
       |           |         |             |
       +-----------+---------+-------------+-> failed
 
@@ -165,6 +201,15 @@ Provision, integration, and cleanup transitions each require their current
 expiring fencing token. `committed` records the exact reviewable HEAD;
 integration accepts a clean fast-forward or a conflict-free server-owned merge
 that retains that exact HEAD as a parent. Conflicts do not change the base ref.
+Instead, the Integration Worker materializes a pending merge of the current base
+inside the isolated Task Worktree, supersedes the old approved Submission, and
+returns the Task to `ready` while attempts remain (`failed` otherwise). This
+removes a deterministically conflicting commit from the Integration queue. The
+Builder must resolve the pending merge, produce a new commit, rerun verification,
+freeze a new Artifact Version, and obtain a fresh independent Review. The
+persisted `reconciliation_base_commit` becomes the new evidence baseline only
+after `repo.commit` proves that the resolution commit contains it; platform-only
+changes are therefore not misreported as Task diff Evidence.
 A Task with a Worktree cannot complete before `integrated`, and cleanup never
 deletes a dirty Worktree. A new Run attempt for the same Task reuses the
 Worktree row's persisted `base_commit` even if its named base branch has

@@ -103,6 +103,11 @@ export interface AgentRuntimeOptions {
   readonly completionVerifier: CompletionVerifier
   readonly contextBuilder: Pick<DeterministicContextBuilder, 'build'>
   readonly toolDefinitions?: readonly ModelToolDefinition[]
+  readonly implementationGate?: {
+    readonly maxDiscoveryHops: number
+    readonly discoveryActions: readonly ToolAction[]
+    readonly implementationActions: readonly ToolAction[]
+  }
   readonly now?: () => Date
 }
 
@@ -142,6 +147,33 @@ function statusCall(calls: readonly ModelToolCall[]): ModelToolCall<'run.set_sta
   return (statuses.at(-1) as ModelToolCall<'run.set_status'> | undefined) ?? null
 }
 
+const IMPLEMENTATION_GATE_MARKER = '[Implementation gate]'
+
+function lastSucceededActionHop(
+  messages: readonly ModelMessage[],
+  actions: ReadonlySet<ToolAction>,
+): number | null {
+  const pendingActions = new Map<string, { readonly action: ToolAction; readonly hop: number }>()
+  let lastHop: number | null = null
+  for (const message of messages) {
+    for (const call of message.toolCalls ?? []) {
+      pendingActions.set(call.id, { action: call.action, hop: message.hop ?? 0 })
+    }
+    if (message.role !== 'tool' || message.toolCallId === undefined) continue
+    const pending = pendingActions.get(message.toolCallId)
+    try {
+      const result = JSON.parse(message.content) as { readonly status?: unknown }
+      if (result.status === 'succeeded' && pending !== undefined && actions.has(pending.action)) {
+        lastHop = Math.max(lastHop ?? 0, message.hop ?? pending.hop)
+      }
+    } catch {
+      // Malformed historical tool output cannot prove that an implementation action succeeded.
+    }
+    pendingActions.delete(message.toolCallId)
+  }
+  return lastHop
+}
+
 export class AgentRuntime {
   private readonly now: () => Date
   private readonly definitions: readonly ModelToolDefinition[]
@@ -153,6 +185,25 @@ export class AgentRuntime {
       throw new Error('run.set_status definition is supplied by AgentRuntime')
     }
     this.definitions = [...supplied, STATUS_TOOL]
+    const gate = options.implementationGate
+    if (gate) {
+      if (!Number.isInteger(gate.maxDiscoveryHops) || gate.maxDiscoveryHops < 1 || gate.maxDiscoveryHops > 1_000) {
+        throw new RangeError('implementationGate.maxDiscoveryHops must be an integer between 1 and 1000')
+      }
+      if (gate.discoveryActions.length === 0 || gate.implementationActions.length === 0) {
+        throw new Error('implementationGate action lists must be non-empty')
+      }
+      const registered = new Set(this.definitions.map((definition) => definition.action))
+      for (const action of [...gate.discoveryActions, ...gate.implementationActions]) {
+        if (!registered.has(action)) {
+          throw new Error('implementationGate action is not registered: ' + action)
+        }
+      }
+      const implementation = new Set(gate.implementationActions)
+      if (gate.discoveryActions.some((action) => implementation.has(action))) {
+        throw new Error('implementationGate discovery and implementation actions must not overlap')
+      }
+    }
   }
 
   async run(input: RunAgentInput): Promise<RuntimeOutcome> {
@@ -217,14 +268,16 @@ export class AgentRuntime {
         return this.finish(input.runId, 'timed_out', 'Maximum model hops reached.', context.currentHop)
       }
       context = { ...context, currentHop: hop }
+      await this.ensureImplementationGateMessage(input.runId, hop, messages)
       const continuation = await this.options.persistence.loadModelContinuation(input.runId)
+      const definitions = this.definitionsFor(hop, messages)
       let builtContext
       try {
         builtContext = this.options.contextBuilder.build({
           runId: input.runId,
           hop,
           messages,
-          tools: this.definitions,
+          tools: definitions,
           ...(input.skills === undefined ? {} : { skills: input.skills }),
         })
       } catch (error) {
@@ -234,7 +287,7 @@ export class AgentRuntime {
       await this.options.persistence.saveContextSnapshot(builtContext.snapshot)
       const request: ModelRequest = {
         messages: builtContext.messages,
-        tools: this.definitions,
+        tools: definitions,
         context: {
           snapshotId: builtContext.snapshot.id,
           contentHash: builtContext.snapshot.contentHash,
@@ -287,6 +340,15 @@ export class AgentRuntime {
         continue
       }
 
+      if (response.finishReason !== 'stop') {
+        return this.finish(
+          input.runId,
+          'failed',
+          'Model response ended with ' + response.finishReason + ' before producing an executable tool call.',
+          hop,
+        )
+      }
+
       const nudge: ModelMessage = {
         role: 'user',
         content: 'No explicit run status was provided. Continue working or call run.set_status; silence is not completion.',
@@ -310,35 +372,49 @@ export class AgentRuntime {
     }
 
     for (const call of normalCalls) {
-      const risk = this.options.tools.riskFor(call.action)
       await this.options.persistence.recordEvent(context.runId, hop, 'tool_requested', {
         toolCallId: call.id,
         action: call.action,
       })
       let result: ToolResult
-      if (!risk) {
+      if (this.discoveryActionBlocked(hop, call.action, messages)) {
         result = {
           status: 'failed',
-          error: { code: 'invalid_input', message: 'Tool is not registered: ' + call.action, retryable: false },
+          error: {
+            code: 'conflict',
+            message: 'Discovery budget is exhausted. One implementation action must succeed before more repository discovery: ' +
+              this.options.implementationGate!.implementationActions.join(', '),
+            retryable: false,
+          },
           effectState: 'none',
           sideEffects: [],
         }
       } else {
-        const request = {
-          schemaVersion: 1,
-          id: call.id,
-          action: call.action,
-          workspaceId: context.workspaceId,
-          missionId: context.missionId,
-          taskId: context.taskId,
-          runId: context.runId,
-          agentId: context.agentId,
-          idempotencyKey: context.runId + ':' + call.id,
-          risk,
-          input: call.input,
-          createdAt: this.now().toISOString() as IsoTimestamp,
-        } as AnyToolRequest
-        result = await this.options.tools.execute(request, abortSignal)
+        const risk = this.options.tools.riskFor(call.action)
+        if (!risk) {
+          result = {
+            status: 'failed',
+            error: { code: 'invalid_input', message: 'Tool is not registered: ' + call.action, retryable: false },
+            effectState: 'none',
+            sideEffects: [],
+          }
+        } else {
+          const request = {
+            schemaVersion: 1,
+            id: call.id,
+            action: call.action,
+            workspaceId: context.workspaceId,
+            missionId: context.missionId,
+            taskId: context.taskId,
+            runId: context.runId,
+            agentId: context.agentId,
+            idempotencyKey: context.runId + ':' + call.id,
+            risk,
+            input: call.input,
+            createdAt: this.now().toISOString() as IsoTimestamp,
+          } as AnyToolRequest
+          result = await this.options.tools.execute(request, abortSignal)
+        }
       }
 
       await this.options.persistence.recordEvent(context.runId, hop, 'tool_completed', {
@@ -473,6 +549,69 @@ export class AgentRuntime {
       })
     }
     return null
+  }
+
+  private discoveryDeadline(messages: readonly ModelMessage[]): number {
+    const gate = this.options.implementationGate
+    if (!gate) return Number.POSITIVE_INFINITY
+    const lastImplementationHop = lastSucceededActionHop(
+      messages,
+      new Set(gate.implementationActions),
+    )
+    return (lastImplementationHop ?? 0) + gate.maxDiscoveryHops
+  }
+
+  private discoveryActionBlocked(
+    hop: number,
+    action: ToolAction,
+    messages: readonly ModelMessage[],
+  ): boolean {
+    const gate = this.options.implementationGate
+    return Boolean(gate
+      && hop > this.discoveryDeadline(messages)
+      && gate.discoveryActions.includes(action)
+    )
+  }
+
+  private definitionsFor(
+    hop: number,
+    messages: readonly ModelMessage[],
+  ): readonly ModelToolDefinition[] {
+    const gate = this.options.implementationGate
+    if (!gate || hop <= this.discoveryDeadline(messages)) {
+      return this.definitions
+    }
+    const discovery = new Set(gate.discoveryActions)
+    return this.definitions.filter((definition) => !discovery.has(definition.action))
+  }
+
+  private async ensureImplementationGateMessage(
+    runId: RunId,
+    hop: number,
+    messages: ModelMessage[],
+  ): Promise<void> {
+    const gate = this.options.implementationGate
+    if (!gate || hop <= this.discoveryDeadline(messages)) {
+      return
+    }
+    const lastImplementationHop = lastSucceededActionHop(
+      messages,
+      new Set(gate.implementationActions),
+    )
+    const cycleMarker = IMPLEMENTATION_GATE_MARKER + ' cycle=' + String(lastImplementationHop ?? 'initial')
+    if (messages.some((message) => message.content.startsWith(cycleMarker))) return
+    const message: ModelMessage = {
+      role: 'user',
+      hop,
+      content:
+        cycleMarker + '. The current ' + String(gate.maxDiscoveryHops) +
+        '-hop discovery window is exhausted. Repository discovery tools are temporarily unavailable. ' +
+        'Use the facts already gathered and make one bounded change now with one of these actions: ' +
+        gate.implementationActions.join(', ') +
+        '. A successful implementation action opens one new bounded discovery window.',
+    }
+    await this.options.persistence.appendMessage(runId, hop, message)
+    messages.push(message)
   }
 
   private async requireRun(runId: RunId): Promise<RuntimeRunContext> {

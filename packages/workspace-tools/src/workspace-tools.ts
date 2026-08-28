@@ -20,6 +20,13 @@ interface CommandResult {
   readonly timedOut: boolean
 }
 
+interface GitTestSnapshot {
+  readonly headCommit: string
+  readonly treeHash: string
+  readonly clean: boolean
+  readonly stateHash: string
+}
+
 export interface EvidenceDraft {
   readonly kind: EvidenceKind
   readonly uri: string
@@ -131,6 +138,40 @@ async function runCommand(input: {
   })
 }
 
+async function gitTestSnapshot(root: string, abortSignal?: AbortSignal): Promise<GitTestSnapshot> {
+  const [head, tree, status] = await Promise.all([
+    runCommand({
+      command: ['git', 'rev-parse', '--verify', 'HEAD^{commit}'],
+      cwd: root,
+      timeoutMs: 30_000,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    }),
+    runCommand({
+      command: ['git', 'rev-parse', '--verify', 'HEAD^{tree}'],
+      cwd: root,
+      timeoutMs: 30_000,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    }),
+    runCommand({
+      command: ['git', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      cwd: root,
+      timeoutMs: 30_000,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    }),
+  ])
+  if (head.exitCode !== 0 || tree.exitCode !== 0 || status.exitCode !== 0) {
+    throw new Error('Test evidence requires a readable Git Worktree snapshot')
+  }
+  const headCommit = head.stdout.trim()
+  const treeHash = tree.stdout.trim()
+  return {
+    headCommit,
+    treeHash,
+    clean: status.stdout.length === 0,
+    stateHash: hash(headCommit + '\n' + treeHash + '\n' + status.stdout),
+  }
+}
+
 class WorkspaceBoundary {
   readonly root: string
 
@@ -193,8 +234,10 @@ function patchPaths(diff: string): readonly string[] {
 function normalizeUnifiedDiffHunkCounts(diff: string): {
   readonly diff: string
   readonly changed: boolean
+  readonly appendedTrailingNewline: boolean
 } {
-  const lines = diff.split('\n')
+  const appendedTrailingNewline = !diff.endsWith('\n')
+  const lines = (appendedTrailingNewline ? diff + '\n' : diff).split('\n')
   let changed = false
   for (let index = 0; index < lines.length; index += 1) {
     const header = lines[index]
@@ -224,6 +267,108 @@ function normalizeUnifiedDiffHunkCounts(diff: string): {
       lines[index] = normalized
       changed = true
     }
+  }
+  return { diff: lines.join('\n'), changed, appendedTrailingNewline }
+}
+
+function diffPath(raw: string): string | null {
+  const value = raw.split('\t', 1)[0]?.trim()
+  if (!value || value === '/dev/null') return null
+  return value.startsWith('a/') || value.startsWith('b/') ? value.slice(2) : value
+}
+
+async function normalizeUnifiedDiffHunkStarts(
+  diff: string,
+  boundary: WorkspaceBoundary,
+): Promise<{ readonly diff: string; readonly changed: boolean }> {
+  const lines = diff.split('\n')
+  const fileLines = new Map<string, readonly string[] | null>()
+  let oldPath: string | null = null
+  let newPath: string | null = null
+  let cumulativeDelta = 0
+  let changed = false
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line === undefined) continue
+    if (line.startsWith('diff --git ')) {
+      oldPath = null
+      newPath = null
+      cumulativeDelta = 0
+      continue
+    }
+    if (line.startsWith('--- ')) {
+      oldPath = diffPath(line.slice(4))
+      cumulativeDelta = 0
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      newPath = diffPath(line.slice(4))
+      continue
+    }
+    const match = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)$/.exec(line)
+    if (!match) continue
+    const oldCount = Number(match[2])
+    const newCount = Number(match[4])
+    const targetPath = oldPath ?? newPath
+    if (!targetPath || oldCount === 0) {
+      cumulativeDelta += newCount - oldCount
+      continue
+    }
+
+    const oldSequence: string[] = []
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      if (oldSequence.length >= oldCount) break
+      const body = lines[bodyIndex]
+      if (body === undefined || body.startsWith('@@ ') || body.startsWith('diff --git ')) break
+      if (body === '\\ No newline at end of file') continue
+      if (body.startsWith(' ') || body.startsWith('-')) oldSequence.push(body.slice(1))
+      else if (!body.startsWith('+')) break
+    }
+    if (oldSequence.length === 0) {
+      cumulativeDelta += newCount - oldCount
+      continue
+    }
+
+    if (!fileLines.has(targetPath)) {
+      try {
+        const target = await boundary.existing(targetPath)
+        const content = await readFile(target.absolute, 'utf8')
+        fileLines.set(targetPath, content.split('\n'))
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+        if (code !== 'ENOENT') throw error
+        fileLines.set(targetPath, null)
+      }
+    }
+    const content = fileLines.get(targetPath)
+    if (content) {
+      const declaredStart = Number(match[1]) - 1
+      const declaredMatches = declaredStart >= 0 && oldSequence.every(
+        (value, offset) => content[declaredStart + offset] === value,
+      )
+      if (declaredMatches) {
+        cumulativeDelta += newCount - oldCount
+        continue
+      }
+      const matches: number[] = []
+      for (let start = 0; start + oldSequence.length <= content.length; start += 1) {
+        if (oldSequence.every((value, offset) => content[start + offset] === value)) matches.push(start)
+      }
+      if (matches.length === 1) {
+        const oldStart = matches[0]! + 1
+        const newStart = oldStart + cumulativeDelta
+        const normalized = '@@ -' + oldStart + ',' + oldCount +
+          ' +' + newStart + ',' + newCount + ' @@' + match[5]
+        if (normalized !== line) {
+          lines[index] = normalized
+          changed = true
+        }
+      } else if (matches.length > 1) {
+        throw new Error('Patch hunk start is stale and old-side context is ambiguous: ' + targetPath)
+      }
+    }
+    cumulativeDelta += newCount - oldCount
   }
   return { diff: lines.join('\n'), changed }
 }
@@ -460,12 +605,13 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!input.unifiedDiff || Buffer.byteLength(input.unifiedDiff) > MAX_PATCH_BYTES) {
         throw new Error('Patch must be non-empty and no larger than 1 MiB')
       }
-      const normalized = normalizeUnifiedDiffHunkCounts(input.unifiedDiff)
-      const paths = patchPaths(normalized.diff)
+      const counted = normalizeUnifiedDiffHunkCounts(input.unifiedDiff)
+      const paths = patchPaths(counted.diff)
       if (!paths.includes(input.path)) {
         throw new Error('Patch intent path is not present in the unified diff')
       }
       for (const path of paths) await boundary.patchTarget(path)
+      const normalized = await normalizeUnifiedDiffHunkStarts(counted.diff, boundary)
       const check = await runCommand({
         command: ['git', 'apply', '--check', '--whitespace=nowarn', '-'],
         cwd: boundary.root,
@@ -500,7 +646,13 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         kind: 'file_diff',
         uri: 'workspace://' + paths.join(',') + '#' + diffHash,
         contentHash: diffHash,
-        metadata: { paths, alreadyApplied, normalizedHunkCounts: normalized.changed },
+        metadata: {
+          paths,
+          alreadyApplied,
+          normalizedHunkCounts: counted.changed,
+          normalizedHunkStarts: normalized.changed,
+          appendedTrailingNewline: counted.appendedTrailingNewline,
+        },
       })
       if (evidence.length === 0) throw new Error('Patch evidence was not persisted')
       const sideEffects: TypedSideEffect[] = paths.map((path) => ({
@@ -616,7 +768,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         })
         if (head.exitCode !== 0) throw new Error('Worktree HEAD cannot be resolved')
         commitHash = head.stdout.trim()
-        if (record.headCommit === commitHash && record.status === 'ready') {
+        if (record.headCommit === commitHash
+            && record.status === 'ready'
+            && record.reconciliationBaseCommit === undefined) {
           const tree = await runCommand({
             command: ['git', 'rev-parse', '--verify', 'HEAD^{tree}'],
             cwd: boundary.root,
@@ -639,7 +793,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         const recovered = await runCommand({
           command: [
             'git', 'diff', '--binary', '--no-ext-diff',
-            record.headCommit === commitHash ? record.baseCommit : record.headCommit ?? record.baseCommit,
+            record.headCommit === commitHash
+              ? record.reconciliationBaseCommit ?? record.baseCommit
+              : record.headCommit ?? record.reconciliationBaseCommit ?? record.baseCommit,
             commitHash,
             '--',
           ],
@@ -654,9 +810,20 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         committed = record.headCommit !== commitHash
       }
 
+      const diffBaseCommit = record.reconciliationBaseCommit ?? record.baseCommit
+      if (record.reconciliationBaseCommit !== undefined) {
+        const reconciled = await runCommand({
+          command: ['git', 'merge-base', '--is-ancestor', record.reconciliationBaseCommit, commitHash],
+          cwd: boundary.root,
+          timeoutMs: 30_000,
+        })
+        if (reconciled.exitCode !== 0) {
+          throw new Error('Integration conflict resolution commit must contain the current base commit')
+        }
+      }
       const cumulative = await runCommand({
         command: [
-          'git', 'diff', '--binary', '--no-ext-diff', record.baseCommit, commitHash, '--',
+          'git', 'diff', '--binary', '--no-ext-diff', diffBaseCommit, commitHash, '--',
         ],
         cwd: boundary.root,
         timeoutMs: 30_000,
@@ -705,23 +872,40 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     retryMode: 'none',
     async execute(input, context) {
       if (!exactCommandAllowed(input.command, options.allowedTestCommands)) {
-        throw new Error('Test command is not in the workspace allowlist')
+        throw new Error(
+          'Test command is not in the workspace allowlist; choose one exact argv: ' +
+          JSON.stringify(options.allowedTestCommands),
+        )
       }
       const timeoutMs = Math.min(input.timeoutMs, maxTestTimeoutMs)
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) throw new Error('Invalid test timeout')
+      const before = await gitTestSnapshot(boundary.root, context.abortSignal)
       const result = await runCommand({
         command: input.command,
         cwd: boundary.root,
         timeoutMs,
         ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
       })
+      const after = await gitTestSnapshot(boundary.root, context.abortSignal)
       const passed = result.exitCode === 0 && !result.timedOut
       const contentHash = hash(result.stdout + '\n---stderr---\n' + result.stderr)
+      const stable = before.stateHash === after.stateHash
+      const evidenceMetadata = {
+        command: input.command,
+        exitCode: result.exitCode,
+        passed,
+        timedOut: result.timedOut,
+        headCommit: after.headCommit,
+        treeHash: after.treeHash,
+        clean: before.clean && after.clean && stable,
+        stable,
+        stateHash: after.stateHash,
+      }
       const testEvidence = await options.evidence.record(context, {
         kind: 'test_run',
         uri: 'test-run://' + context.request.id + '#' + contentHash,
         contentHash,
-        metadata: { command: input.command, exitCode: result.exitCode, passed, timedOut: result.timedOut },
+        metadata: evidenceMetadata,
       })
       const commandEvidence = await options.evidence.record(context, {
         kind: 'command_result',
@@ -733,6 +917,11 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           passed,
           timedOut: result.timedOut,
           truncated: result.truncated,
+          headCommit: after.headCommit,
+          treeHash: after.treeHash,
+          clean: before.clean && after.clean && stable,
+          stable,
+          stateHash: after.stateHash,
         },
       })
       const evidence = [...testEvidence, ...commandEvidence]
@@ -762,7 +951,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
 export const WORKSPACE_TOOL_DEFINITIONS = [
   {
     action: 'repo.search' as const,
-    description: 'Search text in the assigned repository. Returns matching file paths, line numbers, and previews.',
+    description: 'Search text in the assigned repository. paths must be literal existing relative files/directories; globs are unsupported, and omitting paths searches the whole Worktree.',
     inputSchema: {
       type: 'object',
       required: ['query'],
@@ -832,7 +1021,7 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
   },
   {
     action: 'test.run' as const,
-    description: 'Run one exact allowlisted test command and return bounded stdout, stderr, status, and durable evidence.',
+    description: 'Run one exact allowlisted argv from the execution policy, without Shell operators or extra commands, and return bounded output plus durable evidence.',
     inputSchema: {
       type: 'object',
       required: ['command', 'timeoutMs'],
