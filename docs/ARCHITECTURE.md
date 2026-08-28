@@ -298,7 +298,14 @@ a snapshot/update/removal lifecycle, and never enters Artifact history.
 Review is bound to exact state rather than the living room. The producing Run
 creates a Version, records `artifact_version` Evidence with the same content
 hash, and submits that Version. Submission computes a deterministic Evidence
-bundle hash. Because the Runtime marks a Run `waiting_tool` while any ordinary
+bundle hash and freezes every selected Evidence id in
+`task_submission_evidence`. The current Run's Evidence is included, while a
+retry may reuse the exact Artifact Version and commit Evidence from an earlier
+Run of the same Task. Prior `test_run` / matching command Evidence is reusable
+only when the test recorded a clean, stable Worktree with the same committed
+HEAD and tree as the submitted Worktree. Stale commits, dirty test snapshots,
+and cross-Task Evidence are rejected. Because the Runtime marks a Run
+`waiting_tool` while any ordinary
 Tool Call is executing, the submission gate accepts that transient owner state
 in addition to `running`, `waiting_human`, and `succeeded`; it still rejects
 foreign Runs, stale Versions, uncommitted Worktrees, and mismatched Evidence.
@@ -313,7 +320,8 @@ Reviewer execution is deliberately not represented as another Task Run: it has
 its own fenced lease, retry budget, frozen material snapshot, prompt/response,
 model identity, provider request id, Token/cost/latency usage, error, and hashed
 decision. Its material snapshot contains the exact immutable Artifact Version,
-Task criteria, Evidence bundle inputs, relevant successful tool/test results,
+Task criteria, the submission's frozen Evidence ids with producer Run status
+and attempt, relevant successful tool/test results,
 Worktree state, and cumulative `base_commit -> HEAD` diff. The model must call
 `review.submit_decision` exactly once. A crash after decision persistence resumes
 database finalization without another model call. Approval reuses the Task

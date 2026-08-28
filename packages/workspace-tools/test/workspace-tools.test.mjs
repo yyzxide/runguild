@@ -223,6 +223,19 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
     assert.equal(result.output.stdout, 'tests ok\n')
     assert.equal(result.evidence[0].kind, 'test_run')
     assert.deepEqual(result.evidence.map((item) => item.kind), ['test_run', 'command_result'])
+    assert.equal(setup.evidence[0].draft.metadata.headCommit, setup.worktree.baseCommit)
+    assert.match(setup.evidence[0].draft.metadata.treeHash, /^[0-9a-f]{40}$/)
+    assert.equal(setup.evidence[0].draft.metadata.clean, true)
+    assert.equal(setup.evidence[0].draft.metadata.stable, true)
+    assert.match(setup.evidence[0].draft.metadata.stateHash, /^[0-9a-f]{64}$/)
+
+    await writeFile(join(setup.root, 'sample.txt'), 'dirty before test\n', 'utf8')
+    await run.execute(
+      { command: setup.command, timeoutMs: 10_000 },
+      { request: request('test.run', { command: setup.command, timeoutMs: 10_000 }, 'call_dirty_tests') },
+    )
+    assert.equal(setup.evidence[2].draft.metadata.clean, false)
+    assert.equal(setup.evidence[2].draft.metadata.stable, true)
 
     await assert.rejects(
       run.execute(

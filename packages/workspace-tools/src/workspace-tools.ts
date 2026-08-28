@@ -20,6 +20,13 @@ interface CommandResult {
   readonly timedOut: boolean
 }
 
+interface GitTestSnapshot {
+  readonly headCommit: string
+  readonly treeHash: string
+  readonly clean: boolean
+  readonly stateHash: string
+}
+
 export interface EvidenceDraft {
   readonly kind: EvidenceKind
   readonly uri: string
@@ -129,6 +136,40 @@ async function runCommand(input: {
     if (input.stdin === undefined) child.stdin.end()
     else child.stdin.end(input.stdin)
   })
+}
+
+async function gitTestSnapshot(root: string, abortSignal?: AbortSignal): Promise<GitTestSnapshot> {
+  const [head, tree, status] = await Promise.all([
+    runCommand({
+      command: ['git', 'rev-parse', '--verify', 'HEAD^{commit}'],
+      cwd: root,
+      timeoutMs: 30_000,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    }),
+    runCommand({
+      command: ['git', 'rev-parse', '--verify', 'HEAD^{tree}'],
+      cwd: root,
+      timeoutMs: 30_000,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    }),
+    runCommand({
+      command: ['git', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      cwd: root,
+      timeoutMs: 30_000,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    }),
+  ])
+  if (head.exitCode !== 0 || tree.exitCode !== 0 || status.exitCode !== 0) {
+    throw new Error('Test evidence requires a readable Git Worktree snapshot')
+  }
+  const headCommit = head.stdout.trim()
+  const treeHash = tree.stdout.trim()
+  return {
+    headCommit,
+    treeHash,
+    clean: status.stdout.length === 0,
+    stateHash: hash(headCommit + '\n' + treeHash + '\n' + status.stdout),
+  }
 }
 
 class WorkspaceBoundary {
@@ -823,19 +864,33 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       }
       const timeoutMs = Math.min(input.timeoutMs, maxTestTimeoutMs)
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) throw new Error('Invalid test timeout')
+      const before = await gitTestSnapshot(boundary.root, context.abortSignal)
       const result = await runCommand({
         command: input.command,
         cwd: boundary.root,
         timeoutMs,
         ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
       })
+      const after = await gitTestSnapshot(boundary.root, context.abortSignal)
       const passed = result.exitCode === 0 && !result.timedOut
       const contentHash = hash(result.stdout + '\n---stderr---\n' + result.stderr)
+      const stable = before.stateHash === after.stateHash
+      const evidenceMetadata = {
+        command: input.command,
+        exitCode: result.exitCode,
+        passed,
+        timedOut: result.timedOut,
+        headCommit: after.headCommit,
+        treeHash: after.treeHash,
+        clean: before.clean && after.clean && stable,
+        stable,
+        stateHash: after.stateHash,
+      }
       const testEvidence = await options.evidence.record(context, {
         kind: 'test_run',
         uri: 'test-run://' + context.request.id + '#' + contentHash,
         contentHash,
-        metadata: { command: input.command, exitCode: result.exitCode, passed, timedOut: result.timedOut },
+        metadata: evidenceMetadata,
       })
       const commandEvidence = await options.evidence.record(context, {
         kind: 'command_result',
@@ -847,6 +902,11 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           passed,
           timedOut: result.timedOut,
           truncated: result.truncated,
+          headCommit: after.headCommit,
+          treeHash: after.treeHash,
+          clean: before.clean && after.clean && stable,
+          stable,
+          stateHash: after.stateHash,
         },
       })
       const evidence = [...testEvidence, ...commandEvidence]

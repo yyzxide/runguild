@@ -23,6 +23,7 @@ const migrationUrls = [
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
   new URL('../migrations/0010_conversations.sql', import.meta.url),
   new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
+  new URL('../migrations/0016_submission_evidence.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -250,6 +251,94 @@ test('approved code review cannot complete its Task before the exact reviewed co
     })
     assert.equal(completed.completed, true)
     assert.equal((await worktrees.listCompletedPendingCleanup(10))[0].taskId, 'task_review')
+  } finally {
+    await database.close()
+  }
+})
+
+test('evidence-only retry freezes exact commit and clean tested-HEAD evidence from earlier Task Runs', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const pool = poolAdapter(database)
+    const repository = new ReviewRepository(pool)
+    const executions = new ReviewerExecutionRepository(pool)
+    const baseCommit = 'a'.repeat(40)
+    const headCommit = 'b'.repeat(40)
+    const treeHash = 'c'.repeat(40)
+    await database.exec(
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) " +
+      "VALUES ('conversation_retry', 'ws_review', 'project_review', 'mission_room', 'Retry room');" +
+      "INSERT INTO conversation_members (workspace_id, conversation_id, participant_kind, participant_id) VALUES " +
+      "('ws_review', 'conversation_retry', 'agent', 'agent_builder'), " +
+      "('ws_review', 'conversation_retry', 'agent', 'agent_reviewer');" +
+      "UPDATE missions SET conversation_id = 'conversation_retry' WHERE id = 'mission_review';" +
+      "UPDATE tasks SET status = 'running', attempt_count = 3, max_attempts = 4 WHERE id = 'task_review';" +
+      "INSERT INTO agent_runs " +
+      "(id, workspace_id, mission_id, task_id, agent_id, attempt, status) VALUES " +
+      "('run_tests', 'ws_review', 'mission_review', 'task_review', 'agent_builder', 2, 'failed'), " +
+      "('run_resubmit', 'ws_review', 'mission_review', 'task_review', 'agent_builder', 3, 'running');" +
+      "INSERT INTO task_worktrees " +
+      "(task_id, workspace_id, mission_id, project_id, repository_path, worktree_path, " +
+      "branch_name, base_ref, base_commit, head_commit, status, provision_token, provision_expires_at) " +
+      "VALUES ('task_review', 'ws_review', 'mission_review', 'project_review', '/repo', '/trees/task', " +
+      "'agent/task', 'main', '" + baseCommit + "', '" + headCommit + "', 'committed', NULL, NULL);" +
+      "INSERT INTO evidence " +
+      "(id, workspace_id, mission_id, task_id, run_id, kind, uri, content_hash, metadata) VALUES " +
+      "('evidence_commit_retry', 'ws_review', 'mission_review', 'task_review', 'run_builder', " +
+      "'file_diff', 'git-diff://" + headCommit + "', 'diff_retry', " +
+      "'{\"commit\":\"" + headCommit + "\",\"treeHash\":\"" + treeHash + "\",\"toolCallId\":\"call_commit\"}'::jsonb), " +
+      "('evidence_test_retry', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
+      "'test_run', 'test-run://retry', 'test_retry', " +
+      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"headCommit\":\"" + headCommit +
+      "\",\"treeHash\":\"" + treeHash + "\",\"command\":[\"npm\",\"test\"],\"toolCallId\":\"call_test\"}'::jsonb), " +
+      "('evidence_test_stale', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
+      "'test_run', 'test-run://stale', 'test_stale', " +
+      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"headCommit\":\"" + baseCommit +
+      "\",\"treeHash\":\"" + 'd'.repeat(40) + "\",\"command\":[\"npm\",\"test\"]}'::jsonb), " +
+      "('evidence_test_dirty', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
+      "'test_run', 'test-run://dirty', 'test_dirty', " +
+      "'{\"passed\":true,\"clean\":false,\"stable\":true,\"headCommit\":\"" + headCommit +
+      "\",\"treeHash\":\"" + treeHash + "\",\"command\":[\"npm\",\"test\"]}'::jsonb);",
+    )
+
+    const submission = await repository.submitArtifactVersion({
+      submissionId: 'submission_retry',
+      workspaceId: 'ws_review',
+      missionId: 'mission_review',
+      taskId: 'task_review',
+      runId: 'run_resubmit',
+      agentId: 'agent_builder',
+      artifactVersionId: 'version_review',
+      note: 'Evidence-only retry for the unchanged exact commit.',
+    })
+    assert.equal(submission.status, 'in_review')
+    const frozen = await database.query(
+      'SELECT evidence_id FROM task_submission_evidence WHERE submission_id = $1 ORDER BY evidence_id',
+      [submission.id],
+    )
+    assert.deepEqual(frozen.rows.map((row) => row.evidence_id), [
+      'evidence_commit_retry',
+      'evidence_test_retry',
+      'evidence_version',
+    ])
+
+    await database.exec("UPDATE tasks SET status = 'reviewing' WHERE id = 'task_review'")
+    const queued = await database.query(
+      "SELECT id FROM reviews WHERE submission_id = 'submission_retry'",
+    )
+    const claimed = await executions.claim({
+      reviewId: queued.rows[0].id,
+      reviewerAgentId: 'agent_reviewer',
+      leaseSeconds: 60,
+    })
+    assert.equal(claimed.kind, 'work')
+    const testEvidence = claimed.work.materials.evidence.find((item) => item.id === 'evidence_test_retry')
+    assert.equal(testEvidence.producerRunId, 'run_tests')
+    assert.equal(testEvidence.producerRunStatus, 'failed')
+    assert.equal(testEvidence.producerAttempt, 2)
+    assert.equal(claimed.work.materials.evidence.some((item) => item.id === 'evidence_test_stale'), false)
+    assert.equal(claimed.work.materials.evidence.some((item) => item.id === 'evidence_test_dirty'), false)
   } finally {
     await database.close()
   }

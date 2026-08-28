@@ -73,6 +73,10 @@ export interface ReviewMaterialSnapshot {
     readonly uri: string
     readonly contentHash: string | null
     readonly metadata: Readonly<Record<string, unknown>>
+    readonly producerRunId: string
+    readonly producerRunStatus: string
+    readonly producerAttempt: number
+    readonly createdAt: string
   }[]
   readonly successfulToolResults: readonly {
     readonly action: string
@@ -383,13 +387,12 @@ export class ReviewerExecutionRepository {
       artifact_kind: string
       content_hash: string
       content: unknown
-      run_id: string
     }>(
       'SELECT mission.title AS mission_title, mission.goal AS mission_goal, mission.constraints AS mission_constraints, ' +
       'task.title AS task_title, task.description AS task_description, submission.note, ' +
       'submission.evidence_bundle_hash, submission.submitted_by_agent_id, submission.artifact_version_id, ' +
       'artifact.id AS artifact_id, artifact.title AS artifact_title, artifact.kind AS artifact_kind, ' +
-      'version.content_hash, version.content, submission.run_id ' +
+      'version.content_hash, version.content ' +
       'FROM task_submissions submission JOIN missions mission ON mission.id = submission.mission_id ' +
       'JOIN tasks task ON task.id = submission.task_id ' +
       'JOIN artifact_versions version ON version.id = submission.artifact_version_id ' +
@@ -414,16 +417,29 @@ export class ReviewerExecutionRepository {
         uri: string
         content_hash: string | null
         metadata: Readonly<Record<string, unknown>>
+        run_id: string
+        created_at: Date
+        producer_run_status: string
+        producer_attempt: number
       }>(
-        'SELECT id, kind, uri, content_hash, metadata FROM evidence ' +
-        'WHERE task_id = $1 AND run_id = $2 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY kind, id',
-        [row.task_id, item.run_id],
+        'SELECT evidence.id, evidence.kind, evidence.uri, evidence.content_hash, evidence.metadata, ' +
+        'evidence.run_id, evidence.created_at, producer.status AS producer_run_status, ' +
+        'producer.attempt AS producer_attempt FROM task_submission_evidence selected ' +
+        'JOIN evidence ON evidence.id = selected.evidence_id ' +
+        'JOIN agent_runs producer ON producer.id = evidence.run_id ' +
+        'WHERE selected.submission_id = $1 ORDER BY evidence.kind, evidence.id',
+        [row.submission_id],
       )
     const tools = await client.query<{ action: string; result: unknown }>(
-        "SELECT action, result FROM tool_executions WHERE run_id = $1 AND status = 'succeeded' " +
-        "AND action IN ('repo.status', 'repo.diff', 'repo.commit', 'test.run', 'shell.run') " +
-        'ORDER BY created_at, id',
-        [item.run_id],
+        'SELECT execution.action, execution.result FROM tool_executions execution ' +
+        "WHERE execution.status = 'succeeded' " +
+        "AND execution.action IN ('repo.status', 'repo.diff', 'repo.commit', 'test.run', 'shell.run') " +
+        'AND EXISTS (SELECT 1 FROM task_submission_evidence selected ' +
+        'JOIN evidence ON evidence.id = selected.evidence_id ' +
+        'WHERE selected.submission_id = $1 AND evidence.run_id = execution.run_id ' +
+        "AND evidence.metadata->>'toolCallId' = execution.request->>'id') " +
+        'ORDER BY execution.created_at, execution.id',
+        [row.submission_id],
       )
     const worktree = await client.query<{
         base_commit: string
@@ -482,6 +498,10 @@ export class ReviewerExecutionRepository {
         uri: record.uri,
         contentHash: record.content_hash,
         metadata: record.metadata,
+        producerRunId: record.run_id,
+        producerRunStatus: record.producer_run_status,
+        producerAttempt: record.producer_attempt,
+        createdAt: record.created_at.toISOString(),
       })),
       successfulToolResults: tools.rows,
     }

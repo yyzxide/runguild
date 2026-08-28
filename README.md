@@ -106,7 +106,10 @@ The control-plane foundation is executable:
   tools;
 - exact-version Submission bundles and independent human or authenticated
   Reviewer Agent decisions; code submissions additionally bind the exact
-  committed Worktree HEAD into the evidence bundle;
+  committed Worktree HEAD into the evidence bundle; every selected Evidence id
+  is frozen in `task_submission_evidence`, and an evidence-only retry may reuse
+  a prior Task Run's exact-commit Evidence plus a passing `test.run` only when
+  that test records the same clean, stable Git HEAD and tree;
 - automatic Mission-room Reviewer dispatch through durable Inbox messages and
   a separate `review_executions` lease/model ledger; frozen review input includes
   the exact Artifact Version, acceptance criteria, Evidence, relevant test/tool

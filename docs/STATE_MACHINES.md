@@ -144,7 +144,10 @@ requested or in_progress -> cancelled
 ~~~
 
 An approved Review always references one immutable Artifact Version and one
-Evidence bundle. New edits require a new version and a new review.
+Evidence bundle. The Submission freezes its selected Evidence ids. Evidence
+from an earlier retry is reusable only inside the same Task; code Evidence must
+match the exact committed HEAD, and test Evidence must bind to the same clean,
+stable HEAD and Git tree. New edits require a new version and a new review.
 
 The automatic Reviewer uses a separate durable execution state machine:
 

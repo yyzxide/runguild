@@ -55,6 +55,18 @@ interface ReviewRow {
   readonly completed_at: Date | null
 }
 
+interface SubmissionEvidenceRow {
+  readonly id: string
+  readonly kind: string
+  readonly uri: string
+  readonly content_hash: string | null
+  readonly metadata: Readonly<Record<string, unknown>>
+  readonly run_id: string
+  readonly created_at: Date
+  readonly producer_run_status: string
+  readonly producer_attempt: number
+}
+
 const SUBMISSION_COLUMNS =
   'id, workspace_id, mission_id, task_id, run_id, artifact_version_id, ' +
   'submitted_by_agent_id, status, evidence_bundle_hash, note, created_at, updated_at'
@@ -65,6 +77,55 @@ const REVIEW_COLUMNS =
 
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function selectSubmissionEvidence(
+  rows: readonly SubmissionEvidenceRow[],
+  input: {
+    readonly submittingRunId: string
+    readonly artifactContentHash: string
+    readonly worktreeHeadCommit: string | null
+  },
+): readonly SubmissionEvidenceRow[] {
+  const exactCommitEvidence = input.worktreeHeadCommit === null
+    ? []
+    : rows.filter((item) =>
+      item.kind === 'file_diff' && item.metadata.commit === input.worktreeHeadCommit)
+  const treeHashes = new Set(exactCommitEvidence
+    .map((item) => item.metadata.treeHash)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0))
+  if (treeHashes.size > 1) throw new Error('Exact commit Evidence has inconsistent tree hashes')
+  const [worktreeTreeHash] = treeHashes
+
+  return rows.filter((item) => {
+    if (item.run_id === input.submittingRunId) return true
+    if (item.kind === 'artifact_version' && item.content_hash === input.artifactContentHash) return true
+    if (input.worktreeHeadCommit !== null
+        && item.kind === 'file_diff'
+        && item.metadata.commit === input.worktreeHeadCommit) return true
+    return input.worktreeHeadCommit !== null
+      && worktreeTreeHash !== undefined
+      && ['test_run', 'command_result'].includes(item.kind)
+      && item.metadata.passed === true
+      && item.metadata.clean === true
+      && item.metadata.stable === true
+      && item.metadata.headCommit === input.worktreeHeadCommit
+      && item.metadata.treeHash === worktreeTreeHash
+  })
+}
+
+function frozenEvidence(rows: readonly SubmissionEvidenceRow[]): readonly Readonly<Record<string, unknown>>[] {
+  return rows.map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    uri: item.uri,
+    contentHash: item.content_hash,
+    metadata: item.metadata,
+    producerRunId: item.run_id,
+    producerRunStatus: item.producer_run_status,
+    producerAttempt: item.producer_attempt,
+    createdAt: item.created_at.toISOString(),
+  }))
 }
 
 function asSubmission(row: SubmissionRow): TaskSubmission {
@@ -158,14 +219,20 @@ export class ReviewRepository {
         worktree_base_commit: string | null
         worktree_integrated_commit: string | null
         review_required: boolean
+        version_run_workspace_id: string | null
+        version_run_mission_id: string | null
+        version_run_task_id: string | null
       }>(
         'SELECT t.status AS task_status, r.status AS run_status, v.content_hash, ' +
         'v.created_by_run_id AS version_run_id, tw.status AS worktree_status, ' +
         'tw.head_commit AS worktree_head_commit, tw.base_commit AS worktree_base_commit, ' +
-        'tw.integrated_commit AS worktree_integrated_commit, t.review_required ' +
+        'tw.integrated_commit AS worktree_integrated_commit, t.review_required, ' +
+        'version_run.workspace_id AS version_run_workspace_id, ' +
+        'version_run.mission_id AS version_run_mission_id, version_run.task_id AS version_run_task_id ' +
         'FROM agent_runs r JOIN tasks t ON t.id = r.task_id ' +
         'JOIN artifact_versions v ON v.id = $6 ' +
         'JOIN artifacts a ON a.id = v.artifact_id ' +
+        'LEFT JOIN agent_runs version_run ON version_run.id = v.created_by_run_id ' +
         'LEFT JOIN task_worktrees tw ON tw.task_id = t.id ' +
         'WHERE r.id = $4 AND r.workspace_id = $1 AND r.mission_id = $2 ' +
         'AND r.task_id = $3 AND r.agent_id = $5 ' +
@@ -187,22 +254,29 @@ export class ReviewRepository {
       if (!['running', 'waiting_tool', 'waiting_human', 'succeeded'].includes(scoped.run_status)) {
         throw new Error('Run is not in a submittable state')
       }
-      if (scoped.version_run_id !== input.runId) {
-        throw new Error('Artifact Version was not created by the submitting Run')
+      if (scoped.version_run_id === null
+          || scoped.version_run_workspace_id !== input.workspaceId
+          || scoped.version_run_mission_id !== input.missionId
+          || scoped.version_run_task_id !== input.taskId) {
+        throw new Error('Artifact Version was not created by a Run of the submitting Task')
       }
 
-      const evidence = await client.query<{
-        id: string
-        kind: string
-        content_hash: string | null
-        metadata: Readonly<Record<string, unknown>>
-      }>(
-        'SELECT id, kind, content_hash, metadata FROM evidence ' +
-        'WHERE task_id = $1 AND run_id = $2 AND (expires_at IS NULL OR expires_at > NOW()) ' +
-        'ORDER BY kind, id',
-        [input.taskId, input.runId],
+      const taskEvidence = await client.query<SubmissionEvidenceRow>(
+        'SELECT evidence.id, evidence.kind, evidence.uri, evidence.content_hash, evidence.metadata, ' +
+        'evidence.run_id, evidence.created_at, producer.status AS producer_run_status, ' +
+        'producer.attempt AS producer_attempt FROM evidence ' +
+        'JOIN agent_runs producer ON producer.id = evidence.run_id ' +
+        'AND producer.task_id = evidence.task_id AND producer.mission_id = evidence.mission_id ' +
+        'WHERE evidence.task_id = $1 AND evidence.workspace_id = $2 AND evidence.mission_id = $3 ' +
+        'AND (evidence.expires_at IS NULL OR evidence.expires_at > NOW()) ORDER BY evidence.kind, evidence.id',
+        [input.taskId, input.workspaceId, input.missionId],
       )
-      if (!evidence.rows.some((item) =>
+      const evidence = selectSubmissionEvidence(taskEvidence.rows, {
+        submittingRunId: input.runId,
+        artifactContentHash: scoped.content_hash,
+        worktreeHeadCommit: scoped.worktree_head_commit,
+      })
+      if (!evidence.some((item) =>
         item.kind === 'artifact_version' && item.content_hash === scoped.content_hash)) {
         throw new Error('Submission requires durable evidence for the exact Artifact Version')
       }
@@ -214,7 +288,7 @@ export class ReviewRepository {
         if (scoped.worktree_status !== 'committed' && !unchangedIntegrated) {
           throw new Error('Code submission requires a committed Task Worktree')
         }
-        if (!unchangedIntegrated && !evidence.rows.some((item) =>
+        if (!unchangedIntegrated && !evidence.some((item) =>
           item.kind === 'file_diff' && item.metadata.commit === scoped.worktree_head_commit)) {
           throw new Error('Submission requires durable evidence for the exact Task Worktree commit')
         }
@@ -222,7 +296,7 @@ export class ReviewRepository {
       const evidenceBundleHash = digest(canonicalJson({
         artifactVersionId: input.artifactVersionId,
         contentHash: scoped.content_hash,
-        evidence: evidence.rows,
+        evidence: frozenEvidence(evidence),
       }))
 
       const active = await client.query<SubmissionRow>(
@@ -259,6 +333,11 @@ export class ReviewRepository {
       )
       let row = inserted.rows[0]
       if (!row) throw new Error('Artifact submission was not persisted')
+      await client.query(
+        'INSERT INTO task_submission_evidence (submission_id, evidence_id) ' +
+        'SELECT $1, evidence.id FROM evidence WHERE evidence.id = ANY($2::text[])',
+        [row.id, evidence.map((item) => item.id)],
+      )
       if (scoped.review_required) {
         const reviewer = await client.query<{
           id: string
@@ -297,6 +376,12 @@ export class ReviewRepository {
               assigned.model_provider,
               assigned.model_name,
             ],
+          )
+          await client.query(
+            'INSERT INTO review_evidence (review_id, evidence_id) ' +
+            'SELECT $1, selected.evidence_id FROM task_submission_evidence selected ' +
+            'WHERE selected.submission_id = $2 ON CONFLICT DO NOTHING',
+            [reviewId, row.id],
           )
           const inboxPayload = {
             schemaVersion: 1,
@@ -449,6 +534,12 @@ export class ReviewRepository {
           )
       const review = storedReview.rows[0]
       if (!review) throw new Error('Review decision was not persisted')
+      await client.query(
+        'INSERT INTO review_evidence (review_id, evidence_id) ' +
+        'SELECT $1, selected.evidence_id FROM task_submission_evidence selected ' +
+        'WHERE selected.submission_id = $2 ON CONFLICT DO NOTHING',
+        [reviewId, submission.id],
+      )
       if (existingRow && input.reviewer.kind === 'user') {
         await client.query(
           "UPDATE review_executions SET status = 'cancelled', lease_token = NULL, lease_expires_at = NULL, " +
