@@ -166,6 +166,12 @@ state finalizes the Review without another model call. A Review Inbox message
 that arrives before the producing Task enters `reviewing` remains unacknowledged
 and is retried rather than being lost.
 
+The frozen snapshot never discards duplicate Evidence ids. Its model-input
+projection groups identical content-addressed payloads and carries every source
+id/Run plus metadata delta, so repeated acceptance-criterion bindings cannot
+exhaust the prompt safety budget while a genuinely oversized unique payload still
+requires human review.
+
 ## Task Worktree
 
 ~~~text

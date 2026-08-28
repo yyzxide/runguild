@@ -111,6 +111,56 @@ test('Reviewer prompt treats frozen Artifact and diff content as untrusted evide
   assert.match(messages[1].content, /version_1/)
 })
 
+test('Reviewer prompt compacts repeated content-addressed Evidence without losing ids or provenance', () => {
+  const diff = 'large-exact-diff-'.repeat(5_000)
+  const materials = work().materials
+  const repeated = Array.from({ length: 10 }, (_, index) => ({
+    id: `evidence_diff_${index}`,
+    kind: 'file_diff',
+    uri: 'git-diff://commit_1#diff_hash',
+    contentHash: 'diff_hash',
+    metadata: {
+      diff,
+      commit: 'commit_1',
+      treeHash: 'tree_1',
+      toolCallId: index < 5 ? 'call_original' : 'call_recovered',
+      recovered: index >= 5,
+    },
+    producerRunId: index < 5 ? 'run_original' : 'run_recovered',
+    producerRunStatus: 'succeeded',
+    producerAttempt: index < 5 ? 1 : 2,
+    createdAt: `2026-08-28T00:00:${String(index).padStart(2, '0')}.000Z`,
+  }))
+
+  const messages = reviewMessages({ ...materials, evidence: repeated })
+  const prompt = messages[1].content
+  assert.equal(prompt.split(diff).length - 1, 1)
+  for (const item of repeated) assert.match(prompt, new RegExp(item.id))
+  assert.match(prompt, /run_original/)
+  assert.match(prompt, /run_recovered/)
+  assert.match(prompt, /call_original/)
+  assert.match(prompt, /call_recovered/)
+  assert.ok(Buffer.byteLength(prompt, 'utf8') < 512 * 1024)
+})
+
+test('Reviewer prompt still rejects one genuinely oversized unique Evidence payload', () => {
+  const materials = work().materials
+  assert.throws(() => reviewMessages({
+    ...materials,
+    evidence: [{
+      id: 'evidence_unique_large',
+      kind: 'file_diff',
+      uri: 'git-diff://commit_1#unique_diff_hash',
+      contentHash: 'unique_diff_hash',
+      metadata: { diff: 'x'.repeat(520 * 1024) },
+      producerRunId: 'run_1',
+      producerRunStatus: 'succeeded',
+      producerAttempt: 1,
+      createdAt: '2026-08-28T00:00:00.000Z',
+    }],
+  }), /512 KiB model-input safety limit/)
+})
+
 test('Worker ownership loss aborts an active Reviewer model call and releases it for retry', async () => {
   let modelStarted
   const started = new Promise((resolve) => { modelStarted = resolve })

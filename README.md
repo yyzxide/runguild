@@ -113,8 +113,11 @@ The control-plane foundation is executable:
 - automatic Mission-room Reviewer dispatch through durable Inbox messages and
   a separate `review_executions` lease/model ledger; frozen review input includes
   the exact Artifact Version, acceptance criteria, Evidence, relevant test/tool
-  results, and the cumulative base-to-HEAD Git diff, while a persisted model
-  decision resumes without a second model call after a process crash;
+  results, and the cumulative base-to-HEAD Git diff. The durable snapshot keeps
+  every selected Evidence id, while the bounded model projection emits repeated
+  content-addressed payloads once and retains every equivalent id and producer;
+  a persisted model decision resumes without a second model call after a process
+  crash;
 - deterministic per-Task Git Worktree provisioning with database fencing,
   lease-expiry takeover, restart reconciliation, and strict repository/path/
   branch/ancestry validation;

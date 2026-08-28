@@ -323,7 +323,13 @@ decision. Its material snapshot contains the exact immutable Artifact Version,
 Task criteria, the submission's frozen Evidence ids with producer Run status
 and attempt, relevant successful tool/test results,
 Worktree state, and cumulative `base_commit -> HEAD` diff. The model must call
-`review.submit_decision` exactly once. A crash after decision persistence resumes
+`review.submit_decision` exactly once. The immutable database snapshot keeps
+every Evidence row. Before model invocation, a deterministic bounded projection
+groups identical `(kind, uri, content_hash)` payloads, emits their common metadata
+once, and retains all equivalent Evidence ids, producer Runs, attempts, timestamps,
+and metadata deltas. This prevents acceptance-criterion and retry projections from
+multiplying the same diff without weakening the audit trail or raising the input
+safety limit. A crash after decision persistence resumes
 database finalization without another model call. Approval reuses the Task
 completion gate and dependency unlock transaction; `changes_requested` returns
 the Task to `ready`, while a terminal rejection fails it.
