@@ -241,6 +241,68 @@ test('OpenAI adapter rejects malformed function arguments before the Runtime see
   )
 })
 
+test('OpenAI-compatible endpoint normalizes literal control characters inside JSON string arguments', async () => {
+  const fake = fakeClient([response({
+    output: [{
+      type: 'function_call',
+      call_id: 'call_patch',
+      name: 'file__patch',
+      arguments: '{"path":"src/example.ts","patch":"first line\nsecond\tline"}',
+      status: 'completed',
+    }],
+  })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '',
+    model: 'compatible-model',
+    baseURL: 'https://compatible.example.test',
+    client: fake.client,
+  })
+
+  const result = await adapter.complete({
+    messages: [],
+    tools: [{
+      action: 'file.patch',
+      description: 'Apply a patch.',
+      inputSchema: { type: 'object' },
+    }],
+  })
+
+  assert.deepEqual(result.toolCalls[0].input, {
+    path: 'src/example.ts',
+    patch: 'first line\nsecond\tline',
+  })
+})
+
+test('OpenAI-compatible endpoint still rejects structurally malformed JSON arguments', async () => {
+  const fake = fakeClient([response({
+    output: [{
+      type: 'function_call',
+      call_id: 'call_bad',
+      name: 'repo__search',
+      arguments: '{"query":"unterminated\nstring}',
+      status: 'completed',
+    }],
+  })])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '',
+    model: 'compatible-model',
+    baseURL: 'https://compatible.example.test',
+    client: fake.client,
+  })
+
+  await assert.rejects(
+    adapter.complete({
+      messages: [],
+      tools: [{
+        action: 'repo.search',
+        description: 'Search repository text.',
+        inputSchema: { type: 'object' },
+      }],
+    }),
+    /invalid JSON arguments/,
+  )
+})
+
 test('OpenAI adapter rejects provider function names that are not declared by the Runtime', async () => {
   const fake = fakeClient([response({
     output: [{

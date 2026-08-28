@@ -464,6 +464,14 @@ System instructions are sent again on each continued request. Tool Calls and
 Tool Results remain in the local durable transcript, so provider continuation
 is an optimization rather than the source of truth.
 
+Some compatible endpoints return literal newlines or tabs inside the JSON
+string that carries function arguments. The adapter retries parsing only after
+escaping those control characters while they are inside a quoted JSON string.
+It does not repair structure, quotes, delimiters, non-object inputs, or unknown
+function names, and the official OpenAI path never enables this compatibility
+pass. The normalized object still enters the ordinary typed Tool Gateway and
+durable Tool Call ledger.
+
 Read-only repository tools also persist verifiable Evidence: repository search
 emits both a bounded source `citation` and its exact `command_result`, file
 reads emit line-addressed citations, repository status emits a command result,

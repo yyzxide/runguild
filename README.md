@@ -250,7 +250,12 @@ When `OPENAI_BASE_URL` points at an OpenAI-compatible endpoint, Agent Workers
 replay the complete durable transcript on every model hop instead of assuming
 that endpoint implements stateful `previous_response_id` continuation. The
 official OpenAI endpoint keeps the response-id optimization; Tool Calls and
-Tool Results remain persisted locally in both modes.
+Tool Results remain persisted locally in both modes. Compatible endpoints also
+receive one narrowly scoped arguments compatibility pass: literal ASCII control
+characters inside a JSON string are escaped before a second strict parse. This
+supports multiline patch bodies without accepting missing delimiters, broken
+quotes, non-object arguments, or unknown tools; the official endpoint remains
+strict-only.
 
 Run the API and scheduler worker:
 
