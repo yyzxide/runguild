@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 
 import type { WorkerInstanceRepository, WorkerKind } from '@runguild/database'
-import type { AgentId } from '@runguild/protocol'
+import type { AgentId, ProjectId, WorkspaceId } from '@runguild/protocol'
 
 type WorkerInstanceStore = Pick<WorkerInstanceRepository, 'register' | 'heartbeat' | 'markStopped'>
 
@@ -16,6 +16,8 @@ export interface StartWorkerHeartbeatInput {
   readonly repository: WorkerInstanceStore
   readonly kind: WorkerKind
   readonly agentId?: AgentId
+  readonly workspaceId?: WorkspaceId
+  readonly projectId?: ProjectId
   readonly heartbeatIntervalMs?: number
   readonly instanceId?: string
   readonly hostname?: string
@@ -45,6 +47,8 @@ export async function startWorkerHeartbeat(
     id: instanceId,
     kind: input.kind,
     ...(input.agentId ? { agentId: input.agentId } : {}),
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     hostname: input.hostname ?? hostname(),
     processId: input.processId ?? process.pid,
     heartbeatIntervalSeconds: intervalSeconds,

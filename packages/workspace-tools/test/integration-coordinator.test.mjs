@@ -32,11 +32,12 @@ test('Integration coordinator isolates busy/failing Tasks and completes only int
   ]
   const coordinator = new IntegrationCoordinator({
     worktrees: {
-      async listApprovedPendingIntegration(limit) {
-        assert.equal(limit, 10)
+      async listApprovedPendingIntegration(input) {
+        assert.deepEqual(input, { workspaceId: 'ws', projectId: 'project', limit: 10 })
         return candidates
       },
-      async listCompletedPendingCleanup() {
+      async listCompletedPendingCleanup(input) {
+        assert.deepEqual(input, { workspaceId: 'ws', projectId: 'project', limit: 10 })
         return [worktree('task_cleanup')]
       },
     },
@@ -64,7 +65,7 @@ test('Integration coordinator isolates busy/failing Tasks and completes only int
       },
     },
   })
-  const result = await coordinator.tick({ limit: 10, leaseSeconds: 60 })
+  const result = await coordinator.tick({ workspaceId: 'ws', projectId: 'project', limit: 10, leaseSeconds: 60 })
   assert.deepEqual(result, {
     discovered: 4,
     integrated: 1,

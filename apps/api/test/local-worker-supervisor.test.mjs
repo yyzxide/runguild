@@ -55,6 +55,8 @@ test('local supervisor injects persisted Worktree setup argv into only the Agent
   assert.equal(environment.AGENT_WORKTREE_SETUP_TIMEOUT_MS, '240000')
   assert.equal(environment.OPENAI_API_KEY, 'secret-value')
   const integration = supervisor.environmentFor({ kind: 'integration' }, configuration)
+  assert.equal(integration.WORKSPACE_ID, 'workspace')
+  assert.equal(integration.PROJECT_ID, 'project')
   assert.equal(integration.AGENT_WORKTREE_SETUP_COMMANDS_JSON, undefined)
   assert.equal(integration.OPENAI_API_KEY, undefined)
 })
@@ -75,8 +77,28 @@ test('local supervisor refuses duplicate and non-owned process control', async (
   const result = await supervisor.start({ kind: 'scheduler' }, configuration)
   assert.equal(result.state, 'already_running')
   assert.deepEqual(calls, [{ kind: 'scheduler', agentId: undefined }])
-  const stopped = await supervisor.stop({ kind: 'scheduler' })
+  const stopped = await supervisor.stop({ kind: 'scheduler' }, configuration)
   assert.equal(stopped.state, 'not_owned')
+})
+
+test('local supervisor checks Integration activity in the exact Project scope', async () => {
+  const calls = []
+  const supervisor = new LocalWorkerSupervisor({
+    databaseUrl: 'postgres://database',
+    activity: {
+      async hasActive(kind, agentId, scope) {
+        calls.push({ kind, agentId, scope })
+        return true
+      },
+    },
+  })
+  const result = await supervisor.start({ kind: 'integration' }, configuration)
+  assert.equal(result.state, 'already_running')
+  assert.deepEqual(calls, [{
+    kind: 'integration',
+    agentId: undefined,
+    scope: { workspaceId: 'workspace', projectId: 'project' },
+  }])
 })
 
 test('ensureWorkspaceRoots creates missing Worktree root with 0700 permissions', async () => {

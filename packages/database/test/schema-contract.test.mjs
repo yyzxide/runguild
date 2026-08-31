@@ -18,6 +18,7 @@ const worktreeSetupMigrationUrl = new URL('../migrations/0015_worktree_setup.sql
 const submissionEvidenceMigrationUrl = new URL('../migrations/0016_submission_evidence.sql', import.meta.url)
 const integrationConflictRecoveryMigrationUrl = new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url)
 const reviewerModelCallsMigrationUrl = new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url)
+const projectScopedIntegrationMigrationUrl = new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url)
 
 test('schema keeps durable coordination invariants in PostgreSQL', async () => {
   const sql = await readFile(migrationUrl, 'utf8')
@@ -151,6 +152,16 @@ test('Worker Instance schema separates process presence from Run leases and fenc
   assert.match(sql, /uq_worker_instances_running_agent/)
   assert.match(sql, /WHERE kind = 'agent' AND status = 'running'/)
   assert.match(sql, /FOREIGN KEY \(agent_id, workspace_id\)/)
+})
+
+test('Integration Worker schema fences repository-bound processes to one Project', async () => {
+  const sql = await readFile(projectScopedIntegrationMigrationUrl, 'utf8')
+
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS project_id TEXT/)
+  assert.match(sql, /kind = 'integration'/)
+  assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\)/)
+  assert.match(sql, /idx_worker_instances_project_kind_expiry/)
+  assert.match(sql, /status = 'stale'/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

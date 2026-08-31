@@ -29,6 +29,7 @@ async function setup(database) {
   await database.exec('ALTER TABLE projects ADD COLUMN repository_path TEXT;')
   await database.exec(await readFile(new URL('../migrations/0010_conversations.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url), 'utf8'))
   await database.exec(
     "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace'), ('other_ws', 'Other');" +
     "INSERT INTO users (id, workspace_id, display_name) VALUES " +
@@ -65,8 +66,11 @@ async function setup(database) {
     "('worker_agent', 'agent', 'ws', 'planner', 'local', 10, 5, 15, NOW() + INTERVAL '15 seconds'), " +
     "('worker_scheduler', 'scheduler', NULL, NULL, 'local', 11, 5, 15, NOW() + INTERVAL '15 seconds');" +
     "INSERT INTO worker_instances " +
-    "(id, kind, workspace_id, agent_id, status, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at, stopped_at) VALUES " +
-    "('worker_integration', 'integration', NULL, NULL, 'stopped', 'local', 12, 5, 15, NOW(), NOW());",
+    "(id, kind, workspace_id, project_id, agent_id, status, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at, stopped_at) VALUES " +
+    "('worker_integration', 'integration', 'ws', 'project', NULL, 'stopped', 'local', 12, 5, 15, NOW(), NOW());" +
+    "INSERT INTO worker_instances " +
+    "(id, kind, workspace_id, project_id, agent_id, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at) VALUES " +
+    "('worker_sibling_integration', 'integration', 'ws', 'sibling_project', NULL, 'local', 13, 5, 15, NOW() + INTERVAL '15 seconds');",
   )
 }
 
@@ -95,6 +99,9 @@ test('Project Operator Repository returns the real project team and recent Missi
       ['integration', 'stopped'],
       ['evaluation', 'never_seen'],
     ])
+
+    const siblingOverview = await repository.getOverview('ws', 'sibling_project', 'operator')
+    assert.equal(siblingOverview.systemWorkers.find((worker) => worker.kind === 'integration').state, 'online')
 
     assert.equal(await repository.getOverview('ws', 'project', 'other_user'), null)
     assert.equal(await repository.getOverview('other_ws', 'project', 'other_user'), null)

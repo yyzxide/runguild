@@ -237,6 +237,11 @@ A Task with a Worktree cannot complete before `integrated`, and cleanup never
 deletes a dirty Worktree. A new Run attempt for the same Task reuses the
 Worktree row's persisted `base_commit` even if its named base branch has
 advanced; a retry cannot silently rebase or change the evidence baseline.
+An Integration Worker may discover, reserve, integrate, and clean only
+Worktrees whose `workspace_id` and `project_id` match the process heartbeat
+scope. Starting an Integration process without both ids is invalid. Applying
+the project-scope migration fences a still-running legacy unscoped process as
+`stale`; its next heartbeat fails before it can continue polling.
 
 ### Pre-model Worktree setup
 

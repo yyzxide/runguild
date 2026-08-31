@@ -45,7 +45,10 @@ export interface LocalRuntimeControl {
     command: LocalWorkerCommand,
     configuration: ProjectRuntimeConfiguration,
   ): Promise<LocalWorkerControlResult>
-  stop(command: LocalWorkerCommand): Promise<LocalWorkerControlResult>
+  stop(
+    command: LocalWorkerCommand,
+    configuration: ProjectRuntimeConfiguration,
+  ): Promise<LocalWorkerControlResult>
 }
 
 interface LocalWorkerSupervisorOptions {
@@ -66,12 +69,19 @@ const ENTRY_POINTS: Readonly<Record<WorkerKind, string>> = {
   evaluation: fileURLToPath(new URL('../../worker/dist/evaluation-main.js', import.meta.url)),
 }
 
-function workerKey(command: LocalWorkerCommand): string {
+function workerKey(
+  command: LocalWorkerCommand,
+  configuration: ProjectRuntimeConfiguration,
+): string {
   if ((command.kind === 'agent') !== Boolean(command.agentId)) {
     throw new Error('Agent Worker commands must include exactly one agentId')
   }
   if (!WORKER_KINDS.includes(command.kind)) throw new Error('Unsupported Worker kind')
-  return command.kind === 'agent' ? 'agent:' + command.agentId : command.kind
+  if (command.kind === 'agent') return 'agent:' + command.agentId
+  if (command.kind === 'integration') {
+    return 'integration:' + configuration.project.workspaceId + ':' + configuration.project.id
+  }
+  return command.kind
 }
 
 function safeProcessEnvironment(values: Readonly<Record<string, string | undefined>>): NodeJS.ProcessEnv {
@@ -87,7 +97,9 @@ function safeProcessEnvironment(values: Readonly<Record<string, string | undefin
 }
 
 function commandLabel(command: LocalWorkerCommand, configuration: ProjectRuntimeConfiguration): string {
-  if (command.kind !== 'agent') return command.kind
+  if (command.kind === 'scheduler') return 'Scheduler · 全局控制面'
+  if (command.kind === 'evaluation') return 'Evaluation · 全局控制面'
+  if (command.kind === 'integration') return 'Integration · ' + configuration.project.name
   const agent = configuration.agents.find((candidate) => candidate.id === command.agentId)
   return agent ? 'Agent · ' + agent.name : 'Agent · ' + command.agentId
 }
@@ -134,7 +146,7 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
           if (!agent) missing.push('项目 Agent')
           else if (agent.modelProvider !== 'openai') missing.push('当前仅支持 openai 模型提供商')
         }
-        const key = workerKey(command)
+        const key = workerKey(command, configuration)
         return {
           ...command,
           label: commandLabel(command, configuration),
@@ -150,15 +162,23 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
     command: LocalWorkerCommand,
     configuration: ProjectRuntimeConfiguration,
   ): Promise<LocalWorkerControlResult> {
-    const key = workerKey(command)
+    const key = workerKey(command, configuration)
     const existing = this.children.get(key)
     if (existing?.exitCode === null) {
       return { ...command, state: 'already_running', message: '该 Worker 已由当前 API 进程启动' }
     }
-    const capability = this.capabilities(configuration).workers.find((worker) => workerKey(worker) === key)
+    const capability = this.capabilities(configuration).workers.find(
+      (worker) => workerKey(worker, configuration) === key,
+    )
     if (!capability) throw new Error('Worker is not part of this Project runtime configuration')
     if (!capability.ready) throw new Error('Worker 缺少运行条件：' + capability.missing.join('、'))
-    if (await this.options.activity.hasActive(command.kind, command.agentId)) {
+    if (await this.options.activity.hasActive(
+      command.kind,
+      command.agentId,
+      command.kind === 'integration'
+        ? { workspaceId: configuration.project.workspaceId, projectId: configuration.project.id }
+        : undefined,
+    )) {
       return { ...command, state: 'already_running', message: '数据库中已有该 Worker 的有效心跳' }
     }
 
@@ -191,8 +211,11 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
     return { ...command, state: 'starting', message: 'Worker 进程已启动，等待心跳上线' }
   }
 
-  async stop(command: LocalWorkerCommand): Promise<LocalWorkerControlResult> {
-    const key = workerKey(command)
+  async stop(
+    command: LocalWorkerCommand,
+    configuration: ProjectRuntimeConfiguration,
+  ): Promise<LocalWorkerControlResult> {
+    const key = workerKey(command, configuration)
     const child = this.children.get(key)
     if (!child || child.exitCode !== null) {
       return { ...command, state: 'not_owned', message: '该 Worker 不是由当前 API 进程启动，未执行停止' }
@@ -219,6 +242,8 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
     if (command.kind === 'evaluation') return safeProcessEnvironment(common)
     const workspace: Record<string, string | undefined> = {
       ...common,
+      WORKSPACE_ID: configuration.project.workspaceId,
+      PROJECT_ID: configuration.project.id,
       REPOSITORY_ROOT: configuration.project.repositoryPath ?? undefined,
       WORKTREE_ROOT: configuration.runtime.worktreeRoot ?? undefined,
     }

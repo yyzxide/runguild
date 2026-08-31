@@ -269,6 +269,16 @@ runtime configuration table and are never returned to the browser. The API can
 stop only child processes it launched itself; an externally managed Worker is
 shown as external and left untouched.
 
+Scheduler and Evaluation are global control-plane processes: they only claim
+durably scoped PostgreSQL rows and may safely serve several Projects. An
+Agent selected by Scheduler must be an active member of a Conversation in the
+Task's own Project; a same-role Agent from a sibling Project is not eligible. An
+Integration Worker is different because its process is bound to one physical
+Git repository and Worktree root. Local control therefore keys Integration by
+the exact Workspace/Project, injects that scope into the child process, and
+shows only that Project's Integration heartbeat. Its database discovery and
+cleanup queries cannot return another Project's Worktree.
+
 For Web-managed local Workers, the persisted per-Agent model is the source used
 when a new Run freezes its execution context. `MODEL_NAME` in `.env` seeds the
 development bootstrap only; editing it after the Project already exists does
@@ -341,6 +351,8 @@ Run the repository integration and cleanup worker against the same roots:
 
 ~~~bash
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
+WORKSPACE_ID=demo_workspace \
+PROJECT_ID=demo_project \
 REPOSITORY_ROOT=/absolute/path/to/source/repository \
 WORKTREE_ROOT=/absolute/path/to/task-worktrees \
 npm run integration:start
@@ -359,9 +371,10 @@ The current runtime deployment invariant is one live Agent process per
 `AGENT_ID`. Different Agents can run concurrently; the Task Worktree store
 fences provisioning, integration, and cleanup across processes. Worker Instance
 registration now fences two live processes for the same Agent; an expired
-heartbeat is marked stale before a replacement can take ownership. One
-integration worker owns mutation of the
-checked-out project branch at a time. Evaluation Trials use separate
+heartbeat is marked stale before a replacement can take ownership. Integration
+heartbeats and candidate queries are bound to one exact Workspace/Project, so
+different Project repositories can run independent Integration processes while
+each process owns mutation of only its configured Git refs. Evaluation Trials use separate
 non-checked-out refs and compare-and-swap updates, so they can share the Git
 object database without mutating that branch or one another.
 

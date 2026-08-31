@@ -635,7 +635,7 @@ export function createApiApp(dependencies: ApiDependencies) {
       kind: body.data.kind,
       ...(body.data.agentId === undefined ? {} : { agentId: body.data.agentId as AgentId }),
     } as LocalWorkerCommand
-    res.json(await dependencies.localRuntimeControl.stop(command))
+    res.json(await dependencies.localRuntimeControl.stop(command, configuration))
   }))
 
   app.post('/api/v1/workspaces/:workspaceId/projects/:projectId/conversations', route(async (req, res) => {

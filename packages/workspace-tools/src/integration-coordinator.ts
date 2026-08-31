@@ -4,7 +4,7 @@ import type {
   TaskRepository,
   TaskWorktreeRepository,
 } from '@runguild/database'
-import type { CorrelationId } from '@runguild/protocol'
+import type { CorrelationId, ProjectId, WorkspaceId } from '@runguild/protocol'
 
 import type { GitWorktreeManager } from './git-worktree-manager.js'
 
@@ -39,10 +39,16 @@ export class IntegrationCoordinator {
   constructor(private readonly dependencies: IntegrationCoordinatorDependencies) {}
 
   async tick(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
     readonly limit: number
     readonly leaseSeconds: number
   }): Promise<IntegrationTickResult> {
-    const candidates = await this.dependencies.worktrees.listApprovedPendingIntegration(input.limit)
+    const candidates = await this.dependencies.worktrees.listApprovedPendingIntegration({
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      limit: input.limit,
+    })
     let integrated = 0
     let completed = 0
     let busy = 0
@@ -77,7 +83,11 @@ export class IntegrationCoordinator {
         failed += 1
       }
     }
-    const cleanupCandidates = await this.dependencies.worktrees.listCompletedPendingCleanup(input.limit)
+    const cleanupCandidates = await this.dependencies.worktrees.listCompletedPendingCleanup({
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      limit: input.limit,
+    })
     let cleaned = 0
     let cleanupBusy = 0
     let cleanupFailed = 0

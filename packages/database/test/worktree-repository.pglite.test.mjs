@@ -176,7 +176,32 @@ test('clean baseline Worktree can be finalized without entering the integration 
     })
     assert.equal(integrated.status, 'integrated')
     assert.equal(integrated.integratedCommit, 'a'.repeat(40))
-    assert.deepEqual(await repository.listApprovedPendingIntegration(10), [])
+    assert.deepEqual(await repository.listApprovedPendingIntegration({
+      workspaceId: 'ws_tree', projectId: 'project_tree', limit: 10,
+    }), [])
+  } finally {
+    await database.close()
+  }
+})
+
+test('Integration discovery never returns a reviewed Worktree from another Project', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new TaskWorktreeRepository(poolAdapter(database))
+    const reserved = await repository.reserve(reservation('task_conflict'))
+    await repository.markReady({
+      taskId: 'task_conflict', provisionToken: reserved.provisionToken, headCommit: 'a'.repeat(40),
+    })
+    await repository.recordCommit({ taskId: 'task_conflict', headCommit: 'b'.repeat(40) })
+
+    const own = await repository.listApprovedPendingIntegration({
+      workspaceId: 'ws_tree', projectId: 'project_tree', limit: 10,
+    })
+    assert.deepEqual(own.map((item) => item.taskId), ['task_conflict'])
+    assert.deepEqual(await repository.listApprovedPendingIntegration({
+      workspaceId: 'ws_tree', projectId: 'project_other', limit: 10,
+    }), [])
   } finally {
     await database.close()
   }
@@ -204,7 +229,9 @@ test('Integration conflict supersedes the old approval and returns the exact mer
     assert.equal(recovered.worktree.status, 'ready')
     assert.equal(recovered.worktree.reconciliationBaseCommit, 'c'.repeat(40))
     assert.equal(recovered.worktree.lastError.code, 'worktree_integration_conflict')
-    assert.deepEqual(await repository.listApprovedPendingIntegration(10), [])
+    assert.deepEqual(await repository.listApprovedPendingIntegration({
+      workspaceId: 'ws_tree', projectId: 'project_tree', limit: 10,
+    }), [])
 
     const task = await database.query("SELECT status FROM tasks WHERE id = 'task_conflict'")
     assert.equal(task.rows[0].status, 'ready')

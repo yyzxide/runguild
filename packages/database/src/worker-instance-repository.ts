@@ -1,4 +1,4 @@
-import type { AgentId, WorkspaceId } from '@runguild/protocol'
+import type { AgentId, ProjectId, WorkspaceId } from '@runguild/protocol'
 import type { Pool } from 'pg'
 
 import { withTransaction } from './transaction.js'
@@ -10,6 +10,8 @@ export interface RegisterWorkerInput {
   readonly id: string
   readonly kind: WorkerKind
   readonly agentId?: AgentId
+  readonly workspaceId?: WorkspaceId
+  readonly projectId?: ProjectId
   readonly hostname: string
   readonly processId: number
   readonly heartbeatIntervalSeconds: number
@@ -20,9 +22,15 @@ export interface WorkerInstanceRegistration {
   readonly id: string
   readonly kind: WorkerKind
   readonly workspaceId: WorkspaceId | null
+  readonly projectId: ProjectId | null
   readonly agentId: AgentId | null
   readonly startedAt: string
   readonly expiresAt: string
+}
+
+export interface WorkerProjectScope {
+  readonly workspaceId: WorkspaceId
+  readonly projectId: ProjectId
 }
 
 export class WorkerAlreadyActiveError extends Error {
@@ -39,6 +47,11 @@ function assertInput(input: RegisterWorkerInput): void {
   if (!WORKER_KINDS.includes(input.kind)) throw new Error('Unsupported Worker kind')
   if ((input.kind === 'agent') !== Boolean(input.agentId)) {
     throw new Error('Agent Worker registration must include exactly one agentId')
+  }
+  const hasProjectScope = Boolean(input.workspaceId) && Boolean(input.projectId)
+  if ((input.kind === 'integration') !== hasProjectScope
+      || Boolean(input.workspaceId) !== Boolean(input.projectId)) {
+    throw new Error('Integration Worker registration must include exactly one Workspace/Project scope')
   }
   if (!input.hostname.trim() || input.hostname.length > 255) {
     throw new Error('Worker hostname must be between 1 and 255 characters')
@@ -65,6 +78,7 @@ export class WorkerInstanceRepository {
     assertInput(input)
     return withTransaction(this.pool, async (client) => {
       let workspaceId: string | null = null
+      let projectId: string | null = null
       if (input.kind === 'agent' && input.agentId) {
         const agent = await client.query<{ readonly workspace_id: string }>(
           'SELECT workspace_id FROM agents WHERE id = $1 FOR UPDATE',
@@ -84,6 +98,14 @@ export class WorkerInstanceRepository {
           [input.agentId],
         )
         if (active.rows[0]) throw new WorkerAlreadyActiveError(input.agentId)
+      } else if (input.kind === 'integration' && input.workspaceId && input.projectId) {
+        const project = await client.query<{ readonly workspace_id: string }>(
+          'SELECT workspace_id FROM projects WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
+          [input.projectId, input.workspaceId],
+        )
+        if (!project.rows[0]) throw new Error('Integration Worker registration references an unknown Project')
+        workspaceId = input.workspaceId
+        projectId = input.projectId
       }
 
       const inserted = await client.query<{
@@ -91,15 +113,16 @@ export class WorkerInstanceRepository {
         readonly expires_at: Date
       }>(
         'INSERT INTO worker_instances ' +
-        '(id, kind, workspace_id, agent_id, hostname, process_id, heartbeat_interval_seconds, ' +
+        '(id, kind, workspace_id, project_id, agent_id, hostname, process_id, heartbeat_interval_seconds, ' +
         'heartbeat_timeout_seconds, expires_at) ' +
-        "VALUES ($1, $2, $3, $4, $5, $6, $7::integer, $8::integer, " +
-        "NOW() + ($8::integer * INTERVAL '1 second')) " +
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::integer, $9::integer, " +
+        "NOW() + ($9::integer * INTERVAL '1 second')) " +
         'RETURNING started_at, expires_at',
         [
           input.id,
           input.kind,
           workspaceId,
+          projectId,
           input.agentId ?? null,
           input.hostname.trim(),
           input.processId,
@@ -113,6 +136,7 @@ export class WorkerInstanceRepository {
         id: input.id,
         kind: input.kind,
         workspaceId: workspaceId as WorkspaceId | null,
+        projectId: projectId as ProjectId | null,
         agentId: input.agentId ?? null,
         startedAt: row.started_at.toISOString(),
         expiresAt: row.expires_at.toISOString(),
@@ -130,15 +154,20 @@ export class WorkerInstanceRepository {
     return (result.rowCount ?? 0) > 0
   }
 
-  async hasActive(kind: WorkerKind, agentId?: AgentId): Promise<boolean> {
+  async hasActive(kind: WorkerKind, agentId?: AgentId, scope?: WorkerProjectScope): Promise<boolean> {
     if (!WORKER_KINDS.includes(kind)) throw new Error('Unsupported Worker kind')
     if ((kind === 'agent') !== Boolean(agentId)) {
       throw new Error('Agent Worker lookup must include exactly one agentId')
     }
+    if ((kind === 'integration') !== Boolean(scope)) {
+      throw new Error('Integration Worker lookup must include exactly one Workspace/Project scope')
+    }
     const result = await this.pool.query(
       "SELECT 1 FROM worker_instances WHERE kind = $1 AND status = 'running' AND expires_at > NOW() " +
-      'AND (($1 = \'agent\' AND agent_id = $2) OR ($1 <> \'agent\' AND agent_id IS NULL)) LIMIT 1',
-      [kind, agentId ?? null],
+      'AND (($1 = \'agent\' AND agent_id = $2) ' +
+      "OR ($1 = 'integration' AND agent_id IS NULL AND workspace_id = $3 AND project_id = $4) " +
+      "OR ($1 NOT IN ('agent', 'integration') AND agent_id IS NULL AND project_id IS NULL)) LIMIT 1",
+      [kind, agentId ?? null, scope?.workspaceId ?? null, scope?.projectId ?? null],
     )
     return result.rows.length > 0
   }

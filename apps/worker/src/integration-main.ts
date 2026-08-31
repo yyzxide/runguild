@@ -11,6 +11,7 @@ import {
   GitWorktreeManager,
   IntegrationCoordinator,
 } from '@runguild/workspace-tools'
+import type { ProjectId, WorkspaceId } from '@runguild/protocol'
 
 import { startWorkerHeartbeat } from './worker-heartbeat.js'
 
@@ -29,6 +30,8 @@ function integerSetting(name: string, fallback: number, minimum: number, maximum
 }
 
 const databaseUrl = requiredSetting('DATABASE_URL')
+const workspaceId = requiredSetting('WORKSPACE_ID') as WorkspaceId
+const projectId = requiredSetting('PROJECT_ID') as ProjectId
 const repositoryPath = requiredSetting('REPOSITORY_ROOT')
 const worktreeRoot = requiredSetting('WORKTREE_ROOT')
 const pollMs = integerSetting('INTEGRATION_POLL_MS', 2_000, 100, 60_000)
@@ -49,6 +52,8 @@ let stopping = false
 const heartbeat = await startWorkerHeartbeat({
   repository: new WorkerInstanceRepository(pool),
   kind: 'integration',
+  workspaceId,
+  projectId,
   onFailure(error) {
     stopping = true
     process.stderr.write(JSON.stringify({ type: 'integration.heartbeat_failed', message: error.message }) + '\n')
@@ -60,7 +65,7 @@ process.once('SIGTERM', stop)
 
 try {
   while (!stopping && heartbeat.isAlive()) {
-    const result = await coordinator.tick({ limit, leaseSeconds })
+    const result = await coordinator.tick({ workspaceId, projectId, limit, leaseSeconds })
     if (result.discovered > 0) {
       process.stdout.write(JSON.stringify({ type: 'integration.tick', ...result }) + '\n')
     }

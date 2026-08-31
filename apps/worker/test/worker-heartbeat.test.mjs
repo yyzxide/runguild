@@ -10,7 +10,7 @@ test('Worker heartbeat registers identity and marks a graceful stop', async () =
     async register(input) {
       calls.push(['register', input])
       return {
-        id: input.id, kind: input.kind, workspaceId: null, agentId: null,
+        id: input.id, kind: input.kind, workspaceId: null, projectId: null, agentId: null,
         startedAt: '2030-01-01T00:00:00.000Z', expiresAt: '2030-01-01T00:00:15.000Z',
       }
     },
@@ -37,7 +37,7 @@ test('Worker heartbeat becomes unhealthy when database ownership is lost', async
   const repository = {
     async register(input) {
       return {
-        id: input.id, kind: input.kind, workspaceId: null, agentId: null,
+        id: input.id, kind: input.kind, workspaceId: input.workspaceId, projectId: input.projectId, agentId: null,
         startedAt: '2030-01-01T00:00:00.000Z', expiresAt: '2030-01-01T00:00:03.000Z',
       }
     },
@@ -47,6 +47,8 @@ test('Worker heartbeat becomes unhealthy when database ownership is lost', async
   const heartbeat = await startWorkerHeartbeat({
     repository,
     kind: 'integration',
+    workspaceId: 'workspace',
+    projectId: 'project',
     instanceId: 'worker_lost',
     hostname: 'test-host',
     processId: 102,

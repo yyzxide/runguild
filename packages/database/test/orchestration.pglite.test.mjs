@@ -20,6 +20,7 @@ const migrationUrls = [
   new URL('../migrations/0007_worktrees.sql', import.meta.url),
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../migrations/0010_conversations.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
 ]
 
@@ -61,12 +62,24 @@ test('mission approval routes ready DAG tasks by role and requires a Dispatch To
     await applyMigrations(database)
     await database.exec(
       "INSERT INTO workspaces (id, name) VALUES ('ws_flow', 'Flow');" +
-      "INSERT INTO projects (id, workspace_id, name) VALUES ('project_flow', 'ws_flow', 'Project');" +
+      "INSERT INTO projects (id, workspace_id, name) VALUES " +
+      "('project_flow', 'ws_flow', 'Project'), ('project_sibling', 'ws_flow', 'Sibling');" +
       "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
+      "('aaa_sibling_builder', 'ws_flow', 'Sibling Builder', 'builder', 'test', 'test'), " +
       "('planner_flow', 'ws_flow', 'Planner', 'planner', 'test', 'test'), " +
       "('researcher_flow', 'ws_flow', 'Researcher', 'researcher', 'test', 'test'), " +
       "('builder_flow', 'ws_flow', 'Builder', 'builder', 'test', 'test'), " +
-      "('reviewer_flow', 'ws_flow', 'Reviewer', 'reviewer', 'test', 'test');",
+      "('reviewer_flow', 'ws_flow', 'Reviewer', 'reviewer', 'test', 'test');" +
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) VALUES " +
+      "('room_flow', 'ws_flow', 'project_flow', 'project_room', 'Project Room'), " +
+      "('room_sibling', 'ws_flow', 'project_sibling', 'project_room', 'Sibling Room');" +
+      "INSERT INTO conversation_members " +
+      "(conversation_id, workspace_id, participant_kind, participant_id) VALUES " +
+      "('room_flow', 'ws_flow', 'agent', 'planner_flow'), " +
+      "('room_flow', 'ws_flow', 'agent', 'researcher_flow'), " +
+      "('room_flow', 'ws_flow', 'agent', 'builder_flow'), " +
+      "('room_flow', 'ws_flow', 'agent', 'reviewer_flow'), " +
+      "('room_sibling', 'ws_flow', 'agent', 'aaa_sibling_builder');",
     )
     const pool = poolAdapter(database)
     const missions = new MissionRepository(pool)

@@ -74,7 +74,9 @@ read models. It never runs a long model turn inside an HTTP request.
 
 Finds runnable work from durable state. Redis wake events reduce latency, but
 periodic scanning guarantees eventual progress. It decides what can run, not
-what the model should say.
+what the model should say. The process may serve multiple Projects, but Agent
+selection requires active role eligibility plus Conversation membership in the
+Task's exact Project; Workspace-level role matching alone is insufficient.
 
 ### Worker
 
@@ -92,6 +94,14 @@ identities may run concurrently. Every Scheduler, Agent, Integration, and
 Evaluation process registers a durable Worker Instance and renews its expiry.
 Agent registration locks the Agent row and rejects a second non-expired process;
 after a crash, a replacement marks the expired owner stale before taking over.
+Scheduler and Evaluation are global database control-plane Workers and never
+receive repository paths. Integration is repository-bound and must register an
+exact Workspace/Project scope. Its discovery and cleanup queries filter on that
+scope before the Git manager sees a candidate; separate Projects may therefore
+run separate Integration processes without one process opening another
+Project's Worktree. Migration `0019_project_scoped_integration_workers.sql`
+marks any live legacy unscoped Integration row stale so the old process loses
+heartbeat ownership before the scoped replacement starts.
 
 ### Evaluation Worker
 
@@ -497,7 +507,10 @@ The development-only local Worker supervisor follows the same boundary. Its
 routes exist only when `ENABLE_LOCAL_RUNTIME_CONTROL=true`; child processes
 receive an explicit environment allowlist, model credentials come only from the
 API environment, duplicate live heartbeats prevent another launch, and stop
-requests affect only processes owned by that API instance.
+requests affect only processes owned by that API instance. Scheduler and
+Evaluation use API-global child keys; Integration uses a
+Workspace/Project-qualified child key and heartbeat lookup because its Git
+roots come from that Project's persisted runtime configuration.
 
 ## 9. Reproducible strategy evaluation
 

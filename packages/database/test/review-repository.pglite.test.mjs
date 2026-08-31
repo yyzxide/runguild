@@ -279,7 +279,9 @@ test('approved code review cannot complete its Task before the exact reviewed co
     assert.deepEqual(approved.taskCompletion, { completed: false, reason: 'missing_integration' })
     assert.equal((await database.query("SELECT status FROM tasks WHERE id = 'task_review'")).rows[0].status, 'reviewing')
     const worktrees = new TaskWorktreeRepository(pool)
-    assert.equal((await worktrees.listApprovedPendingIntegration(10))[0].taskId, 'task_review')
+    assert.equal((await worktrees.listApprovedPendingIntegration({
+      workspaceId: 'ws_review', projectId: 'project_review', limit: 10,
+    }))[0].taskId, 'task_review')
 
     await database.exec(
       "UPDATE task_worktrees SET status = 'integrated', integrated_commit = '" +
@@ -293,7 +295,9 @@ test('approved code review cannot complete its Task before the exact reviewed co
       correlationId: 'correlation_integrated',
     })
     assert.equal(completed.completed, true)
-    assert.equal((await worktrees.listCompletedPendingCleanup(10))[0].taskId, 'task_review')
+    assert.equal((await worktrees.listCompletedPendingCleanup({
+      workspaceId: 'ws_review', projectId: 'project_review', limit: 10,
+    }))[0].taskId, 'task_review')
   } finally {
     await database.close()
   }

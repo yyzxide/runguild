@@ -218,8 +218,8 @@ function fakeLocalRuntimeControl() {
         calls.push(['start', command, configuration.project.id])
         return { ...command, state: 'starting', message: 'started' }
       },
-      async stop(command) {
-        calls.push(['stop', command])
+      async stop(command, configuration) {
+        calls.push(['stop', command, configuration.project.id])
         return { ...command, state: 'stopping', message: 'stopping' }
       },
     },

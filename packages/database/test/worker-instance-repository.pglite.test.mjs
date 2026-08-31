@@ -23,8 +23,11 @@ function poolAdapter(database) {
 async function setup(database) {
   await database.exec(await readFile(new URL('../migrations/0001_core.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url), 'utf8'))
   await database.exec(
     "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace');" +
+    "INSERT INTO projects (id, workspace_id, name) VALUES " +
+    "('project', 'ws', 'Project'), ('sibling', 'ws', 'Sibling');" +
     "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
     "('agent', 'ws', 'Builder', 'builder', 'openai', 'gpt-test');",
   )
@@ -93,6 +96,42 @@ test('Worker Instance Repository allows independent control-plane processes', as
       "SELECT COUNT(*)::int AS count FROM worker_instances WHERE kind = 'scheduler' AND status = 'running'",
     )
     assert.equal(result.rows[0].count, 2)
+  } finally {
+    await database.close()
+  }
+})
+
+test('Worker Instance Repository isolates repository-bound Integration processes by Project', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new WorkerInstanceRepository(poolAdapter(database))
+    await assert.rejects(
+      repository.register({
+        id: 'integration_unscoped', kind: 'integration', hostname: 'one', processId: 1,
+        heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 15,
+      }),
+      /Workspace\/Project scope/,
+    )
+    const registered = await repository.register({
+      id: 'integration_project', kind: 'integration', workspaceId: 'ws', projectId: 'project',
+      hostname: 'one', processId: 2, heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 15,
+    })
+    assert.equal(registered.workspaceId, 'ws')
+    assert.equal(registered.projectId, 'project')
+    assert.equal(await repository.hasActive('integration', undefined, {
+      workspaceId: 'ws', projectId: 'project',
+    }), true)
+    assert.equal(await repository.hasActive('integration', undefined, {
+      workspaceId: 'ws', projectId: 'sibling',
+    }), false)
+    await repository.register({
+      id: 'integration_sibling', kind: 'integration', workspaceId: 'ws', projectId: 'sibling',
+      hostname: 'two', processId: 3, heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 15,
+    })
+    assert.equal(await repository.hasActive('integration', undefined, {
+      workspaceId: 'ws', projectId: 'sibling',
+    }), true)
   } finally {
     await database.close()
   }

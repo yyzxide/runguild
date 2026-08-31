@@ -218,6 +218,11 @@ The first portfolio-quality release is accepted when automated tests prove:
 14. Cleanup never removes an uncommitted dirty Worktree.
 15. A resumed Run retains the exact Skill Version and Mission/Task context it
     started with.
+16. A repository-bound Integration Worker cannot discover, integrate, or clean
+    a Worktree from another Workspace/Project, while global Scheduler and
+    Evaluation Workers remain safe across Projects because they do not receive
+    filesystem repository configuration. Scheduler cannot dispatch a Task to a
+    same-role Agent that is bound only to a sibling Project.
 16. Every LLM call references a reproducible Context Snapshot within its
     configured token budget.
 17. The same immutable benchmark runs paired single-Agent and multi-Agent

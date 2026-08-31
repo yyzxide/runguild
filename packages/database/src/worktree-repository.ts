@@ -301,8 +301,12 @@ export class TaskWorktreeRepository {
     return result.rows[0] ? asWorktree(result.rows[0]) : null
   }
 
-  async listApprovedPendingIntegration(limit: number): Promise<readonly TaskWorktree[]> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+  async listApprovedPendingIntegration(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
+    readonly limit: number
+  }): Promise<readonly TaskWorktree[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1_000) {
       throw new RangeError('Integration query limit must be between 1 and 1000')
     }
     const result = await this.pool.query<WorktreeRow>(
@@ -311,8 +315,9 @@ export class TaskWorktreeRepository {
       'JOIN reviews r ON r.submission_id = s.id JOIN tasks t ON t.id = w.task_id ' +
       "WHERE w.status IN ('committed', 'integrating') AND s.status = 'approved' " +
       "AND r.status = 'approved' AND t.status = 'reviewing' " +
-      'ORDER BY s.updated_at, w.task_id LIMIT $1',
-      [limit],
+      'AND w.workspace_id = $1 AND w.project_id = $2 ' +
+      'ORDER BY s.updated_at, w.task_id LIMIT $3',
+      [input.workspaceId, input.projectId, input.limit],
     )
     return result.rows.map(asWorktree)
   }
@@ -474,16 +479,21 @@ export class TaskWorktreeRepository {
     })
   }
 
-  async listCompletedPendingCleanup(limit: number): Promise<readonly TaskWorktree[]> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+  async listCompletedPendingCleanup(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
+    readonly limit: number
+  }): Promise<readonly TaskWorktree[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1_000) {
       throw new RangeError('Cleanup query limit must be between 1 and 1000')
     }
     const result = await this.pool.query<WorktreeRow>(
       'SELECT ' + WORKTREE_COLUMNS.split(', ').map((column) => 'w.' + column).join(', ') + ' ' +
       'FROM task_worktrees w JOIN tasks t ON t.id = w.task_id ' +
       "WHERE w.status IN ('integrated', 'cleanup_pending') AND t.status = 'completed' " +
-      'ORDER BY w.updated_at, w.task_id LIMIT $1',
-      [limit],
+      'AND w.workspace_id = $1 AND w.project_id = $2 ' +
+      'ORDER BY w.updated_at, w.task_id LIMIT $3',
+      [input.workspaceId, input.projectId, input.limit],
     )
     return result.rows.map(asWorktree)
   }

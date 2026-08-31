@@ -92,6 +92,13 @@ export class SchedulerRepository {
         const agent = await client.query<{ id: string }>(
           'SELECT a.id FROM agents a ' +
           "WHERE a.workspace_id = $1 AND a.status = 'active' AND a.role = $2 " +
+          'AND EXISTS (' +
+          '  SELECT 1 FROM conversation_members member ' +
+          '  JOIN conversations conversation ON conversation.id = member.conversation_id ' +
+          '  AND conversation.workspace_id = member.workspace_id ' +
+          "  WHERE member.participant_kind = 'agent' AND member.participant_id = a.id " +
+          '  AND member.workspace_id = a.workspace_id AND conversation.project_id = $3' +
+          ') ' +
           'ORDER BY (' +
           '  SELECT COUNT(*) FROM agent_runs r WHERE r.agent_id = a.id ' +
           "  AND r.status IN ('queued', 'starting', 'running', 'waiting_tool', 'waiting_human')" +
@@ -99,7 +106,7 @@ export class SchedulerRepository {
           '  SELECT COUNT(*) FROM task_dispatches d WHERE d.agent_id = a.id ' +
           "  AND d.status = 'pending' AND d.expires_at > NOW()" +
           ') ASC, a.id ASC LIMIT 1',
-          [task.workspace_id, task.required_role],
+          [task.workspace_id, task.required_role, task.project_id],
         )
         const agentIdRaw = agent.rows[0]?.id
         if (!agentIdRaw) continue

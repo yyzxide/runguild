@@ -166,10 +166,16 @@ export class ProjectOperatorRepository {
         }>(
           'SELECT latest.kind, latest.status, latest.last_heartbeat_at, latest.expires_at, ' +
           '(SELECT COUNT(*)::int FROM worker_instances live ' +
-          "WHERE live.kind = latest.kind AND live.status = 'running' AND live.expires_at > NOW()) AS online_count " +
+          "WHERE live.kind = latest.kind AND live.status = 'running' AND live.expires_at > NOW() " +
+          'AND ((live.kind = \'integration\' AND live.workspace_id = $1 AND live.project_id = $2) ' +
+          "OR (live.kind IN ('scheduler', 'evaluation') AND live.project_id IS NULL))) AS online_count " +
           'FROM (SELECT DISTINCT ON (kind) kind, status, last_heartbeat_at, expires_at, started_at, id ' +
-          "FROM worker_instances WHERE kind <> 'agent' ORDER BY kind, started_at DESC, id DESC) latest " +
+          "FROM worker_instances WHERE kind <> 'agent' " +
+          'AND ((kind = \'integration\' AND workspace_id = $1 AND project_id = $2) ' +
+          "OR (kind IN ('scheduler', 'evaluation') AND project_id IS NULL)) " +
+          'ORDER BY kind, started_at DESC, id DESC) latest ' +
           'ORDER BY latest.kind',
+          [workspaceId, projectId],
         )
 
       const latestAgentWorkers = new Map(agentWorkers.rows.map((worker) => [worker.agent_id, worker]))
