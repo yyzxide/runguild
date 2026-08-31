@@ -280,6 +280,29 @@ async function createRuntime(
             discoveryActions: ['repo.status', 'repo.search', 'repo.diff', 'file.read'],
             implementationActions: ['file.patch'],
           },
+          ...(context.reviewRequired
+            ? {
+                hopBudgetGates: [
+                  {
+                    remainingHops: 8,
+                    blockedActions: ['repo.search'],
+                    instruction:
+                      'The delivery deadline is approaching. Stop broad investigation and optional improvements. ' +
+                      'Finish only acceptance-critical work, then verify, commit, append a concise Mission Artifact summary, ' +
+                      'create its immutable Version, submit that Version for Review, and call run.set_status.',
+                  },
+                  {
+                    remainingHops: 6,
+                    blockedActions: ['repo.search', 'file.read', 'file.patch'],
+                    instruction:
+                      'This is the dedicated delivery reserve; implementation is frozen. Use the remaining calls in order for ' +
+                      'one exact allowlisted verification, repo.commit, artifact.edit with append_content, ' +
+                      'artifact.create_version, artifact.submit_for_review, and run.set_status. Skip artifact.read and optional checks. ' +
+                      'If verification fails, report failed with the exact blocker so a durable retry can resume the Worktree.',
+                  },
+                ],
+              }
+            : {}),
         }
       : {}),
   })

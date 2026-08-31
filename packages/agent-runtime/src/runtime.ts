@@ -30,6 +30,9 @@ const RUNTIME_CONTRACT =
   'Runtime contract: work is complete only after calling run.set_status with status done. ' +
   'A normal assistant response, silence, or a model stop reason never completes the run.'
 
+const MODEL_PROTOCOL_CORRECTION_MARKER = '[Model protocol correction]'
+const HOP_BUDGET_GATE_MARKER = '[Hop budget gate]'
+
 const STATUS_TOOL: ModelToolDefinition = {
   action: 'run.set_status',
   description: 'Request a verified terminal or waiting state for this run.',
@@ -58,7 +61,8 @@ export interface RuntimePersistence {
   recordEvent(
     runId: RunId,
     hop: number,
-    kind: 'tool_requested' | 'tool_completed' | 'steering_applied' | 'completion_rejected',
+    kind: 'tool_requested' | 'tool_completed' | 'steering_applied' | 'completion_rejected'
+      | 'model_protocol_rejected',
     data: Readonly<Record<string, unknown>>,
   ): Promise<void>
   beginModelCall(
@@ -108,6 +112,22 @@ export interface AgentRuntimeOptions {
     readonly discoveryActions: readonly ToolAction[]
     readonly implementationActions: readonly ToolAction[]
   }
+  /**
+   * Model-originated protocol mistakes are safe to retry because no Tool
+   * Gateway side effect has started. The persisted correction marker keeps
+   * the retry budget stable across process restarts.
+   */
+  readonly maxModelProtocolRepairs?: number
+  /**
+   * Progressively remove non-delivery tools as the durable Run approaches its
+   * maximum hop count. Runtime enforcement remains authoritative even when a
+   * provider repeats a previously visible function call.
+   */
+  readonly hopBudgetGates?: readonly {
+    readonly remainingHops: number
+    readonly blockedActions: readonly ToolAction[]
+    readonly instruction: string
+  }[]
   readonly now?: () => Date
 }
 
@@ -177,14 +197,23 @@ function lastSucceededActionHop(
 export class AgentRuntime {
   private readonly now: () => Date
   private readonly definitions: readonly ModelToolDefinition[]
+  private readonly maxModelProtocolRepairs: number
+  private readonly hopBudgetGates: NonNullable<AgentRuntimeOptions['hopBudgetGates']>
 
   constructor(private readonly options: AgentRuntimeOptions) {
     this.now = options.now ?? (() => new Date())
+    this.maxModelProtocolRepairs = options.maxModelProtocolRepairs ?? 2
+    if (!Number.isInteger(this.maxModelProtocolRepairs)
+        || this.maxModelProtocolRepairs < 0
+        || this.maxModelProtocolRepairs > 10) {
+      throw new RangeError('maxModelProtocolRepairs must be an integer between 0 and 10')
+    }
     const supplied = options.toolDefinitions ?? []
     if (supplied.some((definition) => definition.action === 'run.set_status')) {
       throw new Error('run.set_status definition is supplied by AgentRuntime')
     }
     this.definitions = [...supplied, STATUS_TOOL]
+    const registered = new Set(this.definitions.map((definition) => definition.action))
     const gate = options.implementationGate
     if (gate) {
       if (!Number.isInteger(gate.maxDiscoveryHops) || gate.maxDiscoveryHops < 1 || gate.maxDiscoveryHops > 1_000) {
@@ -193,7 +222,6 @@ export class AgentRuntime {
       if (gate.discoveryActions.length === 0 || gate.implementationActions.length === 0) {
         throw new Error('implementationGate action lists must be non-empty')
       }
-      const registered = new Set(this.definitions.map((definition) => definition.action))
       for (const action of [...gate.discoveryActions, ...gate.implementationActions]) {
         if (!registered.has(action)) {
           throw new Error('implementationGate action is not registered: ' + action)
@@ -204,6 +232,28 @@ export class AgentRuntime {
         throw new Error('implementationGate discovery and implementation actions must not overlap')
       }
     }
+    const budgetThresholds = new Set<number>()
+    for (const gate of options.hopBudgetGates ?? []) {
+      if (!Number.isInteger(gate.remainingHops) || gate.remainingHops < 1 || gate.remainingHops > 1_000) {
+        throw new RangeError('hopBudgetGates remainingHops must be an integer between 1 and 1000')
+      }
+      if (budgetThresholds.has(gate.remainingHops)) {
+        throw new Error('hopBudgetGates remainingHops thresholds must be unique')
+      }
+      budgetThresholds.add(gate.remainingHops)
+      if (gate.blockedActions.length === 0 || new Set(gate.blockedActions).size !== gate.blockedActions.length) {
+        throw new Error('hopBudgetGates blockedActions must be non-empty and unique')
+      }
+      for (const action of gate.blockedActions) {
+        if (!registered.has(action)) throw new Error('hopBudgetGates action is not registered: ' + action)
+        if (action === 'run.set_status') throw new Error('hopBudgetGates cannot block run.set_status')
+      }
+      if (gate.instruction.trim() === '' || gate.instruction.length > 4_000) {
+        throw new Error('hopBudgetGates instruction must contain between 1 and 4000 characters')
+      }
+    }
+    this.hopBudgetGates = [...options.hopBudgetGates ?? []]
+      .sort((left, right) => right.remainingHops - left.remainingHops)
   }
 
   async run(input: RunAgentInput): Promise<RuntimeOutcome> {
@@ -269,8 +319,9 @@ export class AgentRuntime {
       }
       context = { ...context, currentHop: hop }
       await this.ensureImplementationGateMessage(input.runId, hop, messages)
+      await this.ensureHopBudgetGateMessages(context, hop, messages)
       const continuation = await this.options.persistence.loadModelContinuation(input.runId)
-      const definitions = this.definitionsFor(hop, messages)
+      const definitions = this.definitionsFor(context, hop, messages)
       let builtContext
       try {
         builtContext = this.options.contextBuilder.build({
@@ -331,6 +382,38 @@ export class AgentRuntime {
       await this.options.persistence.appendMessage(input.runId, hop, assistantMessage)
       messages.push(assistantMessage)
 
+      if (response.protocolError !== undefined && response.finishReason === 'tool_calls') {
+        const repairCount = messages.filter(
+          (message) => message.role === 'user'
+            && message.content.startsWith(MODEL_PROTOCOL_CORRECTION_MARKER),
+        ).length
+        await this.options.persistence.recordEvent(input.runId, hop, 'model_protocol_rejected', {
+          code: response.protocolError.code,
+          toolCallId: response.protocolError.toolCallId,
+          toolName: response.protocolError.toolName,
+          repairCount: repairCount + 1,
+        })
+        if (repairCount >= this.maxModelProtocolRepairs) {
+          return this.finish(
+            input.runId,
+            'failed',
+            'Model protocol repair budget exhausted after ' + String(repairCount + 1) +
+              ' invalid responses: ' + response.protocolError.code + '.',
+            hop,
+          )
+        }
+        const correction: ModelMessage = {
+          role: 'user',
+          hop,
+          content: MODEL_PROTOCOL_CORRECTION_MARKER + ' ' + response.protocolError.message +
+            ' No tool from that response was executed. Retry with a currently declared function and one valid JSON object. ' +
+            'Repair ' + String(repairCount + 1) + ' of ' + String(this.maxModelProtocolRepairs) + '.',
+        }
+        await this.options.persistence.appendMessage(input.runId, hop, correction)
+        messages.push(correction)
+        continue
+      }
+
       if (response.toolCalls.length > 0) {
         const outcome = await this.processToolCalls(context, hop, response.toolCalls, messages, input.abortSignal)
         if (outcome) {
@@ -377,7 +460,20 @@ export class AgentRuntime {
         action: call.action,
       })
       let result: ToolResult
-      if (this.discoveryActionBlocked(hop, call.action, messages)) {
+      const budgetGate = this.blockingHopBudgetGate(context, hop, call.action)
+      if (budgetGate !== null) {
+        result = {
+          status: 'failed',
+          error: {
+            code: 'conflict',
+            message: 'Hop delivery budget is active with ' + String(this.remainingHops(context, hop)) +
+              ' hops remaining. This action is no longer available: ' + call.action + '. ' + budgetGate.instruction,
+            retryable: false,
+          },
+          effectState: 'none',
+          sideEffects: [],
+        }
+      } else if (this.discoveryActionBlocked(hop, call.action, messages)) {
         result = {
           status: 'failed',
           error: {
@@ -574,15 +670,22 @@ export class AgentRuntime {
   }
 
   private definitionsFor(
+    context: RuntimeRunContext,
     hop: number,
     messages: readonly ModelMessage[],
   ): readonly ModelToolDefinition[] {
     const gate = this.options.implementationGate
-    if (!gate || hop <= this.discoveryDeadline(messages)) {
-      return this.definitions
+    let definitions = this.definitions
+    if (gate && hop > this.discoveryDeadline(messages)) {
+      const discovery = new Set(gate.discoveryActions)
+      definitions = definitions.filter((definition) => !discovery.has(definition.action))
     }
-    const discovery = new Set(gate.discoveryActions)
-    return this.definitions.filter((definition) => !discovery.has(definition.action))
+    const blocked = new Set(
+      this.activeHopBudgetGates(context, hop).flatMap((item) => item.blockedActions),
+    )
+    return blocked.size === 0
+      ? definitions
+      : definitions.filter((definition) => !blocked.has(definition.action))
   }
 
   private async ensureImplementationGateMessage(
@@ -612,6 +715,47 @@ export class AgentRuntime {
     }
     await this.options.persistence.appendMessage(runId, hop, message)
     messages.push(message)
+  }
+
+  private remainingHops(context: RuntimeRunContext, hop: number): number {
+    return Math.max(0, context.maxHops - hop + 1)
+  }
+
+  private activeHopBudgetGates(
+    context: RuntimeRunContext,
+    hop: number,
+  ): NonNullable<AgentRuntimeOptions['hopBudgetGates']> {
+    const remaining = this.remainingHops(context, hop)
+    return this.hopBudgetGates.filter((gate) => remaining <= gate.remainingHops)
+  }
+
+  private blockingHopBudgetGate(
+    context: RuntimeRunContext,
+    hop: number,
+    action: ToolAction,
+  ): NonNullable<AgentRuntimeOptions['hopBudgetGates']>[number] | null {
+    return this.activeHopBudgetGates(context, hop)
+      .find((gate) => gate.blockedActions.includes(action)) ?? null
+  }
+
+  private async ensureHopBudgetGateMessages(
+    context: RuntimeRunContext,
+    hop: number,
+    messages: ModelMessage[],
+  ): Promise<void> {
+    const remaining = this.remainingHops(context, hop)
+    for (const gate of this.activeHopBudgetGates(context, hop)) {
+      const marker = HOP_BUDGET_GATE_MARKER + ' remaining<=' + String(gate.remainingHops)
+      if (messages.some((message) => message.role === 'user' && message.content.startsWith(marker))) continue
+      const message: ModelMessage = {
+        role: 'user',
+        hop,
+        content: marker + '. ' + String(remaining) + ' model hops remain, including this hop. ' +
+          gate.instruction + ' These actions are now unavailable: ' + gate.blockedActions.join(', ') + '.',
+      }
+      await this.options.persistence.appendMessage(context.runId, hop, message)
+      messages.push(message)
+    }
   }
 
   private async requireRun(runId: RunId): Promise<RuntimeRunContext> {

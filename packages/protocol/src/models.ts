@@ -50,12 +50,20 @@ export interface ModelUsage {
   readonly estimatedCostUsd?: number
 }
 
+export interface ModelProtocolError {
+  readonly code: 'unknown_tool' | 'invalid_tool_arguments'
+  readonly message: string
+  readonly toolCallId: ToolCallId
+  readonly toolName: string
+}
+
 export interface ModelResponse {
   readonly content: string
   readonly toolCalls: readonly ModelToolCall[]
   readonly finishReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'error'
   readonly usage: ModelUsage
   readonly providerRequestId?: string
+  readonly protocolError?: ModelProtocolError
 }
 
 export interface ModelAdapter {

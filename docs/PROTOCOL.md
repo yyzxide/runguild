@@ -109,6 +109,18 @@ passes through the completion verifier; `blocked` and `waiting_human` pause;
 `failed` is terminal. Without an explicit status call the Runtime continues
 until its hop budget is exhausted.
 
+Model protocol mistakes are not Tool failures. If a completed response names a
+function that is not declared for the current hop or supplies arguments that
+are not one complete JSON object, the whole response is side-effect free. The
+LLM call still records its provider id and usage, a redacted diagnostic is
+appended to the audit trail, and the Runtime may add at most two persisted
+corrections. Raw malformed arguments are not stored in the correction and are
+never guessed or repaired structurally.
+
+The Runtime may reserve final hops by removing selected Tool definitions. The
+same deny rule is checked again before execution, so a provider cannot bypass a
+delivery reserve by replaying a Tool Call that was visible in an earlier hop.
+
 ## 6. Inbox
 
 Inbox messages are append-only durable inputs addressed to an Agent or Run.

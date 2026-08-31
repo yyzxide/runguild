@@ -63,6 +63,15 @@ The control-plane foundation is executable:
   a durable transcript that survives approval pauses, and a persisted
   repeating discovery-to-implementation gate for Builder Tasks requiring
   `file_diff`, reconstructed from the durable transcript after every patch;
+- bounded execution-Agent protocol repair: unknown/temporarily hidden function
+  names and structurally invalid argument objects execute no tools, retain their
+  provider usage in the LLM ledger, receive at most two durable correction
+  prompts, and restart with full transcript replay instead of an unsafe stale
+  provider continuation;
+- progressive Builder delivery reserves that remove broad search for the last
+  eight model hops and freeze file reading/patching for the last six, preserving
+  enough bounded calls for verification, commit, Artifact Version, Review
+  submission, and explicit completion;
 - provider-neutral model adapter and a redacted LLM call, token, latency, and
   cost ledger;
 - a production OpenAI Responses adapter with durable response continuation and

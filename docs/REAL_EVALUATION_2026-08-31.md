@@ -69,12 +69,19 @@ still must be configured before cost comparisons are used as project evidence.
    Conversation membership, and the Scheduler repairs orphaned Submissions.
 3. The multi-Agent Builder exhausted all attempts: one failed on an undeclared
    `repo__search` function name, one consumed all 30 hops, and one supplied
-   invalid JSON to `file__patch`. The adapter correctly rejected these rather
-   than weakening the Tool Gateway.
+   invalid JSON to `file__patch`. Follow-up inspection showed that
+   `repo__search` had been valid earlier but was hidden by the implementation
+   gate for that hop. Both cases now become bounded, side-effect-free protocol
+   corrections: usage remains in the ledger, raw malformed arguments are not
+   persisted, no valid prefix of a mixed response executes, and the Tool
+   Gateway remains strict.
 4. The Researcher succeeded but used 27 of 30 hops, showing excessive repeated
    discovery. The Builder also completed tests and a commit in an earlier
    attempt but failed to reserve enough hops for Artifact submission and the
-   completion gate.
+   completion gate. Review-gated Builders now receive an enforced progressive
+   delivery reserve: broad search closes with eight hops left and file
+   reading/patching closes with six, leaving the final calls for verification,
+   commit, Artifact Version, Review submission, and explicit completion.
 5. Evaluation metrics omitted separate Reviewer usage and could not price the
    configured compatible model. The first issue is fixed by an immutable
    per-attempt Reviewer model-call ledger and merged collector totals;

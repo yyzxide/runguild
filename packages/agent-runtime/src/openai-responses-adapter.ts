@@ -10,6 +10,7 @@ import {
   type ModelAdapter,
   type ModelMessage,
   type ModelRequest,
+  type ModelProtocolError,
   type ModelResponse,
   type ModelToolCall,
   type ToolAction,
@@ -37,6 +38,12 @@ export interface OpenAIResponsesAdapterOptions {
 
 const PROVIDER_TOOL_NAME = /^[a-zA-Z0-9_-]+$/
 const MAX_PROVIDER_TOOL_NAME_LENGTH = 64
+
+function diagnosticToolName(value: string): string {
+  return value.length <= MAX_PROVIDER_TOOL_NAME_LENGTH
+    ? value
+    : value.slice(0, MAX_PROVIDER_TOOL_NAME_LENGTH - 1) + '…'
+}
 
 function providerToolName(action: ToolAction): string {
   const name = action.replaceAll('.', '__')
@@ -196,19 +203,51 @@ function parseToolCall(
   item: ResponseFunctionToolCall,
   actionsByProviderName: ReadonlyMap<string, ToolAction>,
   allowControlCharacterRepair: boolean,
-): ModelToolCall {
-  const input = parseToolArguments(item.arguments, item.name, allowControlCharacterRepair)
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('OpenAI tool arguments must be a JSON object for ' + item.name)
-  }
+): { readonly call?: ModelToolCall; readonly error?: ModelProtocolError } {
   const action = actionsByProviderName.get(item.name)
   if (action === undefined) {
-    throw new Error('OpenAI returned an unknown function name: ' + item.name)
+    const toolName = diagnosticToolName(item.name)
+    return {
+      error: {
+        code: 'unknown_tool',
+        toolCallId: item.call_id as ToolCallId,
+        toolName,
+        message: 'Tool function ' + JSON.stringify(toolName) +
+          ' was not declared for this model hop. Use exactly one of the currently declared tool functions.',
+      },
+    }
+  }
+  let input: unknown
+  try {
+    input = parseToolArguments(item.arguments, item.name, allowControlCharacterRepair)
+  } catch {
+    return {
+      error: {
+        code: 'invalid_tool_arguments',
+        toolCallId: item.call_id as ToolCallId,
+        toolName: item.name,
+        message: 'Tool function ' + JSON.stringify(item.name) +
+          ' did not contain one complete valid JSON object. Retry it with arguments matching the declared schema.',
+      },
+    }
+  }
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return {
+      error: {
+        code: 'invalid_tool_arguments',
+        toolCallId: item.call_id as ToolCallId,
+        toolName: item.name,
+        message: 'Tool function ' + JSON.stringify(item.name) +
+          ' arguments must be one JSON object matching the declared schema.',
+      },
+    }
   }
   return {
-    id: item.call_id as ToolCallId,
-    action,
-    input: input as never,
+    call: {
+      id: item.call_id as ToolCallId,
+      action,
+      input: input as never,
+    },
   }
 }
 
@@ -267,19 +306,28 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
       body,
       request.abortSignal === undefined ? undefined : { signal: request.abortSignal },
     )
-    const toolCalls = response.output
+    const rawToolCalls = response.output
       .filter((item): item is ResponseFunctionToolCall => item.type === 'function_call')
+    const parsedToolCalls = rawToolCalls
       .map((item) => parseToolCall(item, actionsByProviderName, this.options.baseURL !== undefined))
+    const protocolError = parsedToolCalls.find((item) => item.error !== undefined)?.error
+    // A malformed multi-call response is rejected as one unit. Executing only
+    // its valid prefix could persist side effects the model did not intend to
+    // leave behind after the rejected call.
+    const toolCalls = protocolError === undefined
+      ? parsedToolCalls.flatMap((item) => item.call === undefined ? [] : [item.call])
+      : []
     return {
       content: response.output_text,
       toolCalls,
-      finishReason: finishReason(response, toolCalls.length > 0),
+      finishReason: finishReason(response, rawToolCalls.length > 0),
       usage: {
         inputTokens: response.usage?.input_tokens ?? 0,
         outputTokens: response.usage?.output_tokens ?? 0,
         cachedInputTokens: response.usage?.input_tokens_details.cached_tokens ?? 0,
       },
       providerRequestId: response.id,
+      ...(protocolError === undefined ? {} : { protocolError }),
     }
   }
 }

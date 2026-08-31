@@ -74,8 +74,9 @@ test('real persistence runs model, idempotent tool, ledger, and completion gate 
       usage: { inputTokens: 23, outputTokens: 8, estimatedCostUsd: 0.001 },
       providerRequestId: 'provider_e2e',
     }])
+    const persistence = new RuntimeRepository(pool)
     const runtime = new AgentRuntime({
-      persistence: new RuntimeRepository(pool),
+      persistence,
       model,
       tools: gateway,
       completionVerifier: { verify: async () => ({ accepted: true }) },
@@ -109,6 +110,18 @@ test('real persistence runs model, idempotent tool, ledger, and completion gate 
       provider_request_id: 'provider_e2e',
       context_snapshot_id: model.requests[0].context.snapshotId,
     })
+    assert.deepEqual(await persistence.loadModelContinuation('run_e2e'), {
+      provider: 'scripted', model: 'deterministic', responseId: 'provider_e2e', hop: 1,
+    })
+    await database.query(
+      "INSERT INTO llm_calls " +
+      "(id, workspace_id, mission_id, task_id, run_id, hop, provider, model, status, request_hash, " +
+      "request_redacted, response_redacted, provider_request_id, finished_at) VALUES " +
+      "('llm_protocol_error', 'ws_e2e', 'mission_e2e', 'task_e2e', 'run_e2e', 2, 'scripted', " +
+      "'deterministic', 'succeeded', 'hash', '{}'::jsonb, " +
+      "'{\"protocolError\":{\"code\":\"invalid_tool_arguments\"}}'::jsonb, 'provider_bad', NOW())",
+    )
+    assert.equal(await persistence.loadModelContinuation('run_e2e'), null)
     const snapshots = await database.query(
       "SELECT hop, strategy, compacted, content_hash FROM context_snapshots WHERE run_id = 'run_e2e'",
     )

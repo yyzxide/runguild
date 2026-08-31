@@ -241,7 +241,7 @@ test('custom endpoint continuation can be explicitly enabled for a stateful prox
   ])
 })
 
-test('OpenAI adapter rejects malformed function arguments before the Runtime sees them', async () => {
+test('OpenAI adapter returns a redacted protocol error for malformed function arguments', async () => {
   const fake = fakeClient([response({
     output: [{
       type: 'function_call',
@@ -253,17 +253,25 @@ test('OpenAI adapter rejects malformed function arguments before the Runtime see
   })])
   const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
 
-  await assert.rejects(
-    adapter.complete({
-      messages: [],
-      tools: [{
-        action: 'repo.search',
-        description: 'Search repository text.',
-        inputSchema: { type: 'object' },
-      }],
-    }),
-    /invalid JSON arguments/,
-  )
+  const result = await adapter.complete({
+    messages: [],
+    tools: [{
+      action: 'repo.search',
+      description: 'Search repository text.',
+      inputSchema: { type: 'object' },
+    }],
+  })
+
+  assert.deepEqual(result.toolCalls, [])
+  assert.deepEqual(result.protocolError, {
+    code: 'invalid_tool_arguments',
+    toolCallId: 'call_bad',
+    toolName: 'repo__search',
+    message: 'Tool function "repo__search" did not contain one complete valid JSON object. ' +
+      'Retry it with arguments matching the declared schema.',
+  })
+  assert.doesNotMatch(JSON.stringify(result), /bad json/)
+  assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 5, cachedInputTokens: 3 })
 })
 
 test('OpenAI-compatible endpoint normalizes literal control characters inside JSON string arguments', async () => {
@@ -298,7 +306,7 @@ test('OpenAI-compatible endpoint normalizes literal control characters inside JS
   })
 })
 
-test('OpenAI-compatible endpoint still rejects structurally malformed JSON arguments', async () => {
+test('OpenAI-compatible endpoint reports structurally malformed JSON without exposing arguments', async () => {
   const fake = fakeClient([response({
     output: [{
       type: 'function_call',
@@ -315,20 +323,21 @@ test('OpenAI-compatible endpoint still rejects structurally malformed JSON argum
     client: fake.client,
   })
 
-  await assert.rejects(
-    adapter.complete({
-      messages: [],
-      tools: [{
-        action: 'repo.search',
-        description: 'Search repository text.',
-        inputSchema: { type: 'object' },
-      }],
-    }),
-    /invalid JSON arguments/,
-  )
+  const result = await adapter.complete({
+    messages: [],
+    tools: [{
+      action: 'repo.search',
+      description: 'Search repository text.',
+      inputSchema: { type: 'object' },
+    }],
+  })
+
+  assert.equal(result.protocolError.code, 'invalid_tool_arguments')
+  assert.deepEqual(result.toolCalls, [])
+  assert.doesNotMatch(JSON.stringify(result), /unterminated/)
 })
 
-test('OpenAI adapter rejects provider function names that are not declared by the Runtime', async () => {
+test('OpenAI adapter reports provider function names that are not declared for the current hop', async () => {
   const fake = fakeClient([response({
     output: [{
       type: 'function_call',
@@ -340,10 +349,44 @@ test('OpenAI adapter rejects provider function names that are not declared by th
   })])
   const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
 
-  await assert.rejects(
-    adapter.complete({ messages: [], tools: [] }),
-    /unknown function name/,
-  )
+  const result = await adapter.complete({ messages: [], tools: [] })
+
+  assert.deepEqual(result.toolCalls, [])
+  assert.deepEqual(result.protocolError, {
+    code: 'unknown_tool',
+    toolCallId: 'call_unknown',
+    toolName: 'unknown_tool',
+    message: 'Tool function "unknown_tool" was not declared for this model hop. ' +
+      'Use exactly one of the currently declared tool functions.',
+  })
+})
+
+test('OpenAI adapter rejects a malformed multi-call response without executing its valid prefix', async () => {
+  const fake = fakeClient([response({
+    output: [
+      {
+        type: 'function_call', call_id: 'call_valid', name: 'repo__search',
+        arguments: '{"query":"runtime"}', status: 'completed',
+      },
+      {
+        type: 'function_call', call_id: 'call_invalid', name: 'file__patch',
+        arguments: '{broken', status: 'completed',
+      },
+    ],
+  })])
+  const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+
+  const result = await adapter.complete({
+    messages: [],
+    tools: [
+      { action: 'repo.search', description: 'Search.', inputSchema: { type: 'object' } },
+      { action: 'file.patch', description: 'Patch.', inputSchema: { type: 'object' } },
+    ],
+  })
+
+  assert.deepEqual(result.toolCalls, [])
+  assert.equal(result.protocolError.toolCallId, 'call_invalid')
+  assert.equal(result.finishReason, 'tool_calls')
 })
 
 test('OpenAI adapter rejects ambiguous function-name encodings before calling the provider', async () => {

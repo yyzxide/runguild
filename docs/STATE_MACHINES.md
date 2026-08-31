@@ -123,6 +123,20 @@ reconstructed from persisted assistant Tool Calls and Tool Results, so a crash
 cannot reset the budget or invent progress. Tasks without required `file_diff`
 Evidence do not receive this gate.
 
+An execution-Agent response with an unknown/temporarily hidden function name or
+an invalid JSON argument object executes no Tool Calls from that response. Its
+usage and redacted protocol error are persisted, then the Runtime appends a
+durable correction and retries at most twice. A third invalid response fails the
+Run. The correction markers survive restart, and the next request replays the
+clean transcript instead of continuing from a malformed provider response.
+
+Review-gated Builders reserve their last eight hops for delivery. Broad search
+is removed at eight remaining hops; file reading and patching are also removed
+at six. The final calls are dedicated to verification, commit, Artifact update,
+immutable Version creation, Review submission, and explicit status. A stale
+hidden call is rejected before side effects. Failed verification ends the Run
+so another bounded attempt can resume its existing Worktree.
+
 ## Tool execution
 
 ~~~text

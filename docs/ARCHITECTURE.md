@@ -178,9 +178,15 @@ nudge and consumes another bounded hop.
 
 A provider response that ends because of an output limit, content filter, or
 provider error without a complete Tool Call fails the Run immediately after
-the redacted call ledger is persisted. The Runtime does not spend later hops
-retrying structurally incomplete output. Stopping an Agent Worker also aborts
-its active model/tool signal instead of waiting for the entire Run loop.
+the redacted call ledger is persisted. A completed provider response containing
+an unknown function name or invalid argument object is a different case: no
+Tool Call from that response executes, usage and a redacted protocol diagnostic
+are persisted, and the Runtime may issue at most two durable correction prompts.
+The correction count is reconstructed from the transcript after restart. After
+an invalid response, continuation is disabled for the next call so a stateful
+provider cannot demand an output for the malformed function call; the clean
+local transcript is replayed instead. Stopping an Agent Worker also aborts its
+active model/tool signal instead of waiting for the entire Run loop.
 
 Builder Tasks that require `file_diff` Evidence also use a deterministic,
 repeating implementation phase gate. The Runtime permits four discovery hops
@@ -191,6 +197,16 @@ succeeds. Calls from a stale provider response are rejected before the Tool
 Gateway executes them. The gate derives the latest successful implementation
 hop from the durable transcript rather than Worker memory, so restart and
 replay preserve the same window.
+
+Review-gated Builder Runs also divide the tail of `max_hops` into an enforced
+delivery reserve. With eight hops remaining, broad `repo.search` is removed and
+the model receives a durable instruction to stop optional investigation. With
+six remaining, `repo.search`, `file.read`, and `file.patch` are removed so those
+calls are reserved for one exact verification, `repo.commit`, Artifact append,
+immutable Version creation, Review submission, and `run.set_status`. Stale calls
+to removed actions are rejected before the Tool Gateway. If verification fails,
+the Run terminates and a later durable Task attempt resumes the same Worktree
+instead of consuming the delivery budget on unbounded repair.
 
 ## 4. Source-of-truth boundaries
 
@@ -530,8 +546,9 @@ string that carries function arguments. The adapter retries parsing only after
 escaping those control characters while they are inside a quoted JSON string.
 It does not repair structure, quotes, delimiters, non-object inputs, or unknown
 function names, and the official OpenAI path never enables this compatibility
-pass. The normalized object still enters the ordinary typed Tool Gateway and
-durable Tool Call ledger.
+pass. Structural errors become bounded model-protocol corrections; they are
+never converted into guessed inputs. The normalized valid object still enters
+the ordinary typed Tool Gateway and durable Tool Call ledger.
 
 Read-only repository tools also persist verifiable Evidence: repository search
 emits both a bounded source `citation` and its exact `command_result`, file

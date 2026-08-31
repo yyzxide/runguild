@@ -69,6 +69,13 @@ function redactedResponse(response: ModelResponse): Readonly<Record<string, unkn
     contentLength: response.content.length,
     toolCalls: response.toolCalls.map((call) => ({ id: call.id, action: call.action })),
     finishReason: response.finishReason,
+    ...(response.protocolError === undefined ? {} : {
+      protocolError: {
+        code: response.protocolError.code,
+        toolCallId: response.protocolError.toolCallId,
+        toolName: response.protocolError.toolName,
+      },
+    }),
   }
 }
 
@@ -133,16 +140,21 @@ export class RuntimeRepository {
     const result = await this.pool.query<{
       provider: string
       model: string
-      provider_request_id: string
+      provider_request_id: string | null
       hop: number
+      response_redacted: Readonly<Record<string, unknown>> | null
     }>(
-      'SELECT provider, model, provider_request_id, hop FROM llm_calls ' +
-      "WHERE run_id = $1 AND status = 'succeeded' AND provider_request_id IS NOT NULL " +
+      'SELECT provider, model, provider_request_id, hop, response_redacted FROM llm_calls ' +
+      "WHERE run_id = $1 AND status = 'succeeded' " +
       'ORDER BY hop DESC, finished_at DESC LIMIT 1',
       [runId],
     )
     const row = result.rows[0]
-    return row ? {
+    // A structurally invalid provider response is durably counted, but cannot
+    // be continued safely: stateful providers may require an output for the
+    // malformed function call. Replay the clean transcript in a fresh request
+    // instead of continuing from that response or an older stale response.
+    return row?.provider_request_id && row.response_redacted?.['protocolError'] === undefined ? {
       provider: row.provider,
       model: row.model,
       responseId: row.provider_request_id,
@@ -282,7 +294,8 @@ export class RuntimeRepository {
   async recordEvent(
     runId: RunId,
     hop: number,
-    kind: 'tool_requested' | 'tool_completed' | 'steering_applied' | 'completion_rejected',
+    kind: 'tool_requested' | 'tool_completed' | 'steering_applied' | 'completion_rejected'
+      | 'model_protocol_rejected',
     data: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     const row = await this.pool.query<RuntimeRunRow>(

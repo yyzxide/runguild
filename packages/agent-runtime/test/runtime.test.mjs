@@ -3,12 +3,15 @@ import test from 'node:test'
 
 import { AgentRuntime, DeterministicContextBuilder, ScriptedModelAdapter } from '../dist/index.js'
 
-function response({ content = '', toolCalls = [], finishReason = toolCalls.length ? 'tool_calls' : 'stop' } = {}) {
+function response({
+  content = '', toolCalls = [], finishReason = toolCalls.length ? 'tool_calls' : 'stop', protocolError,
+} = {}) {
   return {
     content,
     toolCalls,
     finishReason,
     usage: { inputTokens: 10, outputTokens: 5 },
+    ...(protocolError ? { protocolError } : {}),
   }
 }
 
@@ -98,6 +101,8 @@ function runtime({
   verify = async () => ({ accepted: true }),
   contextBuilder = new DeterministicContextBuilder({ tokenBudget: 4_096 }),
   implementationGate,
+  maxModelProtocolRepairs,
+  hopBudgetGates,
   toolDefinitions = [{ action: 'repo.search', description: 'Search', inputSchema: { type: 'object' } }],
 }) {
   const model = new ScriptedModelAdapter('scripted', 'deterministic', responses)
@@ -112,6 +117,8 @@ function runtime({
       contextBuilder,
       toolDefinitions,
       ...(implementationGate ? { implementationGate } : {}),
+      ...(maxModelProtocolRepairs === undefined ? {} : { maxModelProtocolRepairs }),
+      ...(hopBudgetGates === undefined ? {} : { hopBudgetGates }),
     }),
   }
 }
@@ -267,6 +274,128 @@ test('output-limit truncation without a tool call fails once instead of burning 
   })
   assert.equal(setup.model.requests.length, 1)
   assert.equal(persistence.messages.some((message) => message.content.includes('silence is not completion')), false)
+})
+
+test('model protocol errors receive a durable bounded correction without executing tools', async () => {
+  const persistence = new MemoryPersistence()
+  const setup = runtime({
+    persistence,
+    responses: [
+      response({
+        finishReason: 'tool_calls',
+        protocolError: {
+          code: 'unknown_tool',
+          toolCallId: 'call_hidden_search',
+          toolName: 'repo__search',
+          message: 'Tool function "repo__search" was not declared for this model hop.',
+        },
+      }),
+      response({ toolCalls: [statusCall('call_done_after_repair', 'done', 'Recovered.')] }),
+    ],
+  })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.deepEqual(outcome, { status: 'succeeded', summary: 'Recovered.', hops: 2 })
+  assert.equal(setup.tools.calls.length, 0)
+  assert.equal(setup.model.requests.length, 2)
+  assert.equal(
+    setup.model.requests[1].messages.some((message) =>
+      message.content.startsWith('[Model protocol correction]') && message.content.includes('No tool')),
+    true,
+  )
+  assert.equal(
+    persistence.events.some((event) => event.kind === 'model_protocol_rejected'
+      && event.data.code === 'unknown_tool'),
+    true,
+  )
+})
+
+test('an incomplete malformed tool call fails once instead of entering protocol repair', async () => {
+  const persistence = new MemoryPersistence(10)
+  const setup = runtime({
+    persistence,
+    responses: [response({
+      finishReason: 'length',
+      protocolError: {
+        code: 'invalid_tool_arguments',
+        toolCallId: 'call_truncated',
+        toolName: 'file__patch',
+        message: 'Tool arguments were incomplete.',
+      },
+    })],
+  })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.deepEqual(outcome, {
+    status: 'failed',
+    summary: 'Model response ended with length before producing an executable tool call.',
+    hops: 1,
+  })
+  assert.equal(setup.model.requests.length, 1)
+  assert.equal(
+    persistence.messages.some((message) => message.content.startsWith('[Model protocol correction]')),
+    false,
+  )
+})
+
+test('model protocol repair budget survives repeated invalid responses and fails visibly', async () => {
+  const persistence = new MemoryPersistence(10)
+  const invalid = () => response({
+    finishReason: 'tool_calls',
+    protocolError: {
+      code: 'invalid_tool_arguments',
+      toolCallId: 'call_bad_json',
+      toolName: 'file__patch',
+      message: 'Tool arguments were invalid.',
+    },
+  })
+  const setup = runtime({ persistence, responses: [invalid(), invalid(), invalid()] })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.deepEqual(outcome, {
+    status: 'failed',
+    summary: 'Model protocol repair budget exhausted after 3 invalid responses: invalid_tool_arguments.',
+    hops: 3,
+  })
+  assert.equal(
+    persistence.messages.filter((message) => message.content.startsWith('[Model protocol correction]')).length,
+    2,
+  )
+})
+
+test('hop budget gate preserves final calls and rejects stale blocked actions without side effects', async () => {
+  const persistence = new MemoryPersistence(5)
+  const setup = runtime({
+    persistence,
+    hopBudgetGates: [{
+      remainingHops: 3,
+      blockedActions: ['repo.search'],
+      instruction: 'Finish verification and durable delivery now.',
+    }],
+    responses: [
+      response({ toolCalls: [{ id: 'call_search_one', action: 'repo.search', input: { query: 'one' } }] }),
+      response({ toolCalls: [{ id: 'call_search_two', action: 'repo.search', input: { query: 'two' } }] }),
+      response({ toolCalls: [{ id: 'call_stale_search', action: 'repo.search', input: { query: 'three' } }] }),
+      response({ toolCalls: [statusCall('call_done_in_reserve', 'done', 'Delivered.')] }),
+    ],
+  })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.deepEqual(outcome, { status: 'succeeded', summary: 'Delivered.', hops: 4 })
+  assert.deepEqual(setup.tools.calls.map((call) => call.id), ['call_search_one', 'call_search_two'])
+  assert.equal(setup.model.requests[2].tools.some((tool) => tool.action === 'repo.search'), false)
+  assert.equal(
+    setup.model.requests[2].messages.filter((message) =>
+      message.content.startsWith('[Hop budget gate] remaining<=3')).length,
+    1,
+  )
+  const rejected = persistence.messages.find((message) => message.toolCallId === 'call_stale_search')
+  assert.match(rejected.content, /Hop delivery budget is active/)
+  assert.match(rejected.content, /Finish verification and durable delivery now/)
 })
 
 test('implementation gate repeatedly bounds discovery between durable file.patch results', async () => {
