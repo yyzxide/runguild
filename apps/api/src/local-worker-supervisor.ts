@@ -175,7 +175,7 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
     if (await this.options.activity.hasActive(
       command.kind,
       command.agentId,
-      command.kind === 'integration'
+      command.kind === 'integration' || command.kind === 'agent'
         ? { workspaceId: configuration.project.workspaceId, projectId: configuration.project.id }
         : undefined,
     )) {

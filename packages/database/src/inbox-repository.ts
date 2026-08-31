@@ -5,6 +5,7 @@ import {
   type AgentId,
   type IsoTimestamp,
   type MissionId,
+  type ProjectId,
   type RunId,
   type WorkspaceId,
 } from '@runguild/protocol'
@@ -49,6 +50,13 @@ export class InboxDedupeConflictError extends Error {
   constructor(agentId: AgentId, dedupeKey: string) {
     super('Inbox dedupe key reused with different payload for ' + agentId + ': ' + dedupeKey)
     this.name = 'InboxDedupeConflictError'
+  }
+}
+
+export class InboxProjectScopeError extends Error {
+  constructor(agentId: AgentId, messageId: string) {
+    super('Inbox message is outside the Agent Worker Project scope: ' + agentId + '/' + messageId)
+    this.name = 'InboxProjectScopeError'
   }
 }
 
@@ -114,7 +122,12 @@ export class InboxRepository {
     })
   }
 
-  async read(input: { readonly agentId: AgentId; readonly limit: number }): Promise<InboxBatch> {
+  async read(input: {
+    readonly agentId: AgentId
+    readonly workspaceId?: WorkspaceId
+    readonly projectId?: ProjectId
+    readonly limit: number
+  }): Promise<InboxBatch> {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 500) {
       throw new RangeError('limit must be an integer between 1 and 500')
     }
@@ -139,16 +152,32 @@ export class InboxRepository {
         readonly kind: string
         readonly payload: unknown
         readonly created_at: Date
+        readonly project_id: string | null
       }>(
-        'SELECT seq::text, id, workspace_id, agent_id, mission_id, run_id, kind, payload, created_at ' +
-        'FROM inbox_messages WHERE agent_id = $1 AND seq > $2 ' +
-        'ORDER BY seq ASC LIMIT $3',
+        'SELECT inbox.seq::text, inbox.id, inbox.workspace_id, inbox.agent_id, inbox.mission_id, ' +
+        'inbox.run_id, inbox.kind, inbox.payload, inbox.created_at, mission.project_id ' +
+        'FROM inbox_messages inbox LEFT JOIN missions mission ON mission.id = inbox.mission_id ' +
+        'AND mission.workspace_id = inbox.workspace_id ' +
+        'WHERE inbox.agent_id = $1 AND inbox.seq > $2 ORDER BY inbox.seq ASC LIMIT $3',
         [input.agentId, cursor.toString(), input.limit],
       )
 
+      if (Boolean(input.workspaceId) !== Boolean(input.projectId)) {
+        throw new Error('Inbox Project scope requires both workspaceId and projectId')
+      }
+      let scopedRows = messages.rows
+      if (input.workspaceId && input.projectId) {
+        const foreignIndex = messages.rows.findIndex((row) =>
+          row.workspace_id !== input.workspaceId || row.project_id !== input.projectId)
+        if (foreignIndex === 0) {
+          throw new InboxProjectScopeError(input.agentId, messages.rows[0]!.id)
+        }
+        if (foreignIndex > 0) scopedRows = messages.rows.slice(0, foreignIndex)
+      }
+
       return {
         cursor,
-        messages: messages.rows.map((row) => ({
+        messages: scopedRows.map((row) => ({
           seq: BigInt(row.seq),
           id: row.id,
           workspaceId: row.workspace_id as WorkspaceId,

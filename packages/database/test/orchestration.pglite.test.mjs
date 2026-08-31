@@ -200,6 +200,7 @@ test('mission approval routes ready DAG tasks by role and requires a Dispatch To
 
     const wrongToken = await tasks.claimTask({
       workspaceId: 'ws_flow',
+      projectId: 'project_flow',
       missionId,
       taskId: buildTaskId,
       agentId: 'builder_flow',
@@ -212,6 +213,7 @@ test('mission approval routes ready DAG tasks by role and requires a Dispatch To
 
     const claimed = await tasks.claimTask({
       workspaceId: 'ws_flow',
+      projectId: 'project_flow',
       missionId,
       taskId: buildTaskId,
       agentId: 'builder_flow',

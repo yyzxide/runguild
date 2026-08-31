@@ -53,6 +53,8 @@ test('local supervisor injects persisted Worktree setup argv into only the Agent
   const environment = supervisor.environmentFor({ kind: 'agent', agentId: 'builder' }, configuration)
   assert.equal(environment.AGENT_WORKTREE_SETUP_COMMANDS_JSON, '[["npm","ci","--ignore-scripts"]]')
   assert.equal(environment.AGENT_WORKTREE_SETUP_TIMEOUT_MS, '240000')
+  assert.equal(environment.WORKSPACE_ID, 'workspace')
+  assert.equal(environment.PROJECT_ID, 'project')
   assert.equal(environment.OPENAI_API_KEY, 'secret-value')
   const integration = supervisor.environmentFor({ kind: 'integration' }, configuration)
   assert.equal(integration.WORKSPACE_ID, 'workspace')
@@ -97,6 +99,27 @@ test('local supervisor checks Integration activity in the exact Project scope', 
   assert.deepEqual(calls, [{
     kind: 'integration',
     agentId: undefined,
+    scope: { workspaceId: 'workspace', projectId: 'project' },
+  }])
+})
+
+test('local supervisor checks Agent activity in the exact Project scope', async () => {
+  const calls = []
+  const supervisor = new LocalWorkerSupervisor({
+    databaseUrl: 'postgres://database',
+    openaiApiKey: 'secret-value',
+    activity: {
+      async hasActive(kind, agentId, scope) {
+        calls.push({ kind, agentId, scope })
+        return true
+      },
+    },
+  })
+  const result = await supervisor.start({ kind: 'agent', agentId: 'builder' }, configuration)
+  assert.equal(result.state, 'already_running')
+  assert.deepEqual(calls, [{
+    kind: 'agent',
+    agentId: 'builder',
     scope: { workspaceId: 'workspace', projectId: 'project' },
   }])
 })

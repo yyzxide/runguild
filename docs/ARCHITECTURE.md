@@ -84,7 +84,8 @@ Executes one Run at a time, renews its task lease, drains durable inbox input,
 invokes the model, executes tools, and writes structured events.
 
 The executable slice currently deploys one process per Agent identity. Each
-process receives a bounded `REPOSITORY_ROOT` and a distinct `WORKTREE_ROOT`.
+process receives an exact `WORKSPACE_ID`/`PROJECT_ID`, a bounded
+`REPOSITORY_ROOT`, and a distinct `WORKTREE_ROOT`.
 It provisions the claimed Task's isolated Worktree before constructing that
 Task's Tool Gateway. If the Project declares setup commands, it executes those
 exact argv sequentially inside the canonical Worktree and requires the durable
@@ -94,6 +95,11 @@ identities may run concurrently. Every Scheduler, Agent, Integration, and
 Evaluation process registers a durable Worker Instance and renews its expiry.
 Agent registration locks the Agent row and rejects a second non-expired process;
 after a crash, a replacement marks the expired owner stale before taking over.
+Registration also proves that the Agent belongs to exactly the requested
+Project and no sibling Project. This is a deliberate current invariant: Inbox
+cursors and model configuration are keyed by Agent identity, so sharing that
+identity across Projects would make cursor advancement and repository selection
+ambiguous. A separate Agent identity is required per Project.
 Scheduler and Evaluation are global database control-plane Workers and never
 receive repository paths. Integration is repository-bound and must register an
 exact Workspace/Project scope. Its discovery and cleanup queries filter on that
@@ -102,6 +108,11 @@ run separate Integration processes without one process opening another
 Project's Worktree. Migration `0019_project_scoped_integration_workers.sql`
 marks any live legacy unscoped Integration row stale so the old process loses
 heartbeat ownership before the scoped replacement starts.
+Migration `0020_project_scoped_agent_workers.sql` applies the same fence to
+legacy unscoped Agent rows. Agent Inbox reads expose only the safe prefix before
+a foreign-Project message and never acknowledge across it; task claim,
+waiting-Run resume, runnable-Run polling, loaded execution context, and Web
+heartbeat queries independently require the registered Project scope.
 
 ### Evaluation Worker
 

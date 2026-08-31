@@ -40,6 +40,13 @@ export class WorkerAlreadyActiveError extends Error {
   }
 }
 
+export class AgentProjectScopeError extends Error {
+  constructor(readonly agentId: AgentId, message: string) {
+    super('Agent Worker Project scope is invalid for ' + agentId + ': ' + message)
+    this.name = 'AgentProjectScopeError'
+  }
+}
+
 function assertInput(input: RegisterWorkerInput): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(input.id)) {
     throw new Error('Worker instance id must be 1-200 scoped-id characters')
@@ -49,9 +56,10 @@ function assertInput(input: RegisterWorkerInput): void {
     throw new Error('Agent Worker registration must include exactly one agentId')
   }
   const hasProjectScope = Boolean(input.workspaceId) && Boolean(input.projectId)
-  if ((input.kind === 'integration') !== hasProjectScope
+  const repositoryBound = input.kind === 'agent' || input.kind === 'integration'
+  if (repositoryBound !== hasProjectScope
       || Boolean(input.workspaceId) !== Boolean(input.projectId)) {
-    throw new Error('Integration Worker registration must include exactly one Workspace/Project scope')
+    throw new Error('Agent and Integration Worker registration must include exactly one Workspace/Project scope')
   }
   if (!input.hostname.trim() || input.hostname.length > 255) {
     throw new Error('Worker hostname must be between 1 and 255 characters')
@@ -79,13 +87,37 @@ export class WorkerInstanceRepository {
     return withTransaction(this.pool, async (client) => {
       let workspaceId: string | null = null
       let projectId: string | null = null
-      if (input.kind === 'agent' && input.agentId) {
+      if (input.kind === 'agent' && input.agentId && input.workspaceId && input.projectId) {
         const agent = await client.query<{ readonly workspace_id: string }>(
           'SELECT workspace_id FROM agents WHERE id = $1 FOR UPDATE',
           [input.agentId],
         )
-        workspaceId = agent.rows[0]?.workspace_id ?? null
-        if (!workspaceId) throw new Error('Agent Worker registration references an unknown Agent')
+        const agentWorkspaceId = agent.rows[0]?.workspace_id ?? null
+        if (!agentWorkspaceId) throw new Error('Agent Worker registration references an unknown Agent')
+        if (agentWorkspaceId !== input.workspaceId) {
+          throw new AgentProjectScopeError(input.agentId, 'the Agent belongs to another Workspace')
+        }
+        const memberships = await client.query<{ readonly project_id: string }>(
+          'SELECT DISTINCT conversation.project_id ' +
+          'FROM conversation_members member ' +
+          'JOIN conversations conversation ON conversation.id = member.conversation_id ' +
+          'AND conversation.workspace_id = member.workspace_id ' +
+          "WHERE member.participant_kind = 'agent' AND member.participant_id = $1 " +
+          'AND member.workspace_id = $2 ORDER BY conversation.project_id',
+          [input.agentId, input.workspaceId],
+        )
+        const projectIds = memberships.rows.map((row) => row.project_id)
+        if (!projectIds.includes(input.projectId)) {
+          throw new AgentProjectScopeError(input.agentId, 'the Agent is not a member of the requested Project')
+        }
+        if (projectIds.length !== 1) {
+          throw new AgentProjectScopeError(
+            input.agentId,
+            'one Agent identity cannot belong to multiple Projects; create a dedicated Agent for each Project',
+          )
+        }
+        workspaceId = input.workspaceId
+        projectId = input.projectId
 
         await client.query(
           "UPDATE worker_instances SET status = 'stale', stopped_at = expires_at " +
@@ -159,12 +191,13 @@ export class WorkerInstanceRepository {
     if ((kind === 'agent') !== Boolean(agentId)) {
       throw new Error('Agent Worker lookup must include exactly one agentId')
     }
-    if ((kind === 'integration') !== Boolean(scope)) {
-      throw new Error('Integration Worker lookup must include exactly one Workspace/Project scope')
+    const repositoryBound = kind === 'agent' || kind === 'integration'
+    if (repositoryBound !== Boolean(scope)) {
+      throw new Error('Agent and Integration Worker lookup must include exactly one Workspace/Project scope')
     }
     const result = await this.pool.query(
       "SELECT 1 FROM worker_instances WHERE kind = $1 AND status = 'running' AND expires_at > NOW() " +
-      'AND (($1 = \'agent\' AND agent_id = $2) ' +
+      'AND (($1 = \'agent\' AND agent_id = $2 AND workspace_id = $3 AND project_id = $4) ' +
       "OR ($1 = 'integration' AND agent_id IS NULL AND workspace_id = $3 AND project_id = $4) " +
       "OR ($1 NOT IN ('agent', 'integration') AND agent_id IS NULL AND project_id IS NULL)) LIMIT 1",
       [kind, agentId ?? null, scope?.workspaceId ?? null, scope?.projectId ?? null],

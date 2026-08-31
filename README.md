@@ -279,6 +279,16 @@ the exact Workspace/Project, injects that scope into the child process, and
 shows only that Project's Integration heartbeat. Its database discovery and
 cleanup queries cannot return another Project's Worktree.
 
+Agent processes are repository-bound too. Every Agent child receives and
+registers the exact `WORKSPACE_ID`/`PROJECT_ID`; Inbox delivery, task claim,
+waiting-Run recovery, runnable-Run polling, execution context, and Web heartbeat
+projection all verify that scope before repository tools can run. Because the
+current durable Inbox cursor and model configuration are keyed by Agent identity,
+one Agent identity may belong to only one Project. Startup rejects a shared
+cross-Project identity with an explicit error; create a distinct Agent identity
+per Project instead. Migration `0020_project_scoped_agent_workers.sql` fences
+legacy running Agent rows that lack this scope.
+
 For Web-managed local Workers, the persisted per-Agent model is the source used
 when a new Run freezes its execution context. `MODEL_NAME` in `.env` seeds the
 development bootstrap only; editing it after the Project already exists does
@@ -324,6 +334,8 @@ shell text:
 ~~~bash
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 AGENT_ID=agent_builder \
+WORKSPACE_ID=demo_workspace \
+PROJECT_ID=demo_project \
 REPOSITORY_ROOT=/absolute/path/to/source/repository \
 WORKTREE_ROOT=/absolute/path/to/task-worktrees \
 OPENAI_API_KEY=... \
@@ -368,10 +380,14 @@ npm run evaluation:start
 ~~~
 
 The current runtime deployment invariant is one live Agent process per
-`AGENT_ID`. Different Agents can run concurrently; the Task Worktree store
+`AGENT_ID`, bound to exactly one Workspace/Project. The same Agent identity
+cannot be a member of multiple Projects because its Inbox cursor and model
+configuration are identity-scoped. Different Agents can run concurrently; the Task Worktree store
 fences provisioning, integration, and cleanup across processes. Worker Instance
 registration now fences two live processes for the same Agent; an expired
-heartbeat is marked stale before a replacement can take ownership. Integration
+heartbeat is marked stale before a replacement can take ownership. Agent Inbox,
+claim, resume, runnable-Run, context, and heartbeat projections all enforce its
+registered Project scope. Integration
 heartbeats and candidate queries are bound to one exact Workspace/Project, so
 different Project repositories can run independent Integration processes while
 each process owns mutation of only its configured Git refs. Evaluation Trials use separate

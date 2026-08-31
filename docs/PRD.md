@@ -222,26 +222,29 @@ The first portfolio-quality release is accepted when automated tests prove:
     a Worktree from another Workspace/Project, while global Scheduler and
     Evaluation Workers remain safe across Projects because they do not receive
     filesystem repository configuration. Scheduler cannot dispatch a Task to a
-    same-role Agent that is bound only to a sibling Project.
-16. Every LLM call references a reproducible Context Snapshot within its
+    same-role Agent that is bound only to a sibling Project. An Agent Worker
+    must register one exact Workspace/Project, cannot start when its identity is
+    shared across Projects, and cannot claim, resume, or execute another
+    Project's Run.
+17. Every LLM call references a reproducible Context Snapshot within its
     configured token budget.
-17. The same immutable benchmark runs paired single-Agent and multi-Agent
+18. The same immutable benchmark runs paired single-Agent and multi-Agent
     Trials from the same Git baseline without cross-Trial branch contamination.
-18. A worker crash during Trial materialization is recovered by a deterministic
+19. A worker crash during Trial materialization is recovered by a deterministic
     Mission id and fencing token rather than creating a duplicate Mission.
-19. Evaluation reports reproduce metrics from durable Task, Run, LLM, Tool,
+20. Evaluation reports reproduce metrics from durable Task, Run, LLM, Tool,
     Review, and Context ledgers and compute paired deltas only from complete
     pairs.
-20. Selected Conversation messages cannot be promoted across Workspace or
+21. Selected Conversation messages cannot be promoted across Workspace or
     Conversation boundaries, and duplicate requests reuse one Mission.
-21. A Planner crash after a successful model response resumes from the stored
+22. A Planner crash after a successful model response resumes from the stored
     DAG without issuing a second model call.
-22. A Planner cannot approve its own proposed Mission plan.
-23. Every Mission Run receives a frozen, durable primary Artifact id; a model
+23. A Planner cannot approve its own proposed Mission plan.
+24. Every Mission Run receives a frozen, durable primary Artifact id; a model
     never has to invent or discover an out-of-band id before creating a Version.
-24. Mission completion rejects a stale or missing final Artifact Version and
+25. Mission completion rejects a stale or missing final Artifact Version and
     records the exact human-approved Version before entering `completed`.
-25. A dependency-bearing Task runs only reviewed exact-argv setup commands in
+26. A dependency-bearing Task runs only reviewed exact-argv setup commands in
     its isolated Worktree, calls no model before they pass, and recovers an
     interrupted setup without reusing success from another generation or
     command hash.

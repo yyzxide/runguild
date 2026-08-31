@@ -32,7 +32,7 @@ import {
   runMigrations,
   type AgentExecutionContext,
 } from '@runguild/database'
-import type { AgentId, EvidenceKind } from '@runguild/protocol'
+import type { AgentId, EvidenceKind, ProjectId, WorkspaceId } from '@runguild/protocol'
 import { ToolGateway, type ToolHandlerContext } from '@runguild/tool-gateway'
 import {
   WORKSPACE_TOOL_DEFINITIONS,
@@ -114,6 +114,8 @@ function reasoningEffortSetting(): 'none' | 'low' | 'medium' | 'high' | 'xhigh' 
 
 const databaseUrl = requiredSetting('DATABASE_URL')
 const agentId = requiredSetting('AGENT_ID') as AgentId
+const workspaceId = requiredSetting('WORKSPACE_ID') as WorkspaceId
+const projectId = requiredSetting('PROJECT_ID') as ProjectId
 const repositoryRoot = requiredSetting('REPOSITORY_ROOT')
 const worktreeRoot = requiredSetting('WORKTREE_ROOT')
 const openaiApiKey = requiredSetting('OPENAI_API_KEY')
@@ -325,6 +327,8 @@ const reviewer = new ArtifactReviewer({
 
 const processor = new AgentInboxProcessor({
   agentId,
+  workspaceId,
+  projectId,
   inbox,
   tasks,
   contexts,
@@ -346,6 +350,8 @@ const heartbeat = await startWorkerHeartbeat({
   repository: new WorkerInstanceRepository(pool),
   kind: 'agent',
   agentId,
+  workspaceId,
+  projectId,
   onFailure(error) {
     stopping = true
     workerAbortController.abort(error)

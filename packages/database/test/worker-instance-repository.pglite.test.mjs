@@ -5,6 +5,7 @@ import test from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 
 import {
+  AgentProjectScopeError,
   WorkerAlreadyActiveError,
   WorkerInstanceRepository,
 } from '../dist/index.js'
@@ -22,20 +23,29 @@ function poolAdapter(database) {
 
 async function setup(database) {
   await database.exec(await readFile(new URL('../migrations/0001_core.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0010_conversations.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url), 'utf8'))
   await database.exec(
     "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace');" +
     "INSERT INTO projects (id, workspace_id, name) VALUES " +
     "('project', 'ws', 'Project'), ('sibling', 'ws', 'Sibling');" +
     "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
-    "('agent', 'ws', 'Builder', 'builder', 'openai', 'gpt-test');",
+    "('agent', 'ws', 'Builder', 'builder', 'openai', 'gpt-test');" +
+    "INSERT INTO conversations (id, workspace_id, project_id, kind, title) VALUES " +
+    "('project_room', 'ws', 'project', 'project_room', 'Project');" +
+    "INSERT INTO conversation_members " +
+    "(conversation_id, workspace_id, participant_kind, participant_id) VALUES " +
+    "('project_room', 'ws', 'agent', 'agent');",
   )
 }
 
 const registration = {
   kind: 'agent',
   agentId: 'agent',
+  workspaceId: 'ws',
+  projectId: 'project',
   hostname: 'worker-host',
   processId: 42,
   heartbeatIntervalSeconds: 5,
@@ -49,8 +59,11 @@ test('Worker Instance Repository fences Agent processes and recovers an expired 
     const repository = new WorkerInstanceRepository(poolAdapter(database))
     const first = await repository.register({ id: 'worker_first', ...registration })
     assert.equal(first.workspaceId, 'ws')
+    assert.equal(first.projectId, 'project')
     assert.equal(first.agentId, 'agent')
-    assert.equal(await repository.hasActive('agent', 'agent'), true)
+    assert.equal(await repository.hasActive('agent', 'agent', {
+      workspaceId: 'ws', projectId: 'project',
+    }), true)
     assert.equal(await repository.hasActive('scheduler'), false)
 
     await assert.rejects(
@@ -71,8 +84,41 @@ test('Worker Instance Repository fences Agent processes and recovers an expired 
     assert.deepEqual(prior.rows[0], { status: 'stale', stopped: true })
     assert.equal(await repository.heartbeat('worker_first'), false)
     assert.equal(await repository.markStopped('worker_replacement'), true)
-    assert.equal(await repository.hasActive('agent', 'agent'), false)
+    assert.equal(await repository.hasActive('agent', 'agent', {
+      workspaceId: 'ws', projectId: 'project',
+    }), false)
     assert.equal(await repository.markStopped('worker_replacement'), false)
+  } finally {
+    await database.close()
+  }
+})
+
+test('Worker Instance Repository rejects unscoped and cross-Project Agent identities', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new WorkerInstanceRepository(poolAdapter(database))
+    await assert.rejects(
+      repository.register({
+        ...registration, id: 'worker_unscoped', workspaceId: undefined, projectId: undefined,
+      }),
+      /Workspace\/Project scope/,
+    )
+    await assert.rejects(
+      repository.register({ ...registration, id: 'worker_wrong_project', projectId: 'sibling' }),
+      AgentProjectScopeError,
+    )
+    await database.exec(
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) VALUES " +
+      "('sibling_room', 'ws', 'sibling', 'project_room', 'Sibling');" +
+      "INSERT INTO conversation_members " +
+      "(conversation_id, workspace_id, participant_kind, participant_id) VALUES " +
+      "('sibling_room', 'ws', 'agent', 'agent');",
+    )
+    await assert.rejects(
+      repository.register({ ...registration, id: 'worker_shared_agent' }),
+      /cannot belong to multiple Projects/,
+    )
   } finally {
     await database.close()
   }

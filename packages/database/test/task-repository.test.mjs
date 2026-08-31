@@ -34,6 +34,7 @@ function scriptedPool(claimable) {
 function claimInput() {
   return {
     workspaceId: 'ws_test',
+    projectId: 'project_test',
     missionId: 'mission_test',
     taskId: 'task_test',
     agentId: 'agent_test',
@@ -58,6 +59,24 @@ test('claim creates run, lease, three events, and commits atomically', async () 
   assert.equal(scripted.statements.filter((sql) => sql.startsWith('INSERT INTO task_leases')).length, 1)
   assert.equal(scripted.statements.filter((sql) => sql.startsWith('INSERT INTO domain_events')).length, 3)
   assert.equal(scripted.statements.filter((sql) => sql.startsWith('INSERT INTO outbox_events')).length, 3)
+})
+
+test('runnable Run lookup carries the exact Agent Project scope into SQL', async () => {
+  let observed
+  const repository = new TaskRepository({
+    async query(statement, params) {
+      observed = { statement, params }
+      return { rows: [] }
+    },
+  })
+  assert.deepEqual(await repository.listRunnableAgentRuns({
+    agentId: 'agent_test',
+    workspaceId: 'ws_test',
+    projectId: 'project_test',
+    limit: 7,
+  }), [])
+  assert.match(observed.statement, /m\.project_id = \$3/)
+  assert.deepEqual(observed.params, ['agent_test', 'ws_test', 'project_test', 7])
 })
 
 test('non-claimable task creates no run, lease, event, or outbox row', async () => {

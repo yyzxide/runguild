@@ -30,6 +30,7 @@ async function setup(database) {
   await database.exec(await readFile(new URL('../migrations/0010_conversations.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url), 'utf8'))
   await database.exec(
     "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace'), ('other_ws', 'Other');" +
     "INSERT INTO users (id, workspace_id, display_name) VALUES " +
@@ -62,9 +63,12 @@ async function setup(database) {
   )
   await database.exec(
     "INSERT INTO worker_instances " +
-    "(id, kind, workspace_id, agent_id, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at) VALUES " +
-    "('worker_agent', 'agent', 'ws', 'planner', 'local', 10, 5, 15, NOW() + INTERVAL '15 seconds'), " +
-    "('worker_scheduler', 'scheduler', NULL, NULL, 'local', 11, 5, 15, NOW() + INTERVAL '15 seconds');" +
+    "(id, kind, workspace_id, project_id, agent_id, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at) VALUES " +
+    "('worker_agent', 'agent', 'ws', 'project', 'planner', 'local', 10, 5, 15, NOW() + INTERVAL '15 seconds'), " +
+    "('worker_scheduler', 'scheduler', NULL, NULL, NULL, 'local', 11, 5, 15, NOW() + INTERVAL '15 seconds');" +
+    "INSERT INTO worker_instances " +
+    "(id, kind, workspace_id, project_id, agent_id, status, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, started_at, expires_at, stopped_at) VALUES " +
+    "('worker_sibling_agent', 'agent', 'ws', 'sibling_project', 'planner', 'stopped', 'local', 14, 5, 15, NOW() + INTERVAL '1 hour', NOW(), NOW());" +
     "INSERT INTO worker_instances " +
     "(id, kind, workspace_id, project_id, agent_id, status, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at, stopped_at) VALUES " +
     "('worker_integration', 'integration', 'ws', 'project', NULL, 'stopped', 'local', 12, 5, 15, NOW(), NOW());" +

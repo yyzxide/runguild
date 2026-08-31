@@ -5,6 +5,7 @@ import { AgentInboxProcessor, executionMessages } from '../dist/agent-loop.js'
 
 const context = {
   workspaceId: 'ws_agent',
+  projectId: 'project_agent',
   missionId: 'mission_agent',
   taskId: 'task_agent',
   runId: 'run_agent',
@@ -38,6 +39,8 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
   const releases = []
   const processor = new AgentInboxProcessor({
     agentId: 'agent_builder',
+    workspaceId: 'ws_agent',
+    projectId: 'project_agent',
     inbox: {
       async read() {
         return {
@@ -118,6 +121,7 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
   assert.deepEqual(result, { inboxProcessed: 1, runsExecuted: 1 })
   assert.equal(claims.length, 1)
   assert.equal(claims[0].dispatchToken, 'dispatch-token')
+  assert.equal(claims[0].projectId, 'project_agent')
   assert.match(claims[0].runId, /^run_/)
   assert.deepEqual(acknowledgements, [{
     agentId: 'agent_builder',
@@ -142,6 +146,8 @@ test('terminal failed Run immediately returns its Task to durable scheduling', a
   const resolutions = []
   const processor = new AgentInboxProcessor({
     agentId: 'agent_builder',
+    workspaceId: 'ws_agent',
+    projectId: 'project_agent',
     inbox: {
       async read() { return { cursor: 0n, messages: [] } },
       async acknowledge() { return true },
@@ -185,6 +191,8 @@ test('control inbox messages reacquire a lease for a waiting Run before polling'
   const resumed = []
   const processor = new AgentInboxProcessor({
     agentId: 'agent_builder',
+    workspaceId: 'ws_agent',
+    projectId: 'project_agent',
     inbox: {
       async read() {
         return {
@@ -225,7 +233,13 @@ test('control inbox messages reacquire a lease for a waiting Run before polling'
   })
 
   assert.deepEqual(await processor.tick(), { inboxProcessed: 1, runsExecuted: 0 })
-  assert.deepEqual(resumed, [{ runId: 'run_agent', agentId: 'agent_builder', leaseSeconds: 90 }])
+  assert.deepEqual(resumed, [{
+    runId: 'run_agent',
+    agentId: 'agent_builder',
+    workspaceId: 'ws_agent',
+    projectId: 'project_agent',
+    leaseSeconds: 90,
+  }])
 })
 
 test('Worker ownership loss aborts the active Agent Runtime', async () => {
@@ -233,6 +247,8 @@ test('Worker ownership loss aborts the active Agent Runtime', async () => {
   const started = new Promise((resolve) => { runtimeStarted = resolve })
   const processor = new AgentInboxProcessor({
     agentId: 'agent_builder',
+    workspaceId: 'ws_agent',
+    projectId: 'project_agent',
     inbox: {
       async read() { return { cursor: 0n, messages: [] } },
       async acknowledge() { return true },
@@ -344,6 +360,8 @@ test('Reviewer inbox stays unacknowledged while the producing Task has not enter
   let reviewCalls = 0
   const processor = new AgentInboxProcessor({
     agentId: 'agent_reviewer',
+    workspaceId: 'ws_agent',
+    projectId: 'project_agent',
     inbox: {
       async read() {
         return {

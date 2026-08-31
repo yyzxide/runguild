@@ -81,6 +81,7 @@ test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) =>
       const [first, second] = await Promise.all([
         repository.claimTask({
           workspaceId: 'ws_test',
+          projectId: 'project_test',
           missionId: 'mission_test',
           taskId: 'task_claim',
           agentId: 'agent_a',
@@ -91,6 +92,7 @@ test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) =>
         }),
         repository.claimTask({
           workspaceId: 'ws_test',
+          projectId: 'project_test',
           missionId: 'mission_test',
           taskId: 'task_claim',
           agentId: 'agent_b',

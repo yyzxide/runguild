@@ -24,6 +24,7 @@ const migrationUrls = [
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
   new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
   new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url),
+  new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {

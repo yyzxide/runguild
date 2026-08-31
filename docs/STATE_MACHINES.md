@@ -110,6 +110,14 @@ model messages are durable, so resuming a waiting Run does not require the
 model to reconstruct the missing action. A Worker shutdown aborts the active
 model/tool signal before the process releases ownership.
 
+Before entering this Run loop, an Agent Worker registers one exact
+Workspace/Project heartbeat. Registration rejects an Agent identity that is a
+member of zero, another, or multiple Projects. Inbox reads stop at the first
+foreign-Project message without acknowledging it; task claim, waiting-Run
+resume, runnable-Run polling, and execution-context load repeat the same scope
+check. Migration `0020_project_scoped_agent_workers.sql` changes a live legacy
+unscoped Agent heartbeat to `stale`, causing the old process to lose ownership.
+
 Every Agent hop also receives the Worker's exact `test.run` argv allowlist and
 the repository-tool path contract. Shell operators, invented environment probes,
 and glob paths are explicitly invalid. For a Builder Task that requires

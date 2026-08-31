@@ -153,8 +153,9 @@ export class ProjectOperatorRepository {
               'JOIN conversation_members member ON member.participant_kind = \'agent\' ' +
               'AND member.participant_id = worker.agent_id AND member.workspace_id = worker.workspace_id ' +
               'WHERE member.conversation_id = $1 AND member.workspace_id = $2 ' +
+              'AND worker.project_id = $3 ' +
               'ORDER BY worker.agent_id, worker.started_at DESC, worker.id DESC',
-              [projectRow.conversation_id, workspaceId],
+              [projectRow.conversation_id, workspaceId, projectId],
             )
         : { rows: [] }
       const systemWorkers = await client.query<{

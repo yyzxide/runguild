@@ -12,6 +12,8 @@ const evaluationMigrationUrl = new URL('../migrations/0009_evaluation.sql', impo
 const conversationMigrationUrl = new URL('../migrations/0010_conversations.sql', import.meta.url)
 const conversationPlanningMigrationUrl = new URL('../migrations/0011_conversation_planning.sql', import.meta.url)
 const workerInstancesMigrationUrl = new URL('../migrations/0012_worker_instances.sql', import.meta.url)
+const projectScopedAgentMigrationUrl = new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url)
+const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
 const worktreeSetupMigrationUrl = new URL('../migrations/0015_worktree_setup.sql', import.meta.url)
@@ -162,6 +164,16 @@ test('Integration Worker schema fences repository-bound processes to one Project
   assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\)/)
   assert.match(sql, /idx_worker_instances_project_kind_expiry/)
   assert.match(sql, /status = 'stale'/)
+})
+
+test('Agent Worker schema fences legacy processes before requiring one Project', async () => {
+  const sql = await readFile(projectScopedAgentMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(sql, /kind = 'agent'/)
+  assert.match(sql, /kind IN \('agent', 'integration'\)/)
+  assert.match(sql, /status = 'stale'/)
+  assert.match(runner, /0020_project_scoped_agent_workers\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

@@ -21,6 +21,7 @@ import { withTransaction } from './transaction.js'
 
 export interface ClaimTaskInput {
   readonly workspaceId: WorkspaceId
+  readonly projectId: ProjectId
   readonly missionId: MissionId
   readonly taskId: TaskId
   readonly agentId: AgentId
@@ -67,7 +68,16 @@ export interface ResolveTerminalRunLeaseInput extends ReleaseLeaseInput {
 export interface ResumeWaitingRunInput {
   readonly runId: RunId
   readonly agentId: AgentId
+  readonly workspaceId: WorkspaceId
+  readonly projectId: ProjectId
   readonly leaseSeconds: number
+}
+
+export interface RunnableAgentRunScope {
+  readonly agentId: AgentId
+  readonly workspaceId: WorkspaceId
+  readonly projectId: ProjectId
+  readonly limit: number
 }
 
 export type ResumeWaitingRunResult =
@@ -219,7 +229,7 @@ export class TaskRepository {
         'JOIN task_dispatches d ON d.task_id = t.id AND d.agent_id = a.id ' +
         "AND d.dispatch_token = $6 AND d.status = 'pending' AND d.expires_at > NOW() " +
         'AND d.attempt = t.attempt_count + 1 ' +
-        'WHERE t.id = $1 AND t.mission_id = $2 AND m.workspace_id = $3 ' +
+        'WHERE t.id = $1 AND t.mission_id = $2 AND m.workspace_id = $3 AND m.project_id = $7 ' +
         "AND t.status = 'ready' AND m.status = 'running' AND a.status = 'active' " +
         'AND t.attempt_count < t.max_attempts ' +
         'AND (t.required_role IS NULL OR t.required_role = a.role) ' +
@@ -229,7 +239,15 @@ export class TaskRepository {
         '  WHERE d.task_id = t.id AND d.required AND parent.status <> $5' +
         ') ' +
         'FOR UPDATE OF t, d',
-        [input.taskId, input.missionId, input.workspaceId, input.agentId, 'completed', input.dispatchToken],
+        [
+          input.taskId,
+          input.missionId,
+          input.workspaceId,
+          input.agentId,
+          'completed',
+          input.dispatchToken,
+          input.projectId,
+        ],
       )
 
       const row = claimable.rows[0]
@@ -413,12 +431,14 @@ export class TaskRepository {
       }>(
         'SELECT r.workspace_id, r.mission_id, r.task_id FROM agent_runs r ' +
         'JOIN tasks t ON t.id = r.task_id ' +
+        'JOIN missions m ON m.id = r.mission_id AND m.workspace_id = r.workspace_id ' +
         'JOIN agents a ON a.id = r.agent_id ' +
         'WHERE r.id = $1 AND r.agent_id = $2 ' +
+        'AND r.workspace_id = $3 AND m.project_id = $4 ' +
         "AND r.status = 'waiting_human' AND t.status = 'waiting_human' AND a.status = 'active' " +
         'AND NOT EXISTS (SELECT 1 FROM task_leases l WHERE l.task_id = r.task_id) ' +
         'FOR UPDATE OF r, t',
-        [input.runId, input.agentId],
+        [input.runId, input.agentId, input.workspaceId, input.projectId],
       )
       const row = resumable.rows[0]
       if (!row) return { resumed: false, reason: 'not_resumable' }
@@ -442,8 +462,8 @@ export class TaskRepository {
     })
   }
 
-  async listRunnableAgentRuns(agentId: AgentId, limit: number): Promise<readonly RunnableAgentRun[]> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+  async listRunnableAgentRuns(input: RunnableAgentRunScope): Promise<readonly RunnableAgentRun[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50) {
       throw new RangeError('limit must be an integer between 1 and 50')
     }
     const result = await this.pool.query<{
@@ -455,17 +475,19 @@ export class TaskRepository {
     }>(
       'SELECT r.workspace_id, r.mission_id, r.task_id, r.id AS run_id, l.lease_token ' +
       'FROM agent_runs r JOIN task_leases l ON l.run_id = r.id AND l.task_id = r.task_id ' +
-      'WHERE r.agent_id = $1 AND l.agent_id = $1 AND l.expires_at > NOW() ' +
+      'JOIN missions m ON m.id = r.mission_id AND m.workspace_id = r.workspace_id ' +
+      'WHERE r.agent_id = $1 AND l.agent_id = $1 AND r.workspace_id = $2 AND m.project_id = $3 ' +
+      'AND l.expires_at > NOW() ' +
       "AND r.status IN ('starting', 'running', 'waiting_tool') " +
-      'ORDER BY r.created_at, r.id LIMIT $2',
-      [agentId, limit],
+      'ORDER BY r.created_at, r.id LIMIT $4',
+      [input.agentId, input.workspaceId, input.projectId, input.limit],
     )
     return result.rows.map((row) => ({
       workspaceId: row.workspace_id as WorkspaceId,
       missionId: row.mission_id as MissionId,
       taskId: row.task_id as TaskId,
       runId: row.run_id as RunId,
-      agentId,
+      agentId: input.agentId,
       leaseToken: row.lease_token,
     }))
   }

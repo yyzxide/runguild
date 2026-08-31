@@ -15,11 +15,13 @@ import type {
   ConversationPlanRequestedInboxPayload,
   CorrelationId,
   MissionId,
+  ProjectId,
   ModelMessage,
   RunId,
   RuntimeOutcome,
   SkillSnapshotRef,
   TaskId,
+  WorkspaceId,
 } from '@runguild/protocol'
 
 type Inbox = Pick<InboxRepository, 'read' | 'acknowledge'>
@@ -52,6 +54,8 @@ export interface RuntimeRunner {
 
 export interface AgentInboxProcessorDependencies {
   readonly agentId: AgentId
+  readonly workspaceId: WorkspaceId
+  readonly projectId: ProjectId
   readonly inbox: Inbox
   readonly tasks: Tasks
   readonly contexts: Contexts
@@ -247,6 +251,8 @@ export class AgentInboxProcessor {
     abortSignal?.throwIfAborted()
     const batch = await this.dependencies.inbox.read({
       agentId: this.dependencies.agentId,
+      workspaceId: this.dependencies.workspaceId,
+      projectId: this.dependencies.projectId,
       limit: this.options.inboxLimit,
     })
     let cursor = batch.cursor
@@ -265,10 +271,12 @@ export class AgentInboxProcessor {
       inboxProcessed += 1
     }
 
-    const runnable = await this.dependencies.tasks.listRunnableAgentRuns(
-      this.dependencies.agentId,
-      this.options.runLimit,
-    )
+    const runnable = await this.dependencies.tasks.listRunnableAgentRuns({
+      agentId: this.dependencies.agentId,
+      workspaceId: this.dependencies.workspaceId,
+      projectId: this.dependencies.projectId,
+      limit: this.options.runLimit,
+    })
     let runsExecuted = 0
     for (const run of runnable) {
       abortSignal?.throwIfAborted()
@@ -296,6 +304,7 @@ export class AgentInboxProcessor {
       const payload = dispatchPayload(message.payload)
       await this.dependencies.tasks.claimTask({
         workspaceId: message.workspaceId,
+        projectId: this.dependencies.projectId,
         missionId: payload.missionId,
         taskId: payload.taskId,
         agentId: this.dependencies.agentId,
@@ -311,6 +320,8 @@ export class AgentInboxProcessor {
       await this.dependencies.tasks.resumeWaitingRun({
         runId: message.runId,
         agentId: this.dependencies.agentId,
+        workspaceId: this.dependencies.workspaceId,
+        projectId: this.dependencies.projectId,
         leaseSeconds: this.options.leaseSeconds,
       })
     }
@@ -320,6 +331,10 @@ export class AgentInboxProcessor {
   private async execute(run: RunnableAgentRun, workerAbortSignal?: AbortSignal): Promise<void> {
     const context = await this.dependencies.contexts.load(run.runId, this.dependencies.agentId)
     if (!context) throw new Error('Execution context not found for ' + run.runId)
+    if (context.workspaceId !== this.dependencies.workspaceId
+        || context.projectId !== this.dependencies.projectId) {
+      throw new Error('Execution context is outside the Agent Worker Project scope: ' + run.runId)
+    }
     const abortController = new AbortController()
     const abortFromWorker = () => abortController.abort(
       workerAbortSignal?.reason ?? new Error('Agent Worker ownership was lost'),
