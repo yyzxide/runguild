@@ -131,8 +131,12 @@ Expected flow:
 
 - The builder of a task cannot approve its own work.
 - A Submission is automatically assigned only to an active Reviewer who belongs
-  to the Mission Conversation; without one, it remains available for human
-  review instead of selecting an unrelated Workspace Agent.
+  to the Mission Conversation. A system-created Mission without a Conversation,
+  such as an Evaluation Trial, may use an active Reviewer already bound to the
+  same Project through a Project Conversation; it must never select an unrelated
+  Workspace Agent. Submitted review-gated work without an assignment is
+  recoverable by the Scheduler and remains available for human review when no
+  eligible Agent exists.
 - Reviewer model execution has its own lease, retry budget, frozen material
   snapshot, prompt/response ledger, Token/cost usage, and persisted decision. It
   does not consume or mutate the producing Task Run's attempt budget.

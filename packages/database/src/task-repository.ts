@@ -60,6 +60,10 @@ export interface ReleaseLeaseInput {
   readonly leaseToken: string
 }
 
+export interface ResolveTerminalRunLeaseInput extends ReleaseLeaseInput {
+  readonly correlationId: CorrelationId
+}
+
 export interface ResumeWaitingRunInput {
   readonly runId: RunId
   readonly agentId: AgentId
@@ -352,6 +356,51 @@ export class TaskRepository {
       [input.taskId, input.runId, input.agentId, input.leaseToken],
     )
     return result.rowCount === 1
+  }
+
+  async resolveTerminalRunLease(input: ResolveTerminalRunLeaseInput): Promise<boolean> {
+    return withTransaction(this.pool, async (client) => {
+      const result = await client.query<ExpiredLeaseRow>(
+        'SELECT m.workspace_id, m.project_id, t.mission_id, t.id AS task_id, ' +
+        't.status AS task_status, t.attempt_count, t.max_attempts, ' +
+        'r.id AS run_id, r.status AS run_status ' +
+        'FROM task_leases l ' +
+        'JOIN tasks t ON t.id = l.task_id ' +
+        'JOIN missions m ON m.id = t.mission_id ' +
+        'JOIN agent_runs r ON r.id = l.run_id ' +
+        'WHERE l.task_id = $1 AND l.run_id = $2 AND l.agent_id = $3 AND l.lease_token = $4 ' +
+        "AND t.status IN ('claimed', 'running', 'waiting_human') " +
+        "AND r.status IN ('failed', 'cancelled', 'timed_out') " +
+        'FOR UPDATE OF l, t',
+        [input.taskId, input.runId, input.agentId, input.leaseToken],
+      )
+      const row = result.rows[0]
+      if (!row) return false
+
+      const nextTaskStatus: TaskStatus = row.attempt_count >= row.max_attempts ? 'failed' : 'ready'
+      await client.query(
+        'UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1',
+        [row.task_id, nextTaskStatus],
+      )
+      await client.query('DELETE FROM task_leases WHERE task_id = $1', [row.task_id])
+      await appendDomainEvent(client, {
+        type: 'task.status_changed',
+        workspaceId: row.workspace_id as WorkspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: row.mission_id as MissionId,
+        actor: { kind: 'agent', id: input.agentId, runId: input.runId },
+        correlationId: input.correlationId,
+        payload: {
+          taskId: row.task_id as TaskId,
+          from: row.task_status,
+          to: nextTaskStatus,
+          reason: nextTaskStatus === 'ready'
+            ? 'terminal Run released its lease for immediate retry'
+            : 'maximum attempts exhausted by terminal Run',
+        },
+      })
+      return true
+    })
   }
 
   async resumeWaitingRun(input: ResumeWaitingRunInput): Promise<ResumeWaitingRunResult> {

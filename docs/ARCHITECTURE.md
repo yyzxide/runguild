@@ -312,9 +312,14 @@ and cross-Task Evidence are rejected. Because the Runtime marks a Run
 Tool Call is executing, the submission gate accepts that transient owner state
 in addition to `running`, `waiting_human`, and `succeeded`; it still rejects
 foreign Runs, stale Versions, uncommitted Worktrees, and mismatched Evidence.
-When the Mission Conversation contains an active Reviewer Agent,
-the same transaction creates a requested Review, a separate durable
-`review_executions` record, and a deduplicated Reviewer Inbox message. A
+When the Mission Conversation contains an active Reviewer Agent, the same
+transaction creates a requested Review, a separate durable `review_executions`
+record, and a deduplicated Reviewer Inbox message. System-created Missions such
+as Evaluation Trials may have no Conversation; in that case assignment is
+limited to an active Reviewer whose membership in another Conversation binds it
+to the same Project. The Scheduler repairs a crash window or older record where
+a review-gated Submission is durably `submitted` but has no Review, using the
+same eligibility rule and row lock before emitting a deduplicated Inbox wake. A
 Workspace human remains able to decide directly or take over a pending automatic
 Review; a Mission without an eligible Reviewer stays on the human path instead
 of selecting an unrelated Agent.
@@ -358,8 +363,9 @@ text-only approval can never become a database Review decision.
 - A Task cannot complete without all required evidence gates.
 - A Reviewer cannot approve work from the same Agent identity.
 - An automatically assigned Agent reviewer must be active, have the `reviewer`
-  role, and belong to the Mission Conversation; a human reviewer must be a
-  Workspace member.
+  role, and belong to the Mission Conversation, or for a Conversation-less
+  system Mission be bound to the same Project through Conversation membership;
+  a human reviewer must be a Workspace member.
 - A Submission must reference a Version created by the submitting Run and
   exact-hash durable Evidence from that Run.
 - When a Task has changed code, its Submission must also reference `file_diff`

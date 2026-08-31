@@ -205,6 +205,143 @@ export class ReviewRepository {
     this.tasks = new TaskRepository(pool)
   }
 
+  private async assignAgentReview(
+    client: PoolClient,
+    submission: SubmissionRow,
+  ): Promise<{ readonly submission: SubmissionRow; readonly reviewId: ReviewId | null }> {
+    if (submission.status !== 'submitted') return { submission, reviewId: null }
+    const reviewer = await client.query<{
+      id: string
+      model_provider: string
+      model_name: string
+    }>(
+      'SELECT agent.id, agent.model_provider, agent.model_name FROM missions mission ' +
+      'JOIN agents agent ON agent.workspace_id = mission.workspace_id ' +
+      'WHERE mission.id = $1 AND mission.workspace_id = $2 ' +
+      "AND agent.role = 'reviewer' AND agent.status = 'active' AND agent.id <> $3 AND (" +
+      '  (mission.conversation_id IS NOT NULL AND EXISTS (' +
+      '    SELECT 1 FROM conversation_members member ' +
+      '    WHERE member.conversation_id = mission.conversation_id ' +
+      "    AND member.participant_kind = 'agent' AND member.participant_id = agent.id" +
+      '  )) OR (mission.conversation_id IS NULL AND EXISTS (' +
+      '    SELECT 1 FROM conversations project_conversation ' +
+      '    JOIN conversation_members member ON member.conversation_id = project_conversation.id ' +
+      "    AND member.participant_kind = 'agent' AND member.participant_id = agent.id " +
+      '    WHERE project_conversation.workspace_id = mission.workspace_id ' +
+      '    AND project_conversation.project_id = mission.project_id' +
+      '  ))' +
+      ') ORDER BY agent.created_at, agent.id LIMIT 1',
+      [submission.mission_id, submission.workspace_id, submission.submitted_by_agent_id],
+    )
+    const assigned = reviewer.rows[0]
+    if (!assigned) return { submission, reviewId: null }
+
+    const reviewId = ('review_' + randomUUID()) as ReviewId
+    await client.query(
+      'INSERT INTO reviews ' +
+      '(id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, ' +
+      "reviewer_kind, reviewer_id, status, findings, summary) VALUES ($1, $2, $3, $4, $5, $6, 'agent', $6, " +
+      "'requested', '[]'::jsonb, '')",
+      [
+        reviewId,
+        submission.workspace_id,
+        submission.mission_id,
+        submission.task_id,
+        submission.id,
+        assigned.id,
+      ],
+    )
+    await client.query(
+      'INSERT INTO review_executions ' +
+      '(review_id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, model_provider, model_name) ' +
+      'VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [
+        reviewId,
+        submission.workspace_id,
+        submission.mission_id,
+        submission.task_id,
+        submission.id,
+        assigned.id,
+        assigned.model_provider,
+        assigned.model_name,
+      ],
+    )
+    await client.query(
+      'INSERT INTO review_evidence (review_id, evidence_id) ' +
+      'SELECT $1, selected.evidence_id FROM task_submission_evidence selected ' +
+      'WHERE selected.submission_id = $2 ON CONFLICT DO NOTHING',
+      [reviewId, submission.id],
+    )
+    const inboxPayload = {
+      schemaVersion: 1,
+      type: 'artifact.review_requested',
+      reviewId,
+      submissionId: submission.id,
+      missionId: submission.mission_id,
+      taskId: submission.task_id,
+    }
+    const payloadJson = canonicalJson(inboxPayload)
+    await client.query(
+      'INSERT INTO inbox_messages ' +
+      '(id, workspace_id, agent_id, mission_id, kind, payload, payload_hash, dedupe_key) ' +
+      "VALUES ($1, $2, $3, $4, 'artifact.review_requested', $5::jsonb, $6, $7)",
+      [
+        'inbox_' + randomUUID(),
+        submission.workspace_id,
+        assigned.id,
+        submission.mission_id,
+        payloadJson,
+        digest(payloadJson),
+        'artifact-review:' + reviewId,
+      ],
+    )
+    await client.query(
+      'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
+      [
+        'wake_' + randomUUID(),
+        EVENT_TOPICS.agentWake,
+        assigned.id,
+        canonicalJson({
+          schemaVersion: 1,
+          type: 'agent.wake',
+          workspaceId: submission.workspace_id,
+          missionId: submission.mission_id,
+          agentId: assigned.id,
+          reason: 'artifact.review_requested',
+          reviewId,
+        }),
+      ],
+    )
+    const updated = await client.query<SubmissionRow>(
+      "UPDATE task_submissions SET status = 'in_review', updated_at = NOW() WHERE id = $1 RETURNING " +
+      SUBMISSION_COLUMNS,
+      [submission.id],
+    )
+    return { submission: updated.rows[0] ?? submission, reviewId }
+  }
+
+  async recoverPendingReviewAssignments(limit: number): Promise<readonly ReviewId[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new RangeError('Review recovery limit must be between 1 and 100')
+    }
+    return withTransaction(this.pool, async (client) => {
+      const candidates = await client.query<SubmissionRow>(
+        'SELECT ' + SUBMISSION_COLUMNS.split(', ').map((column) => 's.' + column).join(', ') + ' ' +
+        'FROM task_submissions s JOIN tasks t ON t.id = s.task_id ' +
+        "WHERE s.status = 'submitted' AND t.status = 'reviewing' AND t.review_required " +
+        'AND NOT EXISTS (SELECT 1 FROM reviews review WHERE review.submission_id = s.id) ' +
+        'ORDER BY s.created_at, s.id LIMIT $1 FOR UPDATE OF s SKIP LOCKED',
+        [limit],
+      )
+      const assigned: ReviewId[] = []
+      for (const candidate of candidates.rows) {
+        const result = await this.assignAgentReview(client, candidate)
+        if (result.reviewId) assigned.push(result.reviewId)
+      }
+      return assigned
+    })
+  }
+
   async submitArtifactVersion(input: SubmitArtifactVersionInput): Promise<TaskSubmission> {
     const note = input.note?.trim() ?? ''
     if (note.length > 10_000) throw new RangeError('Submission note exceeds 10000 characters')
@@ -309,7 +446,10 @@ export class ReviewRepository {
         if (current.run_id === input.runId
             && current.artifact_version_id === input.artifactVersionId
             && current.evidence_bundle_hash === evidenceBundleHash) {
-          return asSubmission(current)
+          const assigned = scoped.review_required
+            ? await this.assignAgentReview(client, current)
+            : { submission: current }
+          return asSubmission(assigned.submission)
         }
         throw new Error('Task already has an active Artifact submission')
       }
@@ -339,97 +479,7 @@ export class ReviewRepository {
         [row.id, evidence.map((item) => item.id)],
       )
       if (scoped.review_required) {
-        const reviewer = await client.query<{
-          id: string
-          model_provider: string
-          model_name: string
-        }>(
-          'SELECT agent.id, agent.model_provider, agent.model_name FROM missions mission ' +
-          'JOIN conversation_members member ON member.conversation_id = mission.conversation_id ' +
-          "AND member.workspace_id = mission.workspace_id AND member.participant_kind = 'agent' " +
-          'JOIN agents agent ON agent.id = member.participant_id AND agent.workspace_id = member.workspace_id ' +
-          "WHERE mission.id = $1 AND mission.workspace_id = $2 AND agent.role = 'reviewer' " +
-          "AND agent.status = 'active' AND agent.id <> $3 ORDER BY agent.created_at, agent.id LIMIT 1",
-          [input.missionId, input.workspaceId, input.agentId],
-        )
-        const assigned = reviewer.rows[0]
-        if (assigned) {
-          const reviewId = ('review_' + randomUUID()) as ReviewId
-          await client.query(
-            'INSERT INTO reviews ' +
-            '(id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, ' +
-            "reviewer_kind, reviewer_id, status, findings, summary) VALUES ($1, $2, $3, $4, $5, $6, 'agent', $6, " +
-            "'requested', '[]'::jsonb, '')",
-            [reviewId, input.workspaceId, input.missionId, input.taskId, row.id, assigned.id],
-          )
-          await client.query(
-            'INSERT INTO review_executions ' +
-            '(review_id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, model_provider, model_name) ' +
-            'VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-            [
-              reviewId,
-              input.workspaceId,
-              input.missionId,
-              input.taskId,
-              row.id,
-              assigned.id,
-              assigned.model_provider,
-              assigned.model_name,
-            ],
-          )
-          await client.query(
-            'INSERT INTO review_evidence (review_id, evidence_id) ' +
-            'SELECT $1, selected.evidence_id FROM task_submission_evidence selected ' +
-            'WHERE selected.submission_id = $2 ON CONFLICT DO NOTHING',
-            [reviewId, row.id],
-          )
-          const inboxPayload = {
-            schemaVersion: 1,
-            type: 'artifact.review_requested',
-            reviewId,
-            submissionId: row.id,
-            missionId: input.missionId,
-            taskId: input.taskId,
-          }
-          const payloadJson = canonicalJson(inboxPayload)
-          await client.query(
-            'INSERT INTO inbox_messages ' +
-            '(id, workspace_id, agent_id, mission_id, kind, payload, payload_hash, dedupe_key) ' +
-            "VALUES ($1, $2, $3, $4, 'artifact.review_requested', $5::jsonb, $6, $7)",
-            [
-              'inbox_' + randomUUID(),
-              input.workspaceId,
-              assigned.id,
-              input.missionId,
-              payloadJson,
-              digest(payloadJson),
-              'artifact-review:' + reviewId,
-            ],
-          )
-          await client.query(
-            'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
-            [
-              'wake_' + randomUUID(),
-              EVENT_TOPICS.agentWake,
-              assigned.id,
-              canonicalJson({
-                schemaVersion: 1,
-                type: 'agent.wake',
-                workspaceId: input.workspaceId,
-                missionId: input.missionId,
-                agentId: assigned.id,
-                reason: 'artifact.review_requested',
-                reviewId,
-              }),
-            ],
-          )
-          const updated = await client.query<SubmissionRow>(
-            "UPDATE task_submissions SET status = 'in_review', updated_at = NOW() WHERE id = $1 RETURNING " +
-            SUBMISSION_COLUMNS,
-            [row.id],
-          )
-          row = updated.rows[0] ?? row
-        }
+        row = (await this.assignAgentReview(client, row)).submission
       }
       return asSubmission(row)
     })

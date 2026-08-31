@@ -26,6 +26,7 @@ type Inbox = Pick<InboxRepository, 'read' | 'acknowledge'>
 type Tasks = Pick<
   TaskRepository,
   'claimTask' | 'resumeWaitingRun' | 'listRunnableAgentRuns' | 'renewLease' | 'releaseLease'
+    | 'resolveTerminalRunLease'
 >
 type Contexts = Pick<ExecutionContextRepository, 'load'>
 type PlanningProcessor = {
@@ -388,6 +389,14 @@ export class AgentInboxProcessor {
         runId: run.runId,
         agentId: this.dependencies.agentId,
         leaseToken: run.leaseToken,
+      })
+    } else if (['failed', 'cancelled', 'timed_out'].includes(outcome.status)) {
+      await this.dependencies.tasks.resolveTerminalRunLease({
+        taskId: run.taskId,
+        runId: run.runId,
+        agentId: this.dependencies.agentId,
+        leaseToken: run.leaseToken,
+        correlationId: ('agent_terminal_' + randomUUID()) as CorrelationId,
       })
     }
   }

@@ -154,6 +154,11 @@ The control-plane foundation is executable:
   project branch or another Trial;
 - aggregate and paired reports for success, wall time, estimated cost, tokens,
   rework, Tool failures, review churn, and context compaction;
+- a completed real-model paired system run, documented in
+  [`docs/REAL_EVALUATION_2026-08-31.md`](docs/REAL_EVALUATION_2026-08-31.md),
+  which preserved isolated Trial refs and exposed concrete retry, Review
+  assignment, hop-budget, and pricing-ledger gaps instead of hiding them with
+  mocks;
 - a responsive React operator workspace whose home page derives one next action
   from real API, Workspace, Conversation, Plan, and Mission state; it restores
   the real Project repository/branch, configured Agent models, project-scoped
@@ -174,9 +179,10 @@ The control-plane foundation is executable:
 The local suite covers protocol, migrations, Conversation routing, Mission
 orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
 and API contracts. The external PostgreSQL integration test remains opt-in.
-The next implementation slices complete production identity, deployment,
-horizontal worker fencing, cross-instance collaboration fan-out, and
-real-model benchmark runs.
+The next implementation slices repeat the real-model benchmark after closing
+its usage-accounting gaps, replace the remaining Artifact sample projection,
+and complete production identity, deployment, horizontal worker fencing, and
+cross-instance collaboration fan-out.
 
 ## Repository layout
 

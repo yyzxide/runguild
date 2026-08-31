@@ -92,7 +92,11 @@ queued -> starting -> running
 ~~~
 
 Runs are immutable after a terminal state. A retry creates a new Run rather
-than reopening the old one.
+than reopening the old one. When the Runtime itself observes `failed`,
+`cancelled`, or `timed_out`, it atomically returns the leased Task to `ready` or
+marks it `failed` when attempts are exhausted, then deletes the lease in the
+same worker tick. Lease-expiry recovery remains the crash fallback rather than
+the normal terminal path.
 
 The Agent can report that its run is done, blocked, failed, or waiting for a
 human. The server validates this report and performs the actual state
@@ -245,7 +249,10 @@ older inactive submission -> superseded
 Only one submitted, in-review, or approved Submission may exist for a Task.
 `changes_requested` is a Review decision; it maps the current Submission to
 `rejected` and the Task back to `ready` so a new Run can create a new Version
-and Submission.
+and Submission. A review-gated `submitted` record without a Review remains a
+durable recoverable state: the Scheduler assigns an eligible project-bound
+Reviewer and advances it to `in_review`, or leaves it for human review when no
+eligible Agent exists.
 
 ## Evaluation Experiment and Trial
 

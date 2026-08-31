@@ -223,6 +223,22 @@ test('mission approval routes ready DAG tasks by role and requires a Dispatch To
       inbox_count: 1,
       lease_count: 1,
     })
+
+    await database.query("UPDATE agent_runs SET status = 'failed' WHERE id = 'run_flow'")
+    const resolved = await tasks.resolveTerminalRunLease({
+      taskId: buildTaskId,
+      runId: 'run_flow',
+      agentId: 'builder_flow',
+      leaseToken: claimed.leaseToken,
+      correlationId: 'correlation_terminal',
+    })
+    assert.equal(resolved, true)
+    const terminal = await database.query(
+      'SELECT t.status, EXISTS (SELECT 1 FROM task_leases l WHERE l.task_id = t.id) AS has_lease ' +
+      'FROM tasks t WHERE t.id = $1',
+      [buildTaskId],
+    )
+    assert.deepEqual(terminal.rows[0], { status: 'ready', has_lease: false })
   } finally {
     await database.close()
   }

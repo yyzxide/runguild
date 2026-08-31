@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type {
   OutboxRepository,
+  ReviewRepository,
   SchedulerRepository,
   TaskRepository,
 } from '@runguild/database'
@@ -9,6 +10,7 @@ import type { CorrelationId } from '@runguild/protocol'
 
 type Scheduler = Pick<SchedulerRepository, 'dispatchReadyTasks'>
 type Tasks = Pick<TaskRepository, 'recoverExpiredLeases'>
+type Reviews = Pick<ReviewRepository, 'recoverPendingReviewAssignments'>
 type Outbox = Pick<OutboxRepository, 'claimBatch' | 'markPublished' | 'markFailed'>
 
 export interface EventPublisher {
@@ -18,12 +20,14 @@ export interface EventPublisher {
 export interface WorkerTickDependencies {
   readonly scheduler: Scheduler
   readonly tasks: Tasks
+  readonly reviews: Reviews
   readonly outbox: Outbox
   readonly publisher: EventPublisher
 }
 
 export interface WorkerTickOptions {
   readonly recoveryLimit: number
+  readonly reviewRecoveryLimit: number
   readonly dispatchLimit: number
   readonly dispatchSeconds: number
   readonly outboxLimit: number
@@ -32,6 +36,7 @@ export interface WorkerTickOptions {
 
 export interface WorkerTickResult {
   readonly recovered: number
+  readonly reviewsRecovered: number
   readonly dispatched: number
   readonly published: number
   readonly publishFailed: number
@@ -49,6 +54,9 @@ export async function runWorkerTick(
   const recovered = await dependencies.tasks.recoverExpiredLeases(
     options.recoveryLimit,
     correlationId,
+  )
+  const recoveredReviews = await dependencies.reviews.recoverPendingReviewAssignments(
+    options.reviewRecoveryLimit,
   )
   const dispatches = await dependencies.scheduler.dispatchReadyTasks({
     limit: options.dispatchLimit,
@@ -82,6 +90,7 @@ export async function runWorkerTick(
 
   return {
     recovered: recovered.length,
+    reviewsRecovered: recoveredReviews.length,
     dispatched: dispatches.length,
     published,
     publishFailed,

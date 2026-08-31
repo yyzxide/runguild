@@ -91,6 +91,7 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
         releases.push(input)
         return true
       },
+      async resolveTerminalRunLease() { throw new Error('not expected') },
     },
     contexts: {
       async load() {
@@ -135,6 +136,49 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
     agentId: 'agent_builder',
     leaseToken: 'lease_agent',
   }])
+})
+
+test('terminal failed Run immediately returns its Task to durable scheduling', async () => {
+  const resolutions = []
+  const processor = new AgentInboxProcessor({
+    agentId: 'agent_builder',
+    inbox: {
+      async read() { return { cursor: 0n, messages: [] } },
+      async acknowledge() { return true },
+    },
+    tasks: {
+      async claimTask() { throw new Error('not expected') },
+      async resumeWaitingRun() { throw new Error('not expected') },
+      async listRunnableAgentRuns() {
+        return [{
+          workspaceId: 'ws_agent', missionId: 'mission_agent', taskId: 'task_agent',
+          runId: 'run_agent', agentId: 'agent_builder', leaseToken: 'lease_agent',
+        }]
+      },
+      async renewLease() { return '2026-08-19T00:01:00.000Z' },
+      async releaseLease() { throw new Error('not expected') },
+      async resolveTerminalRunLease(input) { resolutions.push(input); return true },
+    },
+    contexts: { async load() { return context } },
+    async createRuntime() {
+      return { async run() { return { status: 'failed', summary: 'Bad tool arguments.', hops: 2 } } }
+    },
+  }, {
+    inboxLimit: 10,
+    runLimit: 5,
+    leaseSeconds: 60,
+  })
+
+  assert.deepEqual(await processor.tick(), { inboxProcessed: 0, runsExecuted: 1 })
+  assert.equal(resolutions.length, 1)
+  assert.deepEqual({ ...resolutions[0], correlationId: 'normalized' }, {
+    taskId: 'task_agent',
+    runId: 'run_agent',
+    agentId: 'agent_builder',
+    leaseToken: 'lease_agent',
+    correlationId: 'normalized',
+  })
+  assert.match(resolutions[0].correlationId, /^agent_terminal_/)
 })
 
 test('control inbox messages reacquire a lease for a waiting Run before polling', async () => {

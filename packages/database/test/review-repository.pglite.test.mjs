@@ -109,6 +109,47 @@ test('runtime can submit an Artifact Version while the submission tool owns the 
   }
 })
 
+test('project-bound Reviewer assignment recovers a submitted Evaluation Mission without a conversation', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    await database.exec(
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) " +
+      "VALUES ('conversation_project', 'ws_review', 'project_review', 'project_room', 'Project room');" +
+      "INSERT INTO conversation_members (workspace_id, conversation_id, participant_kind, participant_id) VALUES " +
+      "('ws_review', 'conversation_project', 'agent', 'agent_reviewer');",
+    )
+    const repository = new ReviewRepository(poolAdapter(database))
+    const submission = await submit(repository)
+    assert.equal(submission.status, 'in_review')
+    assert.equal((await database.query(
+      "SELECT reviewer_agent_id FROM reviews WHERE submission_id = 'submission_review'",
+    )).rows[0].reviewer_agent_id, 'agent_reviewer')
+
+    await database.exec(
+      "DELETE FROM reviews WHERE submission_id = 'submission_review';" +
+      "UPDATE task_submissions SET status = 'submitted' WHERE id = 'submission_review';",
+    )
+    const recovered = await repository.recoverPendingReviewAssignments(10)
+    assert.equal(recovered.length, 1)
+    assert.match(recovered[0], /^review_/)
+    const durable = await database.query(
+      "SELECT s.status, e.status AS execution_status, i.agent_id FROM task_submissions s " +
+      "JOIN reviews r ON r.submission_id = s.id " +
+      "JOIN review_executions e ON e.review_id = r.id " +
+      "JOIN inbox_messages i ON i.dedupe_key = 'artifact-review:' || r.id " +
+      "WHERE s.id = 'submission_review'",
+    )
+    assert.deepEqual(durable.rows[0], {
+      status: 'in_review',
+      execution_status: 'queued',
+      agent_id: 'agent_reviewer',
+    })
+  } finally {
+    await database.close()
+  }
+})
+
 test('human approval of exact-version evidence completes the review-gated Task', async () => {
   const database = new PGlite()
   try {

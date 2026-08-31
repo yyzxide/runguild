@@ -14,6 +14,12 @@ test('worker dispatches tasks and acknowledges published outbox rows', async () 
         return ['task_recovered']
       },
     },
+    reviews: {
+      async recoverPendingReviewAssignments() {
+        calls.push('recover-reviews')
+        return ['review_recovered']
+      },
+    },
     scheduler: {
       async dispatchReadyTasks() {
         calls.push('dispatch')
@@ -47,14 +53,21 @@ test('worker dispatches tasks and acknowledges published outbox rows', async () 
     },
   }, {
     recoveryLimit: 10,
+    reviewRecoveryLimit: 10,
     dispatchLimit: 10,
     dispatchSeconds: 60,
     outboxLimit: 10,
     outboxClaimSeconds: 30,
   })
 
-  assert.deepEqual(result, { recovered: 1, dispatched: 1, published: 1, publishFailed: 0 })
-  assert.deepEqual(calls, ['recover', 'dispatch'])
+  assert.deepEqual(result, {
+    recovered: 1,
+    reviewsRecovered: 1,
+    dispatched: 1,
+    published: 1,
+    publishFailed: 0,
+  })
+  assert.deepEqual(calls, ['recover', 'recover-reviews', 'dispatch'])
   assert.deepEqual(published, [['topic.one', { value: 1 }]])
   assert.deepEqual(marked, [['out_1', 'claim_1']])
 })
@@ -64,6 +77,11 @@ test('worker retries a failed publication without acknowledging it', async () =>
   const result = await runWorkerTick({
     tasks: {
       async recoverExpiredLeases() {
+        return []
+      },
+    },
+    reviews: {
+      async recoverPendingReviewAssignments() {
         return []
       },
     },
@@ -99,13 +117,20 @@ test('worker retries a failed publication without acknowledging it', async () =>
     },
   }, {
     recoveryLimit: 10,
+    reviewRecoveryLimit: 10,
     dispatchLimit: 10,
     dispatchSeconds: 60,
     outboxLimit: 10,
     outboxClaimSeconds: 30,
   })
 
-  assert.deepEqual(result, { recovered: 0, dispatched: 0, published: 0, publishFailed: 1 })
+  assert.deepEqual(result, {
+    recovered: 0,
+    reviewsRecovered: 0,
+    dispatched: 0,
+    published: 0,
+    publishFailed: 1,
+  })
   assert.deepEqual(failures, [{
     id: 'out_failed',
     claimToken: 'claim_failed',
