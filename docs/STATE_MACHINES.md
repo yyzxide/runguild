@@ -184,6 +184,11 @@ An invalid model response remains inside the execution ledger with its raw text,
 Tool Calls, provider request id, Token usage, and latency. It consumes an attempt
 but cannot advance to `model_complete` or alter the Review.
 
+Each model invocation that returns usage also appends one immutable
+`reviewer_model_calls` row keyed by `(review_id, attempt)`, whether the response
+was structurally valid or invalid. Retrying or resuming the execution cannot
+overwrite that usage history or create a second call row for the same attempt.
+
 ## Task Worktree
 
 ~~~text

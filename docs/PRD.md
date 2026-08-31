@@ -140,6 +140,9 @@ Expected flow:
 - Reviewer model execution has its own lease, retry budget, frozen material
   snapshot, prompt/response ledger, Token/cost usage, and persisted decision. It
   does not consume or mutate the producing Task Run's attempt budget.
+- Every Reviewer response with observable usage has a separate immutable
+  per-attempt call row. Evaluation Token/cost/model-call totals include these
+  rows as well as ordinary execution-Agent calls.
 - Review materials bind the immutable Artifact Version, criteria, Evidence,
   relevant test results, Worktree state, and cumulative base-to-HEAD diff.
 - Required acceptance criteria must have evidence.

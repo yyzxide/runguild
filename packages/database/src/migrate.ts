@@ -21,6 +21,7 @@ const MIGRATIONS = [
   '0015_worktree_setup.sql',
   '0016_submission_evidence.sql',
   '0017_integration_conflict_recovery.sql',
+  '0018_reviewer_model_calls.sql',
 ] as const
 
 function checksum(contents: string): string {

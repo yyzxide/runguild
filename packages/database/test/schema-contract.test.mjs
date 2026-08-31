@@ -17,6 +17,7 @@ const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execu
 const worktreeSetupMigrationUrl = new URL('../migrations/0015_worktree_setup.sql', import.meta.url)
 const submissionEvidenceMigrationUrl = new URL('../migrations/0016_submission_evidence.sql', import.meta.url)
 const integrationConflictRecoveryMigrationUrl = new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url)
+const reviewerModelCallsMigrationUrl = new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url)
 
 test('schema keeps durable coordination invariants in PostgreSQL', async () => {
   const sql = await readFile(migrationUrl, 'utf8')
@@ -70,6 +71,16 @@ test('Integration conflict recovery records a bounded reconciliation baseline', 
   assert.match(sql, /reconciliation_base_commit TEXT/)
   assert.match(sql, /ck_task_worktree_reconciliation_base/)
   assert.match(sql, /status IN \('ready', 'committed'\)/)
+})
+
+test('Reviewer model calls keep an immutable per-attempt usage ledger', async () => {
+  const sql = await readFile(reviewerModelCallsMigrationUrl, 'utf8')
+
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS reviewer_model_calls/)
+  assert.match(sql, /UNIQUE \(review_id, attempt\)/)
+  assert.match(sql, /cached_input_tokens/)
+  assert.match(sql, /FOREIGN KEY \(review_id, workspace_id, mission_id, task_id\)/)
+  assert.match(sql, /review_model_call_backfill_/)
 })
 
 test('Context schema versions Skills and persists exact per-hop model views', async () => {

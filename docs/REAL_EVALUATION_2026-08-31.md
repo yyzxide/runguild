@@ -49,11 +49,13 @@ comparison: the single-Agent Trial includes the wait while its missing Review
 assignment was diagnosed and the platform recovery was deployed.
 
 `estimatedCostUsd=0` is not proof of zero cost. This compatible provider has no
-configured pricing data, so cost rows are currently unavailable. In addition,
-the persisted Trial aggregate counts ordinary `llm_calls` but does not yet add
-the separate Reviewer execution usage (`26,345` input and `722` output tokens
-in this run). Both gaps must be closed before cost comparisons are used as
-project evidence.
+configured pricing data, so cost rows are currently unavailable. The Trial
+aggregate frozen by this first run also predates the per-attempt Reviewer call
+ledger and therefore omits its Reviewer usage (`26,345` input and `722` output
+tokens). Migration `0018_reviewer_model_calls.sql` and the collector were added
+after this diagnosis: future Trials merge Reviewer and ordinary Agent usage,
+while this historical Trial is intentionally not rewritten. Provider pricing
+still must be configured before cost comparisons are used as project evidence.
 
 ## What the run exposed
 
@@ -73,9 +75,10 @@ project evidence.
    discovery. The Builder also completed tests and a commit in an earlier
    attempt but failed to reserve enough hops for Artifact submission and the
    completion gate.
-5. Evaluation metrics omit separate control-plane model usage and cannot price
-   the configured compatible model. This is the next Evaluation correctness
-   priority before running more repetitions.
+5. Evaluation metrics omitted separate Reviewer usage and could not price the
+   configured compatible model. The first issue is fixed by an immutable
+   per-attempt Reviewer model-call ledger and merged collector totals;
+   compatible-model pricing remains open before evidence-grade repetitions.
 
 The recovery path was exercised against the live records: Scheduler created one
 missing Review, Reviewer approved it, Integration integrated the exact reviewed

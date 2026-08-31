@@ -657,11 +657,20 @@ export class EvaluationRepository {
       'SELECT ' +
       '(SELECT COUNT(*)::int FROM agent_runs r WHERE r.mission_id = $1) AS run_attempts, ' +
       '(SELECT MAX(r.finished_at) FROM agent_runs r WHERE r.mission_id = $1) AS last_finished_at, ' +
-      '(SELECT COUNT(*)::int FROM llm_calls l WHERE l.mission_id = $1) AS model_calls, ' +
-      '(SELECT COALESCE(SUM(l.input_tokens), 0)::int FROM llm_calls l WHERE l.mission_id = $1) AS input_tokens, ' +
-      '(SELECT COALESCE(SUM(l.output_tokens), 0)::int FROM llm_calls l WHERE l.mission_id = $1) AS output_tokens, ' +
-      '(SELECT COALESCE(SUM(l.cached_input_tokens), 0)::int FROM llm_calls l WHERE l.mission_id = $1) AS cached_input_tokens, ' +
-      '(SELECT COALESCE(SUM(l.estimated_cost_usd), 0) FROM llm_calls l WHERE l.mission_id = $1) AS estimated_cost_usd, ' +
+      '((SELECT COUNT(*) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      ' (SELECT COUNT(*) FROM reviewer_model_calls review_call WHERE review_call.mission_id = $1))::int AS model_calls, ' +
+      '((SELECT COALESCE(SUM(l.input_tokens), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      ' (SELECT COALESCE(SUM(review_call.input_tokens), 0) FROM reviewer_model_calls review_call ' +
+      '  WHERE review_call.mission_id = $1))::int AS input_tokens, ' +
+      '((SELECT COALESCE(SUM(l.output_tokens), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      ' (SELECT COALESCE(SUM(review_call.output_tokens), 0) FROM reviewer_model_calls review_call ' +
+      '  WHERE review_call.mission_id = $1))::int AS output_tokens, ' +
+      '((SELECT COALESCE(SUM(l.cached_input_tokens), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      ' (SELECT COALESCE(SUM(review_call.cached_input_tokens), 0) FROM reviewer_model_calls review_call ' +
+      '  WHERE review_call.mission_id = $1))::int AS cached_input_tokens, ' +
+      '((SELECT COALESCE(SUM(l.estimated_cost_usd), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      ' (SELECT COALESCE(SUM(review_call.estimated_cost_usd), 0) FROM reviewer_model_calls review_call ' +
+      '  WHERE review_call.mission_id = $1)) AS estimated_cost_usd, ' +
       '(SELECT COUNT(*)::int FROM tool_executions x WHERE x.mission_id = $1) AS tool_calls, ' +
       "(SELECT COUNT(*)::int FROM tool_executions x WHERE x.mission_id = $1 AND x.status = 'failed') AS tool_failures, " +
       "(SELECT COUNT(*)::int FROM reviews r WHERE r.mission_id = $1 AND r.status = 'changes_requested') " +

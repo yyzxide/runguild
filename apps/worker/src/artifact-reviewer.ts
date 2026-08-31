@@ -255,6 +255,9 @@ export class ArtifactReviewer {
             ...(response.providerRequestId === undefined ? {} : { providerRequestId: response.providerRequestId }),
             inputTokens: response.usage.inputTokens,
             outputTokens: response.usage.outputTokens,
+            ...(response.usage.cachedInputTokens === undefined
+              ? {}
+              : { cachedInputTokens: response.usage.cachedInputTokens }),
             ...(response.usage.estimatedCostUsd === undefined
               ? {}
               : { estimatedCostUsd: response.usage.estimatedCostUsd }),
@@ -275,6 +278,9 @@ export class ArtifactReviewer {
           ...(response.providerRequestId === undefined ? {} : { providerRequestId: response.providerRequestId }),
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
+          ...(response.usage.cachedInputTokens === undefined
+            ? {}
+            : { cachedInputTokens: response.usage.cachedInputTokens }),
           ...(response.usage.estimatedCostUsd === undefined
             ? {}
             : { estimatedCostUsd: response.usage.estimatedCostUsd }),

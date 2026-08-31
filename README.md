@@ -116,6 +116,11 @@ The control-plane foundation is executable:
   results, and the cumulative base-to-HEAD Git diff. The durable snapshot keeps
   every selected Evidence id, while the bounded model projection emits repeated
   content-addressed payloads once and retains every equivalent id and producer;
+- immutable `reviewer_model_calls` rows for every successful or structurally
+  invalid Reviewer response, including ordinary/cached Token usage, price when
+  available, latency, and attempt identity; Evaluation merges this
+  control-plane usage with ordinary Agent `llm_calls` instead of silently
+  undercounting Review;
   Planner/Reviewer control-plane calls require one non-parallel structured Tool
   Call and explicitly disable reasoning for compatible endpoints whose Thinking
   mode rejects required tool choice; execution Agents still inherit their

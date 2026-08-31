@@ -25,6 +25,7 @@ const migrationUrls = [
   new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
   new URL('../migrations/0016_submission_evidence.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
+  new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -427,6 +428,7 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
           providerRequestId: 'response_invalid',
           inputTokens: 321,
           outputTokens: 17,
+          cachedInputTokens: 123,
           latencyMs: 25,
           errorMessage: 'Reviewer must call review.submit_decision exactly once',
         })
@@ -452,6 +454,19 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
     assert.equal(invalidResponse.rows[0].provider_request_id, 'response_invalid')
     assert.equal(invalidResponse.rows[0].input_tokens, 321)
     assert.equal(invalidResponse.rows[0].output_tokens, 17)
+    const invalidCalls = await database.query(
+      'SELECT attempt, status, input_tokens, output_tokens, cached_input_tokens, error ' +
+      'FROM reviewer_model_calls WHERE review_id = $1 ORDER BY attempt',
+      [reviewId],
+    )
+    assert.deepEqual(invalidCalls.rows, [{
+      attempt: 1,
+      status: 'invalid',
+      input_tokens: 321,
+      output_tokens: 17,
+      cached_input_tokens: 123,
+      error: { message: 'Reviewer must call review.submit_decision exactly once' },
+    }])
     const frozenSnapshot = JSON.stringify(failed.rows[0].materials_snapshot)
 
     assert.deepEqual(await executions.retryFailed({
@@ -584,6 +599,8 @@ test('Mission-room Reviewer receives durable work, defers until Task review, and
       modelName: 'test',
       inputTokens: 100,
       outputTokens: 25,
+      cachedInputTokens: 40,
+      estimatedCostUsd: 0.01,
       latencyMs: 10,
     })
     assert.equal((await executions.fail({
@@ -623,6 +640,19 @@ test('Mission-room Reviewer receives durable work, defers until Task review, and
     assert.equal(finished.rows[0].attempt, 1)
     assert.match(finished.rows[0].decision_hash, /^[0-9a-f]{64}$/)
     assert.equal(finished.rows[0].prompt_snapshot.schemaVersion, 1)
+    const modelCalls = await database.query(
+      'SELECT attempt, status, input_tokens, output_tokens, cached_input_tokens, estimated_cost_usd ' +
+      'FROM reviewer_model_calls WHERE review_id = $1',
+      [reviewId],
+    )
+    assert.deepEqual(modelCalls.rows, [{
+      attempt: 1,
+      status: 'succeeded',
+      input_tokens: 100,
+      output_tokens: 25,
+      cached_input_tokens: 40,
+      estimated_cost_usd: '0.01000000',
+    }])
   } finally {
     await database.close()
   }

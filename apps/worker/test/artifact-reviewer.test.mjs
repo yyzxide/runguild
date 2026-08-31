@@ -50,7 +50,7 @@ test('Artifact Reviewer persists one model decision before recording the indepen
   const reviewer = new ArtifactReviewer({
     executions: {
       async claim() { return { kind: 'work', work: work() } },
-      async completeModel(input) { calls.push(['model.persisted', input.decision]) },
+      async completeModel(input) { calls.push(['model.persisted', input]) },
       async renew() { return true },
       async complete() { calls.push(['execution.completed']) },
       async fail(input) { calls.push(['failed', input.message]); return { retryable: false } },
@@ -69,7 +69,7 @@ test('Artifact Reviewer persists one model decision before recording the indepen
           return {
             content: '', finishReason: 'tool_calls',
             toolCalls: [{ id: 'call_1', action: 'review.submit_decision', input: decision }],
-            usage: { inputTokens: 100, outputTokens: 30, estimatedCostUsd: 0.01 },
+            usage: { inputTokens: 100, outputTokens: 30, cachedInputTokens: 45, estimatedCostUsd: 0.01 },
             providerRequestId: 'response_1',
           }
         },
@@ -84,6 +84,7 @@ test('Artifact Reviewer persists one model decision before recording the indepen
   assert.deepEqual(calls.map((call) => call[0]), [
     'model.called', 'model.persisted', 'review.recorded', 'execution.completed',
   ])
+  assert.equal(calls[1][1].cachedInputTokens, 45)
 })
 
 test('Artifact Reviewer persists an invalid model response before exhausting its retry', async () => {
@@ -108,7 +109,7 @@ test('Artifact Reviewer persists an invalid model response before exhausting its
             content: 'I approve this submission in prose.',
             finishReason: 'stop',
             toolCalls: [],
-            usage: { inputTokens: 321, outputTokens: 17 },
+            usage: { inputTokens: 321, outputTokens: 17, cachedInputTokens: 120 },
             providerRequestId: 'response_invalid',
           }
         },
@@ -126,6 +127,7 @@ test('Artifact Reviewer persists an invalid model response before exhausting its
   assert.deepEqual(calls[0][1].responseSnapshot.toolCalls, [])
   assert.equal(calls[0][1].providerRequestId, 'response_invalid')
   assert.equal(calls[0][1].inputTokens, 321)
+  assert.equal(calls[0][1].cachedInputTokens, 120)
   assert.match(calls[1][1], /exactly once/)
 })
 

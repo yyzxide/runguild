@@ -149,6 +149,7 @@ export interface CompleteReviewerModelInput {
   readonly providerRequestId?: string
   readonly inputTokens: number
   readonly outputTokens: number
+  readonly cachedInputTokens?: number
   readonly estimatedCostUsd?: number
   readonly latencyMs: number
 }
@@ -164,6 +165,7 @@ export interface RecordInvalidReviewerModelResponseInput {
   readonly providerRequestId?: string
   readonly inputTokens: number
   readonly outputTokens: number
+  readonly cachedInputTokens?: number
   readonly estimatedCostUsd?: number
   readonly latencyMs: number
   readonly errorMessage: string
@@ -413,56 +415,107 @@ export class ReviewerExecutionRepository {
     validateDecision(input.decision)
     const decisionJson = canonicalJson(input.decision)
     const decisionHash = createHash('sha256').update(decisionJson).digest('hex')
-    const result = await this.pool.query(
-      "UPDATE review_executions SET status = 'model_complete', decision = $4::jsonb, decision_hash = $5, " +
-      'prompt_snapshot = $6::jsonb, response_snapshot = $7::jsonb, model_provider = $8, model_name = $9, ' +
-      'provider_request_id = $10, input_tokens = $11, output_tokens = $12, estimated_cost_usd = $13, ' +
-      'latency_ms = $14, updated_at = NOW() WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
-      "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW()",
-      [
-        input.reviewId,
-        input.reviewerAgentId,
-        input.leaseToken,
-        decisionJson,
-        decisionHash,
-        canonicalJson(input.promptSnapshot),
-        canonicalJson(input.responseSnapshot),
-        input.modelProvider,
-        input.modelName,
-        input.providerRequestId ?? null,
-        input.inputTokens,
-        input.outputTokens,
-        input.estimatedCostUsd ?? null,
-        input.latencyMs,
-      ],
-    )
-    if (result.rowCount !== 1) throw new Error('Reviewer lease was lost before model completion')
+    await withTransaction(this.pool, async (client) => {
+      const result = await client.query<Pick<ExecutionRow,
+        'workspace_id' | 'mission_id' | 'task_id' | 'attempt'
+      >>(
+        "UPDATE review_executions SET status = 'model_complete', decision = $4::jsonb, decision_hash = $5, " +
+        'prompt_snapshot = $6::jsonb, response_snapshot = $7::jsonb, model_provider = $8, model_name = $9, ' +
+        'provider_request_id = $10, input_tokens = $11, output_tokens = $12, cached_input_tokens = $13, ' +
+        'estimated_cost_usd = $14, latency_ms = $15, updated_at = NOW() ' +
+        'WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
+        "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW() " +
+        'RETURNING workspace_id, mission_id, task_id, attempt',
+        [
+          input.reviewId,
+          input.reviewerAgentId,
+          input.leaseToken,
+          decisionJson,
+          decisionHash,
+          canonicalJson(input.promptSnapshot),
+          canonicalJson(input.responseSnapshot),
+          input.modelProvider,
+          input.modelName,
+          input.providerRequestId ?? null,
+          input.inputTokens,
+          input.outputTokens,
+          input.cachedInputTokens ?? 0,
+          input.estimatedCostUsd ?? null,
+          input.latencyMs,
+        ],
+      )
+      const row = result.rows[0]
+      if (!row) throw new Error('Reviewer lease was lost before model completion')
+      await this.insertModelCall(client, row, input, 'succeeded')
+    })
   }
 
   async recordInvalidModelResponse(input: RecordInvalidReviewerModelResponseInput): Promise<void> {
-    const result = await this.pool.query(
-      'UPDATE review_executions SET prompt_snapshot = $4::jsonb, response_snapshot = $5::jsonb, ' +
-      'model_provider = $6, model_name = $7, provider_request_id = $8, input_tokens = $9, ' +
-      'output_tokens = $10, estimated_cost_usd = $11, latency_ms = $12, error = $13::jsonb, ' +
-      'updated_at = NOW() WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
-      "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW()",
+    await withTransaction(this.pool, async (client) => {
+      const error = canonicalJson({ message: input.errorMessage })
+      const result = await client.query<Pick<ExecutionRow,
+        'workspace_id' | 'mission_id' | 'task_id' | 'attempt'
+      >>(
+        'UPDATE review_executions SET prompt_snapshot = $4::jsonb, response_snapshot = $5::jsonb, ' +
+        'model_provider = $6, model_name = $7, provider_request_id = $8, input_tokens = $9, ' +
+        'output_tokens = $10, cached_input_tokens = $11, estimated_cost_usd = $12, latency_ms = $13, ' +
+        'error = $14::jsonb, updated_at = NOW() WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
+        "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW() " +
+        'RETURNING workspace_id, mission_id, task_id, attempt',
+        [
+          input.reviewId,
+          input.reviewerAgentId,
+          input.leaseToken,
+          canonicalJson(input.promptSnapshot),
+          canonicalJson(input.responseSnapshot),
+          input.modelProvider,
+          input.modelName,
+          input.providerRequestId ?? null,
+          input.inputTokens,
+          input.outputTokens,
+          input.cachedInputTokens ?? 0,
+          input.estimatedCostUsd ?? null,
+          input.latencyMs,
+          error,
+        ],
+      )
+      const row = result.rows[0]
+      if (!row) throw new Error('Reviewer lease was lost before invalid model response persistence')
+      await this.insertModelCall(client, row, input, 'invalid', error)
+    })
+  }
+
+  private async insertModelCall(
+    client: PoolClient,
+    scope: Pick<ExecutionRow, 'workspace_id' | 'mission_id' | 'task_id' | 'attempt'>,
+    input: CompleteReviewerModelInput | RecordInvalidReviewerModelResponseInput,
+    status: 'succeeded' | 'invalid',
+    error?: string,
+  ): Promise<void> {
+    await client.query(
+      'INSERT INTO reviewer_model_calls ' +
+      '(id, review_id, workspace_id, mission_id, task_id, attempt, status, provider, model, ' +
+      'provider_request_id, input_tokens, output_tokens, cached_input_tokens, estimated_cost_usd, ' +
+      'latency_ms, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)',
       [
+        'review_model_call_' + randomUUID(),
         input.reviewId,
-        input.reviewerAgentId,
-        input.leaseToken,
-        canonicalJson(input.promptSnapshot),
-        canonicalJson(input.responseSnapshot),
+        scope.workspace_id,
+        scope.mission_id,
+        scope.task_id,
+        scope.attempt,
+        status,
         input.modelProvider,
         input.modelName,
         input.providerRequestId ?? null,
         input.inputTokens,
         input.outputTokens,
+        input.cachedInputTokens ?? 0,
         input.estimatedCostUsd ?? null,
         input.latencyMs,
-        canonicalJson({ message: input.errorMessage }),
+        error ?? null,
       ],
     )
-    if (result.rowCount !== 1) throw new Error('Reviewer lease was lost before invalid model response persistence')
   }
 
   async renew(input: {

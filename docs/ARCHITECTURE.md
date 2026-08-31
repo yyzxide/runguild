@@ -345,6 +345,16 @@ database finalization without another model call. Approval reuses the Task
 completion gate and dependency unlock transaction; `changes_requested` returns
 the Task to `ready`, while a terminal rejection fails it.
 
+`review_executions` stores the resumable current decision state;
+`reviewer_model_calls` is the append-only usage ledger keyed by Review attempt.
+Successful structured responses and structurally invalid responses both consume
+model resources and therefore both create call rows before retry handling. The
+ledger retains cached-input usage and historical failed attempts even when the
+execution row advances. Evaluation aggregation sums ordinary `llm_calls` and
+these Reviewer call rows; a migration conservatively backfills the latest
+observable call from pre-ledger Review executions without rewriting already
+frozen Trial metrics.
+
 Planner and Reviewer model requests require a structured Tool Call and disable
 parallel Tool Calls because each control-plane transition accepts exactly one
 decision. They also request reasoning effort `none`: some compatible endpoints,
@@ -488,8 +498,8 @@ An Evaluation Scenario separates the benchmark definition from an execution:
 5. its Git ref starts at the frozen commit and remains isolated from every
    other Trial;
 6. the collector computes success, completion rate, wall time, attempts,
-   tokens, estimated cost, Tool failures, review churn, and context statistics
-   from durable facts;
+   execution-Agent plus Reviewer model calls and tokens, estimated cost, Tool
+   failures, review churn, and context statistics from durable facts;
 7. the report exposes per-variant aggregates and paired deltas (`multi -
    single`) only for repetitions where both results exist.
 

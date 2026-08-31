@@ -25,7 +25,9 @@ const migrationUrls = [
   new URL('../migrations/0007_worktrees.sql', import.meta.url),
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
+  new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -102,7 +104,8 @@ async function setup(database) {
     "INSERT INTO projects (id, workspace_id, name) VALUES ('project_eval', 'ws_eval', 'Project');" +
     "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
     "('agent_eval_builder', 'ws_eval', 'Builder', 'builder', 'openai', 'model'), " +
-    "('agent_eval_researcher', 'ws_eval', 'Researcher', 'researcher', 'openai', 'model');",
+    "('agent_eval_researcher', 'ws_eval', 'Researcher', 'researcher', 'openai', 'model'), " +
+    "('agent_eval_reviewer', 'ws_eval', 'Reviewer', 'reviewer', 'openai', 'model');",
   )
 }
 
@@ -151,6 +154,9 @@ async function addMetricsFixture(database, trial) {
     "UPDATE missions SET status = 'reviewing', updated_at = NOW() WHERE id = $1",
     [trial.missionId],
   )
+  let firstTask
+  let firstRunId
+  let firstAgentId
   for (const [index, task] of tasks.rows.entries()) {
     const attempts = trial.variant === 'single_agent' ? 2 : 1
     await database.query(
@@ -163,6 +169,11 @@ async function addMetricsFixture(database, trial) {
       : 'agent_eval_builder'
     const suffix = trial.variant + '_' + index
     const runId = 'run_eval_' + suffix
+    if (index === 0) {
+      firstTask = task
+      firstRunId = runId
+      firstAgentId = agentId
+    }
     await database.query(
       'INSERT INTO agent_runs ' +
       '(id, workspace_id, mission_id, task_id, agent_id, attempt, status, started_at, finished_at) ' +
@@ -199,6 +210,52 @@ async function addMetricsFixture(database, trial) {
       ['tool_eval_' + suffix, trial.missionId, task.id, runId, agentId, 'tool:' + suffix],
     )
   }
+  assert.ok(firstTask && firstRunId && firstAgentId)
+  const artifact = await database.query('SELECT id FROM artifacts WHERE mission_id = $1', [trial.missionId])
+  const suffix = trial.variant
+  const versionId = 'version_eval_review_' + suffix
+  const submissionId = 'submission_eval_review_' + suffix
+  const reviewId = 'review_eval_' + suffix
+  await database.query(
+    'INSERT INTO artifact_versions ' +
+    '(id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash, ' +
+    "created_by_kind, created_by_id) VALUES ($1, $2, 1, '{}'::jsonb, $3, $4, $5, 'user', 'user_eval')",
+    [versionId, artifact.rows[0].id, Buffer.from([1]), 'content_' + suffix, 'state_' + suffix],
+  )
+  await database.query(
+    'INSERT INTO task_submissions ' +
+    '(id, workspace_id, mission_id, task_id, run_id, artifact_version_id, submitted_by_agent_id, ' +
+    "status, evidence_bundle_hash) VALUES ($1, 'ws_eval', $2, $3, $4, $5, $6, 'approved', $7)",
+    [submissionId, trial.missionId, firstTask.id, firstRunId, versionId, firstAgentId, 'bundle_' + suffix],
+  )
+  await database.query(
+    'INSERT INTO reviews ' +
+    '(id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, reviewer_kind, reviewer_id, ' +
+    "status, findings, summary, completed_at) VALUES ($1, 'ws_eval', $2, $3, $4, " +
+    "'agent_eval_reviewer', 'agent', 'agent_eval_reviewer', 'approved', '[]'::jsonb, 'Approved', NOW())",
+    [reviewId, trial.missionId, firstTask.id, submissionId],
+  )
+  const reviewerInput = trial.variant === 'single_agent' ? 50 : 80
+  const reviewerOutput = trial.variant === 'single_agent' ? 10 : 16
+  const reviewerCached = trial.variant === 'single_agent' ? 20 : 30
+  const reviewerCost = trial.variant === 'single_agent' ? 0.01 : 0.02
+  await database.query(
+    'INSERT INTO review_executions ' +
+    '(review_id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, status, attempt, ' +
+    'decision, decision_hash, model_provider, model_name, input_tokens, output_tokens, cached_input_tokens, ' +
+    "estimated_cost_usd, latency_ms, finished_at) VALUES ($1, 'ws_eval', $2, $3, $4, " +
+    "'agent_eval_reviewer', 'completed', 1, '{\"decision\":\"approved\"}'::jsonb, 'decision', " +
+    "'openai', 'model', $5, $6, $7, $8, 10, NOW())",
+    [reviewId, trial.missionId, firstTask.id, submissionId, reviewerInput, reviewerOutput, reviewerCached, reviewerCost],
+  )
+  await database.query(
+    'INSERT INTO reviewer_model_calls ' +
+    '(id, review_id, workspace_id, mission_id, task_id, attempt, status, provider, model, input_tokens, ' +
+    "output_tokens, cached_input_tokens, estimated_cost_usd, latency_ms) VALUES ($1, $2, 'ws_eval', " +
+    "$3, $4, 1, 'succeeded', 'openai', 'model', $5, $6, $7, $8, 10)",
+    ['review_model_call_eval_' + suffix, reviewId, trial.missionId, firstTask.id,
+      reviewerInput, reviewerOutput, reviewerCached, reviewerCost],
+  )
 }
 
 test('paired trials materialize real Missions, freeze the Git baseline, collect ledger metrics, and report deltas', async () => {
@@ -269,9 +326,13 @@ test('paired trials materialize real Missions, freeze the Git baseline, collect 
     const report = buildEvaluationReport(completed)
     assert.equal(report.pairedTrials, 1)
     assert.equal(report.pairedSuccessDelta, 0)
-    assert.ok(Math.abs(report.pairedMeanCostDeltaUsd - 0.02) < 0.000001)
+    assert.ok(Math.abs(report.pairedMeanCostDeltaUsd - 0.03) < 0.000001)
     assert.equal(report.variants.find((item) => item.variant === 'single_agent').meanReworkAttempts, 1)
-    assert.equal(report.variants.find((item) => item.variant === 'multi_agent').meanInputTokens, 200)
+    assert.equal(report.variants.find((item) => item.variant === 'single_agent').meanInputTokens, 150)
+    assert.equal(report.variants.find((item) => item.variant === 'single_agent').meanOutputTokens, 30)
+    assert.equal(report.variants.find((item) => item.variant === 'multi_agent').meanInputTokens, 280)
+    assert.equal(completed.trials.find((item) => item.variant === 'single_agent').metrics.modelCalls, 2)
+    assert.equal(completed.trials.find((item) => item.variant === 'single_agent').metrics.cachedInputTokens, 30)
   } finally {
     await database.close()
   }
