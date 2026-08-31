@@ -150,7 +150,11 @@ Evaluation intentionally collected the successful Trial while its Mission was
 `reviewing`: all Tasks had passed Evidence, independent Review, and Integration,
 but the Mission state machine still requires a Workspace human to approve the
 latest exact Artifact Version before the Mission can become `completed`. This
-is the final human delivery gate, not an Integration failure. After collection,
-all six API-owned Worker processes were safely stopped. Provider pricing was
-left out of scope; durable call and token counters remain available for usage
-analysis.
+is the final human delivery gate, not an Integration failure. The Workspace
+human subsequently approved exact Version
+`artifact_version_04f8178c-5cba-4967-9f58-669f8e2c9002` through the ordinary API
+at `2026-08-31T07:51:29.523Z`; PostgreSQL persisted the `mission_delivery`
+Approval and a correlated `reviewing -> completed` domain event. After
+collection, all six API-owned Worker processes were safely stopped. Provider
+pricing was left out of scope; durable call and token counters remain available
+for usage analysis.
