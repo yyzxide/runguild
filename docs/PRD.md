@@ -152,6 +152,9 @@ Expected flow:
 - Reports show success, wall time, cost, tokens, attempts, Tool failures,
   review churn, context usage, and paired multi-minus-single deltas.
 - Scores are derived from execution ledgers rather than Agent-authored output.
+- The Chinese operator Lab lists only the current Project's immutable Scenario
+  Versions and Experiments, creates paired runs from an exact Version, and
+  exposes queued/running/failed/completed Trial state without sample metrics.
 
 ## 7. Non-functional requirements
 

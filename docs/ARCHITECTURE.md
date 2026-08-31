@@ -211,7 +211,7 @@ replay preserve the same window.
 | Tool side effects | PostgreSQL tool execution record plus target system | Event stream |
 | Run trace and cost | PostgreSQL | In-memory telemetry buffer |
 | Project-scoped redacted Run Trace query | PostgreSQL agent_runs/events/LLM/tool ledgers | Web Trace projection |
-| Evaluation Scenario, Trial, and report inputs | PostgreSQL immutable Scenario Version plus Run ledgers | Report projection |
+| Project-scoped Evaluation Scenario, Trial, and report inputs | PostgreSQL immutable Scenario Version plus Run ledgers | Rebuildable Web report projection |
 
 ## 5. Mission execution flow
 
@@ -490,7 +490,12 @@ An Evaluation Scenario separates the benchmark definition from an execution:
 Scenario Version immutability prevents a benchmark from changing after Trials
 start. Trial materialization uses expiring leases and fencing tokens; a stale
 worker cannot attach a different Mission. Reports are projections and can be
-rebuilt from the Trial metrics and underlying ledgers.
+rebuilt from the Trial metrics and underlying ledgers. The operator API and Web
+Lab list Scenario Versions and Experiments only through a combined
+Workspace/Project scope; an Experiment id from another Project is not a valid
+report lookup even when both Projects belong to the same Workspace. Trial
+errors and lifecycle timestamps are returned as bounded operational facts so a
+failed harness can be diagnosed without reading raw model content.
 
 ## 10. Current model execution
 

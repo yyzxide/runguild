@@ -164,10 +164,11 @@ The control-plane foundation is executable:
   Mission can move from `reviewing` to `completed`;
 - a real Team Room with message selection and Planner-to-Mission progress,
   explicit Agent recipient selection and delivery routing, plus a live Mission
-  dependency cockpit; the Trace surface now reads the real project-scoped Run
-  Trace query API with redacted/摘要 data; Artifact and Evaluation surfaces
-  remain secondary prototypes until their query APIs replace the sample
-  projections;
+  dependency cockpit; the Trace surface reads the real project-scoped Run
+  ledger with redacted/摘要 data, while the Evaluation Lab lists immutable
+  Scenario Versions and project-scoped Experiments, creates paired Trials, and
+  rebuilds reports from real persisted metrics; only the Artifact surface still
+  contains a secondary sample projection;
 - PostgreSQL/PGlite migration and orchestration tests.
 
 The local suite covers protocol, migrations, Conversation routing, Mission
@@ -381,8 +382,10 @@ POST /api/v1/workspaces/:workspaceId/submissions/:submissionId/review
 GET  /api/v1/workspaces/:workspaceId/submissions/:submissionId
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-scenarios
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-scenarios/:scenarioId/versions
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-scenario-versions
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments
-GET  /api/v1/workspaces/:workspaceId/evaluation-experiments/:experimentId/report
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments/:experimentId/report
 ~~~
 
 The current WebSocket authentication adapter mirrors the REST development

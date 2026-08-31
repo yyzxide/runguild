@@ -44,9 +44,3 @@ export const evidenceFacts: readonly EvidenceFact[] = [
   { id: 'event-07', taskId: 'tests', sequence: '07', time: '下一步', kind: '调度', title: '验证 Agent 等待已审查 HEAD', detail: '依赖门禁仍未打开', state: 'pending' },
 ]
 
-export const experiments = [
-  { repetition: '配对 01', single: { success: true, cost: 1.82, time: 31 }, multi: { success: true, cost: 1.44, time: 24 } },
-  { repetition: '配对 02', single: { success: false, cost: 2.31, time: 38 }, multi: { success: true, cost: 1.71, time: 27 } },
-  { repetition: '配对 03', single: { success: true, cost: 1.96, time: 35 }, multi: { success: true, cost: 1.58, time: 25 } },
-] as const
-

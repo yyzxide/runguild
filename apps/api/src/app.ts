@@ -93,7 +93,8 @@ type ReviewerExecutionControlService = Pick<ReviewerExecutionRepository, 'retryF
 type SkillService = Pick<SkillRepository, 'create' | 'createVersion' | 'assign' | 'listForAgent'>
 type EvaluationService = Pick<
   EvaluationRepository,
-  'createExperiment' | 'createScenario' | 'createScenarioVersion' | 'getExperiment'
+  'createExperiment' | 'createScenario' | 'createScenarioVersion' | 'getExperiment' |
+  'listExperiments' | 'listScenarioVersions'
 >
 type RunTraceService = Pick<RunTraceRepository, 'listRecentRuns' | 'getRun'>
 type ArtifactService = Pick<
@@ -1079,6 +1080,28 @@ export function createApiApp(dependencies: ApiDependencies) {
     }),
   )
 
+  app.get(
+    '/api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-scenario-versions',
+    route(async (req, res) => {
+      const actorRef = requestActor(req, res)
+      if (!actorRef) return
+      if (actorRef.kind !== 'user') {
+        res.status(403).json({ error: { code: 'human_evaluation_view_required' } })
+        return
+      }
+      const workspaceId = idSchema.parse(req.params.workspaceId) as WorkspaceId
+      const projectId = idSchema.parse(req.params.projectId) as ProjectId
+      await dependencies.artifacts.authorizeActor({ workspaceId, actor: actorRef })
+      const limit = z.coerce.number().int().min(1).max(100).default(50).parse(req.query.limit ?? 50)
+      const scenarioVersions = await dependencies.evaluations.listScenarioVersions({
+        workspaceId,
+        projectId,
+        limit,
+      })
+      res.json({ scenarioVersions })
+    }),
+  )
+
   app.post(
     '/api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-scenarios/:scenarioId/versions',
     route(async (req, res) => {
@@ -1142,14 +1165,38 @@ export function createApiApp(dependencies: ApiDependencies) {
   )
 
   app.get(
-    '/api/v1/workspaces/:workspaceId/evaluation-experiments/:experimentId/report',
+    '/api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments',
     route(async (req, res) => {
       const actorRef = requestActor(req, res)
       if (!actorRef) return
+      if (actorRef.kind !== 'user') {
+        res.status(403).json({ error: { code: 'human_evaluation_view_required' } })
+        return
+      }
       const workspaceId = idSchema.parse(req.params.workspaceId) as WorkspaceId
+      const projectId = idSchema.parse(req.params.projectId) as ProjectId
+      await dependencies.artifacts.authorizeActor({ workspaceId, actor: actorRef })
+      const limit = z.coerce.number().int().min(1).max(100).default(20).parse(req.query.limit ?? 20)
+      const experiments = await dependencies.evaluations.listExperiments({ workspaceId, projectId, limit })
+      res.json({ experiments })
+    }),
+  )
+
+  app.get(
+    '/api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments/:experimentId/report',
+    route(async (req, res) => {
+      const actorRef = requestActor(req, res)
+      if (!actorRef) return
+      if (actorRef.kind !== 'user') {
+        res.status(403).json({ error: { code: 'human_evaluation_view_required' } })
+        return
+      }
+      const workspaceId = idSchema.parse(req.params.workspaceId) as WorkspaceId
+      const projectId = idSchema.parse(req.params.projectId) as ProjectId
       await dependencies.artifacts.authorizeActor({ workspaceId, actor: actorRef })
       const experiment: EvaluationExperimentSnapshot | null = await dependencies.evaluations.getExperiment(
         workspaceId,
+        projectId,
         idSchema.parse(req.params.experimentId) as EvaluationExperimentId,
       )
       if (!experiment) {

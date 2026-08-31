@@ -36,13 +36,16 @@ interface TrialRow {
   readonly status: EvaluationTrialStatus
   readonly mission_id: string | null
   readonly metrics: EvaluationTrialMetrics | null
+  readonly error: Readonly<Record<string, unknown>> | null
   readonly created_at: Date
+  readonly started_at: Date | null
   readonly completed_at: Date | null
+  readonly updated_at: Date
 }
 
 const TRIAL_COLUMNS =
   'id, experiment_id, scenario_version_id, workspace_id, project_id, variant, ' +
-  'repetition, seed, status, mission_id, metrics, created_at, completed_at'
+  'repetition, seed, status, mission_id, metrics, error, created_at, started_at, completed_at, updated_at'
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex')
@@ -61,8 +64,11 @@ function asTrial(row: TrialRow): EvaluationTrial {
     status: row.status,
     ...(row.mission_id === null ? {} : { missionId: row.mission_id as MissionId }),
     ...(row.metrics === null ? {} : { metrics: row.metrics }),
+    ...(row.error === null ? {} : { error: row.error }),
     createdAt: row.created_at.toISOString() as IsoTimestamp,
+    ...(row.started_at === null ? {} : { startedAt: row.started_at.toISOString() as IsoTimestamp }),
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at.toISOString() as IsoTimestamp }),
+    updatedAt: row.updated_at.toISOString() as IsoTimestamp,
   }
 }
 
@@ -85,6 +91,37 @@ export interface EvaluationExperimentSnapshot {
   readonly repetitions: number
   readonly variants: readonly EvaluationVariant[]
   readonly trials: readonly EvaluationTrial[]
+}
+
+export interface EvaluationScenarioVersionSummary {
+  readonly id: EvaluationScenarioVersionId
+  readonly scenarioId: EvaluationScenarioId
+  readonly scenarioName: string
+  readonly scenarioDescription: string
+  readonly version: number
+  readonly definitionHash: string
+  readonly baselineCommit: string
+  readonly singleAgentTaskCount: number
+  readonly multiAgentTaskCount: number
+  readonly createdAt: IsoTimestamp
+}
+
+export interface EvaluationExperimentSummary {
+  readonly id: EvaluationExperimentId
+  readonly scenarioId: EvaluationScenarioId
+  readonly scenarioVersionId: EvaluationScenarioVersionId
+  readonly scenarioName: string
+  readonly name: string
+  readonly status: EvaluationExperimentStatus
+  readonly repetitions: number
+  readonly variants: readonly EvaluationVariant[]
+  readonly baselineCommit: string
+  readonly trialCount: number
+  readonly completedTrialCount: number
+  readonly failedTrialCount: number
+  readonly activeTrialCount: number
+  readonly createdAt: IsoTimestamp
+  readonly updatedAt: IsoTimestamp
 }
 
 function assertVariants(variants: readonly EvaluationVariant[]): void {
@@ -242,9 +279,113 @@ export class EvaluationRepository {
         }
       }
     })
-    const snapshot = await this.getExperiment(input.workspaceId, experimentId)
+    const snapshot = await this.getExperiment(input.workspaceId, input.projectId, experimentId)
     if (!snapshot) throw new Error('Evaluation Experiment was not persisted')
     return snapshot
+  }
+
+  async listScenarioVersions(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
+    readonly limit: number
+  }): Promise<readonly EvaluationScenarioVersionSummary[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new RangeError('Evaluation Scenario Version limit must be between 1 and 100')
+    }
+    const result = await this.pool.query<{
+      id: string
+      scenario_id: string
+      scenario_name: string
+      scenario_description: string
+      version: number
+      definition_hash: string
+      baseline_commit: string
+      single_agent_task_count: number
+      multi_agent_task_count: number
+      created_at: Date
+    }>(
+      'SELECT v.id, v.scenario_id, s.name AS scenario_name, s.description AS scenario_description, ' +
+      "v.version, v.definition_hash, v.definition->>'baselineCommit' AS baseline_commit, " +
+      "jsonb_array_length(v.definition->'singleAgentPlan'->'tasks')::int AS single_agent_task_count, " +
+      "jsonb_array_length(v.definition->'multiAgentPlan'->'tasks')::int AS multi_agent_task_count, " +
+      'v.created_at FROM evaluation_scenario_versions v ' +
+      'JOIN evaluation_scenarios s ON s.id = v.scenario_id ' +
+      "WHERE v.workspace_id = $1 AND v.project_id = $2 AND s.status = 'active' " +
+      'ORDER BY v.created_at DESC, v.id LIMIT $3',
+      [input.workspaceId, input.projectId, input.limit],
+    )
+    return result.rows.map((row) => ({
+      id: row.id as EvaluationScenarioVersionId,
+      scenarioId: row.scenario_id as EvaluationScenarioId,
+      scenarioName: row.scenario_name,
+      scenarioDescription: row.scenario_description,
+      version: row.version,
+      definitionHash: row.definition_hash,
+      baselineCommit: row.baseline_commit,
+      singleAgentTaskCount: row.single_agent_task_count,
+      multiAgentTaskCount: row.multi_agent_task_count,
+      createdAt: row.created_at.toISOString() as IsoTimestamp,
+    }))
+  }
+
+  async listExperiments(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
+    readonly limit: number
+  }): Promise<readonly EvaluationExperimentSummary[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new RangeError('Evaluation Experiment limit must be between 1 and 100')
+    }
+    const result = await this.pool.query<{
+      id: string
+      scenario_id: string
+      scenario_version_id: string
+      scenario_name: string
+      name: string
+      status: EvaluationExperimentStatus
+      repetitions: number
+      variants: EvaluationVariant[]
+      baseline_commit: string
+      trial_count: number
+      completed_trial_count: number
+      failed_trial_count: number
+      active_trial_count: number
+      created_at: Date
+      updated_at: Date
+    }>(
+      'SELECT e.id, v.scenario_id, e.scenario_version_id, s.name AS scenario_name, e.name, ' +
+      "e.status, e.repetitions, e.variants, v.definition->>'baselineCommit' AS baseline_commit, " +
+      '(SELECT COUNT(*)::int FROM evaluation_trials t WHERE t.experiment_id = e.id) AS trial_count, ' +
+      "(SELECT COUNT(*)::int FROM evaluation_trials t WHERE t.experiment_id = e.id AND t.status = 'completed') " +
+      'AS completed_trial_count, ' +
+      "(SELECT COUNT(*)::int FROM evaluation_trials t WHERE t.experiment_id = e.id AND t.status = 'failed') " +
+      'AS failed_trial_count, ' +
+      "(SELECT COUNT(*)::int FROM evaluation_trials t WHERE t.experiment_id = e.id " +
+      "AND t.status IN ('materializing', 'running')) AS active_trial_count, " +
+      'e.created_at, e.updated_at FROM evaluation_experiments e ' +
+      'JOIN evaluation_scenario_versions v ON v.id = e.scenario_version_id ' +
+      'JOIN evaluation_scenarios s ON s.id = v.scenario_id ' +
+      'WHERE e.workspace_id = $1 AND e.project_id = $2 ' +
+      'ORDER BY e.updated_at DESC, e.id LIMIT $3',
+      [input.workspaceId, input.projectId, input.limit],
+    )
+    return result.rows.map((row) => ({
+      id: row.id as EvaluationExperimentId,
+      scenarioId: row.scenario_id as EvaluationScenarioId,
+      scenarioVersionId: row.scenario_version_id as EvaluationScenarioVersionId,
+      scenarioName: row.scenario_name,
+      name: row.name,
+      status: row.status,
+      repetitions: row.repetitions,
+      variants: row.variants,
+      baselineCommit: row.baseline_commit,
+      trialCount: row.trial_count,
+      completedTrialCount: row.completed_trial_count,
+      failedTrialCount: row.failed_trial_count,
+      activeTrialCount: row.active_trial_count,
+      createdAt: row.created_at.toISOString() as IsoTimestamp,
+      updatedAt: row.updated_at.toISOString() as IsoTimestamp,
+    }))
   }
 
   async reserveMaterialization(input: {
@@ -368,6 +509,7 @@ export class EvaluationRepository {
 
   async getExperiment(
     workspaceId: WorkspaceId,
+    projectId: ProjectId,
     experimentId: EvaluationExperimentId,
   ): Promise<EvaluationExperimentSnapshot | null> {
     const experiment = await this.pool.query<{
@@ -384,8 +526,8 @@ export class EvaluationRepository {
       'SELECT e.id, e.workspace_id, e.project_id, v.scenario_id, e.scenario_version_id, ' +
       'e.name, e.status, e.repetitions, e.variants ' +
       'FROM evaluation_experiments e JOIN evaluation_scenario_versions v ON v.id = e.scenario_version_id ' +
-      'WHERE e.id = $1 AND e.workspace_id = $2',
-      [experimentId, workspaceId],
+      'WHERE e.id = $1 AND e.workspace_id = $2 AND e.project_id = $3',
+      [experimentId, workspaceId, projectId],
     )
     const row = experiment.rows[0]
     if (!row) return null

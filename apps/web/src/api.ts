@@ -182,6 +182,108 @@ export interface RunTraceDetail extends RunTraceSummary {
   readonly toolExecutions: readonly RunTraceToolExecutionSummary[]
 }
 
+export type EvaluationVariant = 'single_agent' | 'multi_agent'
+export type EvaluationStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type EvaluationTrialStatus = 'queued' | 'materializing' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface EvaluationScenarioVersionSummary {
+  readonly id: string
+  readonly scenarioId: string
+  readonly scenarioName: string
+  readonly scenarioDescription: string
+  readonly version: number
+  readonly definitionHash: string
+  readonly baselineCommit: string
+  readonly singleAgentTaskCount: number
+  readonly multiAgentTaskCount: number
+  readonly createdAt: string
+}
+
+export interface EvaluationExperimentSummary {
+  readonly id: string
+  readonly scenarioId: string
+  readonly scenarioVersionId: string
+  readonly scenarioName: string
+  readonly name: string
+  readonly status: EvaluationStatus
+  readonly repetitions: number
+  readonly variants: readonly EvaluationVariant[]
+  readonly baselineCommit: string
+  readonly trialCount: number
+  readonly completedTrialCount: number
+  readonly failedTrialCount: number
+  readonly activeTrialCount: number
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface EvaluationTrialMetrics {
+  readonly success: boolean
+  readonly taskCompletionRate: number
+  readonly wallTimeMs: number
+  readonly taskCount: number
+  readonly runAttempts: number
+  readonly reworkAttempts: number
+  readonly modelCalls: number
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cachedInputTokens: number
+  readonly estimatedCostUsd: number
+  readonly toolCalls: number
+  readonly toolFailures: number
+  readonly reviewChangesRequested: number
+  readonly contextSnapshots: number
+  readonly compactedContexts: number
+  readonly estimatedContextTokens: number
+}
+
+export interface EvaluationTrial {
+  readonly id: string
+  readonly experimentId: string
+  readonly scenarioVersionId: string
+  readonly workspaceId: string
+  readonly projectId: string
+  readonly variant: EvaluationVariant
+  readonly repetition: number
+  readonly seed: string
+  readonly status: EvaluationTrialStatus
+  readonly missionId?: string
+  readonly metrics?: EvaluationTrialMetrics
+  readonly error?: Readonly<Record<string, unknown>>
+  readonly createdAt: string
+  readonly startedAt?: string
+  readonly completedAt?: string
+  readonly updatedAt: string
+}
+
+export interface EvaluationVariantAggregate {
+  readonly variant: EvaluationVariant
+  readonly completedTrials: number
+  readonly successfulTrials: number
+  readonly successRate: number
+  readonly meanWallTimeMs: number
+  readonly medianWallTimeMs: number
+  readonly meanCostUsd: number
+  readonly totalCostUsd: number
+  readonly meanInputTokens: number
+  readonly meanOutputTokens: number
+  readonly meanReworkAttempts: number
+}
+
+export interface EvaluationExperimentReport {
+  readonly experimentId: string
+  readonly scenarioId: string
+  readonly scenarioVersionId: string
+  readonly status: EvaluationStatus
+  readonly repetitions: number
+  readonly variants: readonly EvaluationVariantAggregate[]
+  readonly pairedTrials: number
+  readonly pairedSuccessDelta: number
+  readonly pairedMeanCostDeltaUsd: number
+  readonly pairedMeanWallTimeDeltaMs: number
+  readonly trials: readonly EvaluationTrial[]
+}
+
 export type WorkerKind = 'scheduler' | 'agent' | 'integration' | 'evaluation'
 
 export interface ProjectRuntimeConfiguration {
@@ -378,6 +480,50 @@ export const missionApi = {
   getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
     return request(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces/${encodeURIComponent(runId)}`,
+      { headers: actorHeaders(identity.userId) },
+    )
+  },
+
+  async listEvaluationScenarioVersions(
+    identity: TestIdentity,
+  ): Promise<readonly EvaluationScenarioVersionSummary[]> {
+    const result = await request<{ readonly scenarioVersions: readonly EvaluationScenarioVersionSummary[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/evaluation-scenario-versions`,
+      { headers: actorHeaders(identity.userId) },
+    )
+    return result.scenarioVersions
+  },
+
+  async listEvaluationExperiments(
+    identity: TestIdentity,
+  ): Promise<readonly EvaluationExperimentSummary[]> {
+    const result = await request<{ readonly experiments: readonly EvaluationExperimentSummary[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/evaluation-experiments`,
+      { headers: actorHeaders(identity.userId) },
+    )
+    return result.experiments
+  },
+
+  createEvaluationExperiment(
+    identity: TestIdentity,
+    input: { readonly scenarioVersionId: string; readonly name: string; readonly repetitions: number },
+  ): Promise<{ readonly id: string }> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/evaluation-experiments`,
+      {
+        method: 'POST',
+        headers: actorHeaders(identity.userId),
+        body: JSON.stringify(input),
+      },
+    )
+  },
+
+  getEvaluationReport(
+    identity: TestIdentity,
+    experimentId: string,
+  ): Promise<EvaluationExperimentReport> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/evaluation-experiments/${encodeURIComponent(experimentId)}/report`,
       { headers: actorHeaders(identity.userId) },
     )
   },

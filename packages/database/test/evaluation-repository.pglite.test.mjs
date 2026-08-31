@@ -227,7 +227,25 @@ test('paired trials materialize real Missions, freeze the Git baseline, collect 
       collected: 0,
       successful: 0,
     })
-    const running = await repository.getExperiment('ws_eval', created.id)
+    const versions = await repository.listScenarioVersions({
+      workspaceId: 'ws_eval', projectId: 'project_eval', limit: 10,
+    })
+    assert.equal(versions.length, 1)
+    assert.equal(versions[0].baselineCommit, definition.baselineCommit)
+    assert.equal(versions[0].singleAgentTaskCount, 1)
+    assert.equal(versions[0].multiAgentTaskCount, 2)
+    const summaries = await repository.listExperiments({
+      workspaceId: 'ws_eval', projectId: 'project_eval', limit: 10,
+    })
+    assert.equal(summaries.length, 1)
+    assert.equal(summaries[0].trialCount, 2)
+    assert.equal(summaries[0].completedTrialCount, 0)
+    assert.deepEqual(await repository.listExperiments({
+      workspaceId: 'ws_eval', projectId: 'project_foreign', limit: 10,
+    }), [])
+    assert.equal(await repository.getExperiment('ws_eval', 'project_foreign', created.id), null)
+
+    const running = await repository.getExperiment('ws_eval', 'project_eval', created.id)
     assert.equal(running.status, 'running')
     for (const trial of running.trials) {
       assert.ok(trial.missionId)
@@ -246,7 +264,7 @@ test('paired trials materialize real Missions, freeze the Git baseline, collect 
     })
     assert.equal(secondTick.collected, 2)
     assert.equal(secondTick.successful, 2)
-    const completed = await repository.getExperiment('ws_eval', created.id)
+    const completed = await repository.getExperiment('ws_eval', 'project_eval', created.id)
     assert.equal(completed.status, 'completed')
     const report = buildEvaluationReport(completed)
     assert.equal(report.pairedTrials, 1)

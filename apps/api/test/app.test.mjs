@@ -513,6 +513,35 @@ function fakeEvaluations() {
   return {
     calls,
     service: {
+      async listScenarioVersions(input) {
+        calls.push(['evaluation.versions.list', input])
+        return [{
+          id: 'evaluation_scenario_version_api',
+          scenarioId: 'evaluation_scenario_api',
+          scenarioName: 'Single vs multi Agent',
+          scenarioDescription: '',
+          version: 1,
+          definitionHash: 'e'.repeat(64),
+          baselineCommit: 'a'.repeat(40),
+          singleAgentTaskCount: 1,
+          multiAgentTaskCount: 2,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        }]
+      },
+      async listExperiments(input) {
+        calls.push(['evaluation.experiments.list', input])
+        return [{
+          ...experiment,
+          scenarioName: 'Single vs multi Agent',
+          baselineCommit: 'a'.repeat(40),
+          trialCount: 0,
+          completedTrialCount: 0,
+          failedTrialCount: 0,
+          activeTrialCount: 0,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        }]
+      },
       async createScenario(input) {
         calls.push(['evaluation.scenario', input])
         return input.id ?? 'evaluation_scenario_api'
@@ -530,9 +559,9 @@ function fakeEvaluations() {
         calls.push(['evaluation.experiment', input])
         return experiment
       },
-      async getExperiment(workspaceId, experimentId) {
-        calls.push(['evaluation.report', { workspaceId, experimentId }])
-        return experiment
+      async getExperiment(workspaceId, projectId, experimentId) {
+        calls.push(['evaluation.report', { workspaceId, projectId, experimentId }])
+        return projectId === experiment.projectId ? experiment : null
       },
     },
   }
@@ -988,12 +1017,34 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     )
     assert.equal(experiment.status, 201)
 
+    const scenarioVersions = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/projects/project/evaluation-scenario-versions',
+      { headers: { 'x-actor-id': 'user_api' } },
+    )
+    assert.equal(scenarioVersions.status, 200)
+    assert.equal((await scenarioVersions.json()).scenarioVersions[0].singleAgentTaskCount, 1)
+
+    const experimentList = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/projects/project/evaluation-experiments',
+      { headers: { 'x-actor-id': 'user_api' } },
+    )
+    assert.equal(experimentList.status, 200)
+    assert.equal((await experimentList.json()).experiments[0].id, 'evaluation_experiment_api')
+
     const evaluationReport = await fetch(
-      baseUrl + '/api/v1/workspaces/ws/evaluation-experiments/evaluation_experiment_api/report',
+      baseUrl + '/api/v1/workspaces/ws/projects/project/evaluation-experiments/' +
+      'evaluation_experiment_api/report',
       { headers: { 'x-actor-id': 'user_api' } },
     )
     assert.equal(evaluationReport.status, 200)
     assert.equal((await evaluationReport.json()).pairedTrials, 0)
+
+    const foreignProjectReport = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/projects/project_foreign/evaluation-experiments/' +
+      'evaluation_experiment_api/report',
+      { headers: { 'x-actor-id': 'user_api' } },
+    )
+    assert.equal(foreignProjectReport.status, 404)
 
     const artifact = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project/artifacts', {
       method: 'POST',
@@ -1120,6 +1171,9 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     'evaluation.scenario',
     'evaluation.version',
     'evaluation.experiment',
+    'evaluation.versions.list',
+    'evaluation.experiments.list',
+    'evaluation.report',
     'evaluation.report',
   ])
   assert.equal(development.calls.length, 1)

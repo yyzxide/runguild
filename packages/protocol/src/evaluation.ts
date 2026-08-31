@@ -125,8 +125,11 @@ export interface EvaluationTrial {
   readonly status: EvaluationTrialStatus
   readonly missionId?: MissionId
   readonly metrics?: EvaluationTrialMetrics
+  readonly error?: Readonly<Record<string, unknown>>
   readonly createdAt: IsoTimestamp
+  readonly startedAt?: IsoTimestamp
   readonly completedAt?: IsoTimestamp
+  readonly updatedAt: IsoTimestamp
 }
 
 export interface EvaluationVariantAggregate {
