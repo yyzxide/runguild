@@ -99,7 +99,8 @@ type EvaluationService = Pick<
 type RunTraceService = Pick<RunTraceRepository, 'listRecentRuns' | 'getRun'>
 type ArtifactService = Pick<
   ArtifactRepository,
-  'authorizeActor' | 'create' | 'appendUpdate' | 'syncState' | 'createVersion' | 'readVersion'
+  'authorizeActor' | 'create' | 'listProject' | 'getProjectArtifact' | 'appendUpdate' |
+    'syncState' | 'createVersion' | 'readVersion'
 >
 
 export interface ApiDependencies {
@@ -239,6 +240,11 @@ const createArtifactSchema = z.object({
   missionId: idSchema.optional(),
   title: z.string().min(1).max(200),
   kind: z.string().min(1).max(64).optional(),
+})
+
+const listArtifactsQuerySchema = z.object({
+  missionId: idSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
 })
 
 const appendArtifactUpdateSchema = z.object({
@@ -1206,6 +1212,59 @@ export function createApiApp(dependencies: ApiDependencies) {
       res.json(buildEvaluationReport(experiment))
     }),
   )
+
+  app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/artifacts', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    const query = listArtifactsQuerySchema.safeParse(req.query)
+    if (!query.success) {
+      invalidBody(res, query.error)
+      return
+    }
+    const workspaceId = idSchema.parse(req.params.workspaceId) as WorkspaceId
+    const projectId = idSchema.parse(req.params.projectId) as ProjectId
+    await dependencies.artifacts.authorizeActor({ workspaceId, actor: actorRef })
+    const artifacts = await dependencies.artifacts.listProject({
+      workspaceId,
+      projectId,
+      ...(query.data.missionId === undefined ? {} : { missionId: query.data.missionId as MissionId }),
+      limit: query.data.limit,
+    })
+    res.json({
+      artifacts: artifacts.map((artifact) => ({
+        ...artifact,
+        throughUpdateSeq: artifact.throughUpdateSeq.toString(),
+        latestVersion: artifact.latestVersion
+          ? { ...artifact.latestVersion, throughUpdateSeq: artifact.latestVersion.throughUpdateSeq.toString() }
+          : null,
+      })),
+    })
+  }))
+
+  app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/artifacts/:artifactId', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    const workspaceId = idSchema.parse(req.params.workspaceId) as WorkspaceId
+    const projectId = idSchema.parse(req.params.projectId) as ProjectId
+    await dependencies.artifacts.authorizeActor({ workspaceId, actor: actorRef })
+    const detail = await dependencies.artifacts.getProjectArtifact({
+      workspaceId,
+      projectId,
+      artifactId: idSchema.parse(req.params.artifactId) as ArtifactId,
+    })
+    if (!detail) {
+      res.status(404).json({ error: { code: 'artifact_not_found' } })
+      return
+    }
+    res.json({
+      ...detail,
+      live: { ...detail.live, throughUpdateSeq: detail.live.throughUpdateSeq.toString() },
+      versions: detail.versions.map((version) => ({
+        ...version,
+        throughUpdateSeq: version.throughUpdateSeq.toString(),
+      })),
+    })
+  }))
 
   app.post('/api/v1/workspaces/:workspaceId/projects/:projectId/artifacts', route(async (req, res) => {
     const actorRef = requestActor(req, res)

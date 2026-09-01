@@ -259,6 +259,36 @@ test('Artifact Versions freeze exact Yjs state and remain unchanged after later 
       createdBy: { kind: 'user', id: 'user_editor' },
     })
     assert.equal(replay.id, versionTwo.id)
+
+    const projectArtifacts = await repository.listProject({
+      workspaceId: 'ws_collab',
+      projectId: 'project_collab',
+      missionId: 'mission_collab',
+      limit: 20,
+    })
+    const listed = projectArtifacts.find((artifact) => artifact.id === 'artifact_versions')
+    assert.ok(listed)
+    assert.equal(listed.versionCount, 2)
+    assert.equal(listed.latestVersion?.id, 'artifact_version_two')
+    assert.equal(listed.throughUpdateSeq, versionTwo.throughUpdateSeq)
+
+    const detail = await repository.getProjectArtifact({
+      workspaceId: 'ws_collab',
+      projectId: 'project_collab',
+      artifactId: 'artifact_versions',
+    })
+    assert.ok(detail)
+    assert.equal(visibleText(detail.live.content), 'Version oneVersion two')
+    assert.equal(detail.live.throughUpdateSeq, versionTwo.throughUpdateSeq)
+    assert.deepEqual(detail.versions.map((version) => version.id), [
+      'artifact_version_two',
+      'artifact_version_one',
+    ])
+    assert.equal(await repository.getProjectArtifact({
+      workspaceId: 'ws_collab',
+      projectId: 'project_other',
+      artifactId: 'artifact_versions',
+    }), null)
     await assert.rejects(
       database.query(
         "UPDATE artifact_versions SET content = '{\"type\":\"doc\"}'::jsonb " +

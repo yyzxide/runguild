@@ -101,8 +101,9 @@ The control-plane foundation is executable:
   compaction;
 - immutable Artifact Versions that bind a canonical ProseMirror JSON projection
   to the exact Yjs binary state and reject later mutation;
-- tenant-scoped Artifact APIs whose user/Agent origins are constructed and
-  verified server-side;
+- tenant-scoped Artifact command APIs whose user/Agent origins are constructed
+  and verified server-side, plus exact-Project list and detail projections that
+  reconstruct LIVE Yjs state and immutable Version history;
 - a deterministic primary `mission_deliverable` Artifact for every Mission,
   including idempotent repair when an older Mission first freezes a Run
   context; exact Artifact ids and review requirements are frozen into that
@@ -186,17 +187,17 @@ The control-plane foundation is executable:
   dependency cockpit; the Trace surface reads the real project-scoped Run
   ledger with redacted/摘要 data, while the Evaluation Lab lists immutable
   Scenario Versions and project-scoped Experiments, creates paired Trials, and
-  rebuilds reports from real persisted metrics; only the Artifact surface still
-  contains a secondary sample projection;
+  rebuilds reports from real persisted metrics; the Artifact surface queries
+  the Project's real LIVE Yjs state and Version ledger, switches between exact
+  immutable slices, and freezes a new Version only from LIVE state;
 - PostgreSQL/PGlite migration and orchestration tests.
 
 The local suite covers protocol, migrations, Conversation routing, Mission
 orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
 and API contracts. The external PostgreSQL integration test remains opt-in.
 The next implementation slices repeat the real-model benchmark after closing
-its usage-accounting gaps, replace the remaining Artifact sample projection,
-and complete production identity, deployment, horizontal worker fencing, and
-cross-instance collaboration fan-out.
+its usage-accounting gaps, and complete production identity, deployment,
+horizontal worker fencing, and cross-instance collaboration fan-out.
 
 ## Repository layout
 
@@ -421,6 +422,8 @@ POST /api/v1/workspaces/:workspaceId/skills/:skillId/versions
 PUT  /api/v1/workspaces/:workspaceId/agents/:agentId/skills/:skillId
 GET  /api/v1/workspaces/:workspaceId/agents/:agentId/skills
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/artifacts
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/artifacts
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/artifacts/:artifactId
 POST /api/v1/workspaces/:workspaceId/artifacts/:artifactId/updates
 GET  /api/v1/workspaces/:workspaceId/artifacts/:artifactId/sync
 POST /api/v1/workspaces/:workspaceId/artifacts/:artifactId/versions

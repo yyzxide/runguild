@@ -347,6 +347,40 @@ function fakeArtifacts() {
     calls,
     service: {
       async authorizeActor() {},
+      async listProject(input) {
+        calls.push(['artifact.list', input])
+        return [{
+          id: 'artifact_api', workspaceId: input.workspaceId, projectId: input.projectId,
+          missionId: 'mission_created', title: 'Shared report', kind: 'document', createdBy: 'user_api',
+          createdAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+          throughUpdateSeq: 7n, versionCount: 1,
+          latestVersion: {
+            id: 'artifact_version_api', artifactId: 'artifact_api', version: 1,
+            contentHash: 'content_hash', yjsStateHash: 'state_hash', throughUpdateSeq: 7n,
+            createdBy: { kind: 'user', id: 'user_api' }, createdAt: '2030-01-01T00:00:00.000Z',
+          },
+        }]
+      },
+      async getProjectArtifact(input) {
+        calls.push(['artifact.detail', input])
+        if (input.artifactId !== 'artifact_api') return null
+        return {
+          artifact: {
+            id: 'artifact_api', workspaceId: input.workspaceId, projectId: input.projectId,
+            missionId: 'mission_created', title: 'Shared report', kind: 'document', createdBy: 'user_api',
+            createdAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+          },
+          live: {
+            content: { type: 'doc', content: [] }, stateHash: 'state_hash', stateBytes: 3,
+            throughUpdateSeq: 7n,
+          },
+          versions: [{
+            id: 'artifact_version_api', artifactId: 'artifact_api', version: 1,
+            contentHash: 'content_hash', yjsStateHash: 'state_hash', throughUpdateSeq: 7n,
+            createdBy: { kind: 'user', id: 'user_api' }, createdAt: '2030-01-01T00:00:00.000Z',
+          }],
+        }
+      },
       async create(input) {
         calls.push(['artifact.create', input])
         return {
@@ -1057,6 +1091,27 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal(artifact.status, 201)
     assert.equal((await artifact.json()).id, 'artifact_api')
 
+    const artifactList = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project/artifacts?limit=20', {
+      headers: { 'x-actor-id': 'user_api' },
+    })
+    assert.equal(artifactList.status, 200)
+    assert.equal((await artifactList.json()).artifacts[0].throughUpdateSeq, '7')
+
+    const artifactDetail = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/projects/project/artifacts/artifact_api',
+      { headers: { 'x-actor-id': 'user_api' } },
+    )
+    assert.equal(artifactDetail.status, 200)
+    const artifactDetailBody = await artifactDetail.json()
+    assert.equal(artifactDetailBody.live.throughUpdateSeq, '7')
+    assert.equal(artifactDetailBody.versions[0].throughUpdateSeq, '7')
+
+    const foreignArtifactDetail = await fetch(
+      baseUrl + '/api/v1/workspaces/ws/projects/project/artifacts/foreign_artifact',
+      { headers: { 'x-actor-id': 'user_api' } },
+    )
+    assert.equal(foreignArtifactDetail.status, 404)
+
     const updated = await fetch(baseUrl + '/api/v1/workspaces/ws/artifacts/artifact_api/updates', {
       method: 'POST',
       headers: {
@@ -1151,6 +1206,9 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   assert.equal(runtime.calls[0][1].dedupeKey, 'steer_once')
   assert.deepEqual(artifacts.calls.map(([kind]) => kind), [
     'artifact.create',
+    'artifact.list',
+    'artifact.detail',
+    'artifact.detail',
     'artifact.update',
     'artifact.sync',
     'artifact.version',
@@ -1178,8 +1236,9 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   ])
   assert.equal(development.calls.length, 1)
   assert.equal(development.calls[0].workspaceName, 'Agent 实验室')
-  assert.deepEqual([...artifacts.calls[1][1].update], [1, 2, 3])
-  assert.deepEqual(artifacts.calls[1][1].origin, {
+  const artifactUpdateCall = artifacts.calls.find(([kind]) => kind === 'artifact.update')
+  assert.deepEqual([...artifactUpdateCall[1].update], [1, 2, 3])
+  assert.deepEqual(artifactUpdateCall[1].origin, {
     kind: 'user',
     userId: 'user_api',
     sessionId: 'session_api',

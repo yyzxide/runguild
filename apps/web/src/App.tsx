@@ -12,7 +12,6 @@ import {
   FileStack,
   FolderGit2,
   FlaskConical,
-  GitCommitHorizontal,
   LayoutDashboard,
   KeyRound,
   LoaderCircle,
@@ -51,6 +50,7 @@ import {
 import { MissionGraph } from './MissionGraph'
 import { type EvidenceFact, type MissionTask, type TaskStatus } from './data'
 import { EvaluationView } from './EvaluationView'
+import { ArtifactView } from './ArtifactView'
 import { TraceView } from './TraceView'
 
 type View = 'start' | 'mission' | 'team' | 'artifacts' | 'evaluation' | 'trace'
@@ -963,10 +963,6 @@ function TeamRoomView({
   )
 }
 
-function ArtifactView() {
-  return <><section className="page-heading"><div><div className="breadcrumb"><span>协作产物</span><i>/</i><code>示例 ART-19</code></div><h1>鉴权实现说明</h1><p>这是 Yjs 实时协作文档的界面示例；冻结版本可绑定到独立审查。</p></div><div className="page-actions"><StatusPill tone="active"><span className="pulse-dot" />2 位协作者</StatusPill><button className="secondary-action"><GitCommitHorizontal size={15} />版本历史</button><button className="primary-action"><ShieldCheck size={15} />冻结版本</button></div></section><div className="artifact-workspace"><aside className="outline-panel"><span className="micro-label">文档目录</span><nav aria-label="文档目录"><a className="is-active" href="#scope">范围</a><a href="#boundaries">鉴权边界</a><a href="#migration">迁移计划</a><a href="#evidence">必需证据</a><a href="#rollback">回滚方案</a></nav><div className="version-card"><span>审查目标</span><strong>版本 04</strong><code>81b7…9ac2</code><small>Mira 于 8 分钟前冻结</small></div></aside><article className="document-surface"><div className="document-presence"><span className="agent-avatar agent-avatar--executing">M</span><span>Mira 正在编辑“必需证据”</span></div><span className="document-kicker">实现说明 · 项目角色</span><h2 id="scope">在权限真正发生变化的边界上执行约束。</h2><p className="document-lede">只有当操作者、目标用户和项目都属于同一工作区时，角色分配才有效。API 构造操作者作用域，Agent 不能自行提供。</p><hr /><h3 id="boundaries">鉴权边界</h3><p>每次写入先验证工作区成员身份，再解析项目归属，最后锁定可变记录。数据库约束始终是最终权威。</p><div className="document-callout"><ShieldCheck size={19} /><div><strong>不变量</strong><p>跨项目角色不可能存在，即使 API 进程过期或被绕过。</p></div></div><h3 id="migration">迁移计划</h3><ol><li><span>01</span>用复合租户键增加项目角色分配。</li><li><span>02</span>在单个可串行化事务中回填现有所有者。</li><li><span>03</span>验证后启用作用域触发器。</li></ol><div className="agent-caret"><i /><span>Mira · Agent</span></div><h3 id="evidence">必需证据</h3><p>附加迁移输出、对抗性租户测试、精确提交 HEAD 和独立审查结论。</p></article><aside className="comments-panel"><div className="panel-heading"><div><span className="micro-label">审查讨论</span><h2>评论</h2></div><span>2 条未解决</span></div><article className="comment-card"><div><span className="agent-avatar agent-avatar--released">N</span><strong>Noa</strong><time>4分</time></div><p>触发器能否在行可见之前，证明目标项目属于同一工作区？</p><button>回复</button></article><article className="comment-card comment-card--resolved"><div><span className="agent-avatar agent-avatar--released">S</span><strong>Sana</strong><time>7分</time></div><p>请把伪造 Agent 身份的用例加入证据清单。</p><span><Check size={12} />已在 v04 解决</span></article></aside></div></>
-}
-
 function CommandPalette({ onClose, onNavigate }: { readonly onClose: () => void; readonly onNavigate: (view: View) => void }) {
   return <div className="command-backdrop" role="presentation" onMouseDown={onClose}><div className="command-palette" role="dialog" aria-modal="true" aria-label="快捷导航" onMouseDown={(event) => event.stopPropagation()}><div className="command-palette__search"><Search size={18} /><input autoFocus placeholder="查找页面或功能…" /><kbd>esc</kbd></div><span className="micro-label">可操作页面</span><div className="command-results">{primaryViews.map((key) => { const item = viewMeta[key]; const Icon = item.icon; return <button key={key} onClick={() => { onNavigate(key); onClose() }}><Icon size={17} /><span><strong>{item.label}</strong><small>{item.eyebrow}</small></span><code>↵</code></button> })}</div></div></div>
 }
@@ -1096,7 +1092,7 @@ export function App() {
     if (view === 'start') return <StartView {...startProps} />
     if (view === 'evaluation') return <EvaluationView identity={identity} />
     if (view === 'team') return <TeamRoomView identity={identity} setup={setup} mission={mission} onNavigate={navigate} onMissionReady={acceptMissionFromPlanning} />
-    if (view === 'artifacts') return <ArtifactView />
+    if (view === 'artifacts') return <ArtifactView identity={identity} missionId={mission?.id} />
     if (view === 'trace') return <TraceView identity={identity} />
     return <MissionView mission={mission} busy={busy} error={error} onNavigate={navigate} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
   // State is intentionally listed explicitly so API progress is reflected immediately.

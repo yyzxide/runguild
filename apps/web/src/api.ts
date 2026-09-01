@@ -56,6 +56,55 @@ export interface MissionSnapshot {
   }[]
 }
 
+export interface ArtifactActor {
+  readonly kind: 'user' | 'agent' | 'service' | 'system'
+  readonly id: string
+  readonly runId?: string
+}
+
+export interface ArtifactVersionSummary {
+  readonly id: string
+  readonly artifactId: string
+  readonly version: number
+  readonly contentHash: string
+  readonly yjsStateHash: string
+  readonly throughUpdateSeq: string
+  readonly createdBy: ArtifactActor
+  readonly createdByRunId?: string
+  readonly createdAt: string
+}
+
+export interface ProjectArtifactSummary {
+  readonly id: string
+  readonly workspaceId: string
+  readonly projectId: string
+  readonly missionId?: string
+  readonly title: string
+  readonly kind: string
+  readonly createdBy: string
+  readonly createdAt: string
+  readonly updatedAt: string
+  readonly throughUpdateSeq: string
+  readonly versionCount: number
+  readonly latestVersion: ArtifactVersionSummary | null
+}
+
+export interface ProjectArtifactDetail {
+  readonly artifact: Omit<ProjectArtifactSummary, 'throughUpdateSeq' | 'versionCount' | 'latestVersion'>
+  readonly live: {
+    readonly content: Readonly<Record<string, unknown>>
+    readonly stateHash: string
+    readonly stateBytes: number
+    readonly throughUpdateSeq: string
+  }
+  readonly versions: readonly ArtifactVersionSummary[]
+}
+
+export interface ArtifactVersionSnapshot extends ArtifactVersionSummary {
+  readonly content: Readonly<Record<string, unknown>>
+  readonly yjsState: string
+}
+
 export interface TestIdentity {
   readonly workspaceId: string
   readonly projectId: string
@@ -480,6 +529,39 @@ export const missionApi = {
   getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
     return request(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces/${encodeURIComponent(runId)}`,
+      { headers: actorHeaders(identity.userId) },
+    )
+  },
+
+  async listArtifacts(
+    identity: TestIdentity,
+    missionId?: string,
+  ): Promise<readonly ProjectArtifactSummary[]> {
+    const query = missionId ? `?missionId=${encodeURIComponent(missionId)}` : ''
+    const result = await request<{ readonly artifacts: readonly ProjectArtifactSummary[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/artifacts${query}`,
+      { headers: actorHeaders(identity.userId) },
+    )
+    return result.artifacts
+  },
+
+  getArtifact(identity: TestIdentity, artifactId: string): Promise<ProjectArtifactDetail> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      { headers: actorHeaders(identity.userId) },
+    )
+  },
+
+  freezeArtifact(identity: TestIdentity, artifactId: string): Promise<ArtifactVersionSnapshot> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/artifacts/${encodeURIComponent(artifactId)}/versions`,
+      { method: 'POST', headers: actorHeaders(identity.userId), body: '{}' },
+    )
+  },
+
+  getArtifactVersion(identity: TestIdentity, versionId: string): Promise<ArtifactVersionSnapshot> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/artifact-versions/${encodeURIComponent(versionId)}`,
       { headers: actorHeaders(identity.userId) },
     )
   },

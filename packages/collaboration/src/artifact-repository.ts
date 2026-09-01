@@ -80,6 +80,28 @@ export interface ArtifactVersionSnapshot extends ArtifactVersion {
   readonly yjsState: Uint8Array
 }
 
+export interface ArtifactVersionSummary extends ArtifactVersion {
+  readonly contentHash: string
+  readonly yjsStateHash: string
+}
+
+export interface ProjectArtifactSummary extends ArtifactRecord {
+  readonly throughUpdateSeq: bigint
+  readonly versionCount: number
+  readonly latestVersion: ArtifactVersionSummary | null
+}
+
+export interface ProjectArtifactDetail {
+  readonly artifact: ArtifactRecord
+  readonly live: {
+    readonly content: Readonly<Record<string, unknown>>
+    readonly stateHash: string
+    readonly stateBytes: number
+    readonly throughUpdateSeq: bigint
+  }
+  readonly versions: readonly ArtifactVersionSummary[]
+}
+
 export class ArtifactNotFoundError extends Error {
   constructor(artifactId: ArtifactId) {
     super('Artifact not found in workspace: ' + artifactId)
@@ -116,6 +138,19 @@ interface VersionRow {
   readonly version: number
   readonly content: Readonly<Record<string, unknown>>
   readonly yjs_state_bytes: Uint8Array
+  readonly content_hash: string
+  readonly yjs_state_hash: string
+  readonly through_update_seq: string | bigint
+  readonly created_by_kind: ActorRef['kind']
+  readonly created_by_id: string
+  readonly created_by_run_id: string | null
+  readonly created_at: Date
+}
+
+interface VersionSummaryRow {
+  readonly id: string
+  readonly artifact_id: string
+  readonly version: number
   readonly content_hash: string
   readonly yjs_state_hash: string
   readonly through_update_seq: string | bigint
@@ -164,7 +199,10 @@ function asArtifact(row: ArtifactRow): ArtifactRecord {
   }
 }
 
-function actorFromVersion(row: VersionRow): ActorRef {
+function actorFromVersion(row: Pick<
+  VersionRow,
+  'created_by_kind' | 'created_by_id' | 'created_by_run_id'
+>): ActorRef {
   switch (row.created_by_kind) {
     case 'user': return { kind: 'user', id: row.created_by_id as UserId }
     case 'agent': return {
@@ -193,9 +231,26 @@ function asVersion(row: VersionRow): ArtifactVersionSnapshot {
   }
 }
 
+function asVersionSummary(row: VersionSummaryRow): ArtifactVersionSummary {
+  return {
+    id: row.id as ArtifactVersionId,
+    artifactId: row.artifact_id as ArtifactId,
+    version: row.version,
+    contentHash: row.content_hash,
+    yjsStateHash: row.yjs_state_hash,
+    throughUpdateSeq: BigInt(row.through_update_seq),
+    createdBy: actorFromVersion(row),
+    createdAt: row.created_at.toISOString() as IsoTimestamp,
+    ...(row.created_by_run_id === null ? {} : { createdByRunId: row.created_by_run_id as RunId }),
+  }
+}
+
 const VERSION_COLUMNS =
   'id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash, ' +
   'through_update_seq, created_by_kind, created_by_id, created_by_run_id, created_at'
+const VERSION_SUMMARY_COLUMNS =
+  'id, artifact_id, version, content_hash, yjs_state_hash, through_update_seq, ' +
+  'created_by_kind, created_by_id, created_by_run_id, created_at'
 
 export class ArtifactRepository {
   constructor(private readonly pool: Pool) {}
@@ -252,6 +307,88 @@ export class ArtifactRepository {
       }
       return asArtifact(row)
     })
+  }
+
+  async listProject(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
+    readonly missionId?: MissionId
+    readonly limit: number
+  }): Promise<readonly ProjectArtifactSummary[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 200) {
+      throw new RangeError('Artifact list limit must be an integer between 1 and 200')
+    }
+    const result = await this.pool.query<ArtifactRow & { readonly through_update_seq: string }>(
+      'SELECT a.id, a.workspace_id, a.project_id, a.mission_id, a.title, a.kind, a.created_by, ' +
+      'a.created_at, a.updated_at, GREATEST(' +
+      'COALESCE((SELECT MAX(update.seq) FROM artifact_yjs_updates update WHERE update.artifact_id = a.id), 0), ' +
+      'COALESCE((SELECT snapshot.through_update_seq FROM artifact_yjs_snapshots snapshot ' +
+      'WHERE snapshot.artifact_id = a.id), 0))::text AS through_update_seq ' +
+      'FROM artifacts a WHERE a.workspace_id = $1 AND a.project_id = $2 ' +
+      'AND ($3::text IS NULL OR a.mission_id = $3) ' +
+      'ORDER BY a.updated_at DESC, a.id LIMIT $4',
+      [input.workspaceId, input.projectId, input.missionId ?? null, input.limit],
+    )
+    if (result.rows.length === 0) return []
+    const ids = result.rows.map((row) => row.id)
+    const versionResult = await this.pool.query<VersionSummaryRow>(
+      'SELECT ' + VERSION_SUMMARY_COLUMNS + ' FROM artifact_versions ' +
+      'WHERE artifact_id = ANY($1::text[]) ORDER BY artifact_id, version DESC',
+      [ids],
+    )
+    const versions = new Map<string, ArtifactVersionSummary[]>()
+    for (const row of versionResult.rows) {
+      const bucket = versions.get(row.artifact_id) ?? []
+      bucket.push(asVersionSummary(row))
+      versions.set(row.artifact_id, bucket)
+    }
+    return result.rows.map((row) => {
+      const artifactVersions = versions.get(row.id) ?? []
+      return {
+        ...asArtifact(row),
+        throughUpdateSeq: BigInt(row.through_update_seq),
+        versionCount: artifactVersions.length,
+        latestVersion: artifactVersions[0] ?? null,
+      }
+    })
+  }
+
+  async getProjectArtifact(input: {
+    readonly workspaceId: WorkspaceId
+    readonly projectId: ProjectId
+    readonly artifactId: ArtifactId
+  }): Promise<ProjectArtifactDetail | null> {
+    const artifactResult = await this.pool.query<ArtifactRow>(
+      'SELECT id, workspace_id, project_id, mission_id, title, kind, created_by, created_at, updated_at ' +
+      'FROM artifacts WHERE id = $1 AND workspace_id = $2 AND project_id = $3',
+      [input.artifactId, input.workspaceId, input.projectId],
+    )
+    const artifactRow = artifactResult.rows[0]
+    if (!artifactRow) return null
+
+    const rebuilt = await this.reconstruct(this.pool, input.artifactId)
+    try {
+      const state = Y.encodeStateAsUpdate(rebuilt.document)
+      assertBinarySize(state, 'Yjs document state', MAX_STATE_BYTES)
+      const content = yDocToProsemirrorJSON(rebuilt.document, 'prosemirror') as Readonly<Record<string, unknown>>
+      const versionResult = await this.pool.query<VersionSummaryRow>(
+        'SELECT ' + VERSION_SUMMARY_COLUMNS + ' FROM artifact_versions ' +
+        'WHERE artifact_id = $1 ORDER BY version DESC',
+        [input.artifactId],
+      )
+      return {
+        artifact: asArtifact(artifactRow),
+        live: {
+          content,
+          stateHash: digest(state),
+          stateBytes: state.byteLength,
+          throughUpdateSeq: rebuilt.throughUpdateSeq,
+        },
+        versions: versionResult.rows.map(asVersionSummary),
+      }
+    } finally {
+      rebuilt.document.destroy()
+    }
   }
 
   async appendUpdate(input: AppendArtifactUpdateInput): Promise<{

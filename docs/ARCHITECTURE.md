@@ -239,7 +239,7 @@ instead of consuming the delivery budget on unbounded repair.
 | Task ownership and lease | PostgreSQL | Worker memory |
 | Worker process presence and expiry | PostgreSQL Worker Instance heartbeat | Web five-second projection |
 | Project launch inputs | PostgreSQL Project Runtime Configuration (never API keys) | API-owned local child-process map |
-| Mission working deliverable | PostgreSQL primary `mission_deliverable` Artifact and immutable Versions | Model prompt projection |
+| Mission working deliverable | PostgreSQL primary `mission_deliverable` Artifact, Yjs state, and immutable Versions | Model prompt and Web Artifact projections |
 | Task Worktree, reviewed HEAD, and integration state | PostgreSQL plus Git object database | Worker path cache |
 | Pre-model Worktree setup, lease, argv hash, and result hashes | PostgreSQL `task_worktree_setups` | Worker process timers |
 | Frozen Run instructions and per-hop model context | PostgreSQL Context Snapshots | Provider continuation cache |
@@ -334,6 +334,14 @@ clients. The WebSocket room accepts explicit `sync`, `update`, and `awareness`
 messages. Persisted Updates are acknowledged to the sender and broadcast to
 peers only after the append commits. Awareness is schema-bounded, broadcast as
 a snapshot/update/removal lifecycle, and never enters Artifact history.
+
+The operator query surface lists Artifacts only through an exact
+Workspace/Project predicate. Artifact detail reconstructs the current Y.Doc,
+returns its canonical ProseMirror JSON, state hash, byte count, and covered
+Update sequence, and joins the append-only Version summaries. The Web can
+therefore compare LIVE state with an exact immutable Version without inventing
+collaborators, comments, content, or provenance. Freezing remains a command and
+is enabled only while the operator is viewing LIVE state.
 
 Review is bound to exact state rather than the living room. The producing Run
 creates a Version, records `artifact_version` Evidence with the same content

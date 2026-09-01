@@ -118,6 +118,11 @@ Expected flow:
 - Awareness is ephemeral and never used as authorization.
 - Review creates an immutable Artifact Version.
 - Every Agent edit records Agent, Run, Task, and operation intent.
+- The operator Web lists only the selected Project's persisted Artifacts,
+  reconstructs the real LIVE document, exposes hashes and Update sequence, and
+  compares it with immutable Version content and actor/Run provenance.
+- The Web must not substitute sample collaborators, comments, or document
+  content when no durable Artifact fact exists.
 
 ### Tools
 

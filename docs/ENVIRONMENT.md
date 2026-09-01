@@ -66,6 +66,11 @@ workarounds.
 7. Run `npm test`; the external PostgreSQL suite additionally requires a
    dedicated database whose name ends in `_test`.
 
+Run the Web with `npm run web:start` from the repository root. When a custom
+Vite host flag is needed, avoid passing it through that nested script; use
+`npm run dev --workspace @runguild/web -- --host 127.0.0.1` so npm does not
+misread the host value as Vite's project root.
+
 If a future fix is introduced only because of a machine constraint, document
 the affected file, reason, portable default, and removal condition in this file
 in the same commit.
