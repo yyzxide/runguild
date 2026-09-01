@@ -207,10 +207,14 @@ The control-plane foundation is executable:
 
 The local suite covers protocol, migrations, Conversation routing, Mission
 orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
-and API contracts. The external PostgreSQL integration test remains opt-in.
-The next implementation slices repeat the real-model benchmark after closing
-its usage-accounting gaps, then harden deployment/secret rotation and the
-remaining horizontal operations boundaries.
+authentication, and API contracts. The external PostgreSQL integration test
+remains opt-in. Reviewer usage accounting, project-scoped Workers, real
+Artifact/Evaluation/Trace projections, cross-instance Artifact fan-out, and
+persistent browser authentication are implemented. The next priority is to
+repeat bounded real-model Missions and paired experiments on a personal
+machine, then improve recovery diagnostics, cost observability, and operator
+ergonomics from those traces. Public deployment hardening is optional while
+RunGuild remains a personal-machine system.
 
 ## Repository layout
 
@@ -232,11 +236,17 @@ packages/
 
 ## Design documents
 
+- [Documentation index and maintenance rules](docs/README.md)
 - [Product requirements](docs/PRD.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [State machines](docs/STATE_MACHINES.md)
 - [Protocol contract](docs/PROTOCOL.md)
+- [个人电脑使用手册](docs/USER_GUIDE_ZH.md)
+- [面试准备与项目讲解](docs/INTERVIEW_GUIDE_ZH.md)
+- [Database Migration 清单](docs/MIGRATIONS.md)
 - [Environment and machine migration](docs/ENVIRONMENT.md)
+- [Real-model Evaluation run](docs/REAL_EVALUATION_2026-08-31.md)
+- [Web design direction](apps/web/DESIGN.md)
 
 ## Local checks
 
@@ -263,6 +273,10 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/development/bootstrap \
 npm run auth:set-password -- --workspace demo_workspace --user demo_user --role owner
 npm run web:start
 ~~~
+
+The Web listens on `http://127.0.0.1:4173`. For the first installation, daily
+startup, end-to-end Mission workflow, backup, recovery, and cost-control
+checklists, use the [Chinese personal-machine guide](docs/USER_GUIDE_ZH.md).
 
 `ENABLE_DEV_BOOTSTRAP=true` is a local provisioning aid, not a production
 identity provider. Disable it after local initialization. The password command
@@ -422,13 +436,20 @@ each process owns mutation of only its configured Git refs. Evaluation Trials us
 non-checked-out refs and compare-and-swap updates, so they can share the Git
 object database without mutating that branch or one another.
 
-Current Mission endpoints:
+Current HTTP and WebSocket endpoints:
 
 ~~~text
+GET  /health
+POST /api/v1/development/bootstrap                 # only when explicitly enabled
+POST /api/v1/auth/login
+GET  /api/v1/auth/session
+POST /api/v1/auth/logout
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/missions
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/operator-overview
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/runtime-config
 PUT  /api/v1/workspaces/:workspaceId/projects/:projectId/runtime-config
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/run-traces
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/run-traces/:runId
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/local-workers/start
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/local-workers/stop
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/conversations
@@ -442,6 +463,7 @@ POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan/approve
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/delivery/approve
 POST /api/v1/workspaces/:workspaceId/reviews/:reviewId/retry
 GET  /api/v1/workspaces/:workspaceId/missions/:missionId
+POST /api/v1/workspaces/:workspaceId/missions/:missionId/tasks/:taskId/retry
 POST /api/v1/workspaces/:workspaceId/runs/:runId/controls
 POST /api/v1/workspaces/:workspaceId/tool-approvals/:approvalId/resolve
 POST /api/v1/workspaces/:workspaceId/skills

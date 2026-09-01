@@ -64,21 +64,31 @@ workarounds.
 
 1. Clone the repository and install the Node version declared in
    `package.json` plus conventional Docker Compose.
-2. Copy `.env.example` to `.env`; set a fresh API key and
-   `INTERNAL_AGENT_TOKEN`, the chosen compatible endpoint/model, exact
-   `AUTH_ALLOWED_ORIGINS`, HTTPS Cookie policy, and free host ports.
+2. Copy `.env.example` to `.env`; set a fresh API key, the chosen compatible
+   endpoint/model, and free host ports. For the local Vite Web keep the exact
+   `http://127.0.0.1:4173,http://localhost:4173` origins and insecure local
+   Cookie policy. Generate `INTERNAL_AGENT_TOKEN` when an Agent will access
+   HTTP or Artifact WebSocket endpoints; the token remains environment-only.
 3. Start PostgreSQL and Redis with `docker compose up -d postgres redis` and
    verify both health checks.
-4. Run `npm ci`, `npm run build`, and `npm run db:migrate`.
+4. Run `npm ci`, `npm run build`, and the Migration CLI with the `.env`
+   database URL. The root `db:migrate` script intentionally does not load
+   `.env` by itself; `node --env-file=.env packages/database/dist/cli.js` is an
+   explicit local invocation.
 5. Bootstrap or restore PostgreSQL. For a new User, run the development
    bootstrap once and then `npm run auth:set-password -- --workspace <id>
    --user <id> --role owner`; for a restored database, rotate the password when
    the old credential should not remain valid. Then set the new absolute
    repository and Worktree paths in the Web project configuration.
-6. Keep `ENABLE_LOCAL_RUNTIME_CONTROL=false` unless the API is intentionally
-   allowed to own local Worker child processes.
+6. For the recommended personal-machine workflow, set
+   `ENABLE_LOCAL_RUNTIME_CONTROL=true` and let the Web/API own local Worker
+   child processes. Do not also launch the same Agent externally. Keep it false
+   when Workers are managed in separate terminals or by a process manager.
 7. Run `npm test`; the external PostgreSQL suite additionally requires a
    dedicated database whose name ends in `_test`.
+
+The complete first-install, daily-start, Mission, troubleshooting, backup, and
+cost checklist is maintained in [USER_GUIDE_ZH.md](USER_GUIDE_ZH.md).
 
 Run the Web with `npm run web:start` from the repository root. When a custom
 Vite host flag is needed, avoid passing it through that nested script; use

@@ -1,5 +1,10 @@
 # Web design direction
 
+This document records the implemented operator direction, not a static
+portfolio mock. The current Web is backed by authenticated Project-scoped API
+queries; empty states must stay empty when PostgreSQL has no corresponding
+fact.
+
 ## Subject
 
 RunGuild is an operational cockpit for developers and technical
@@ -42,6 +47,36 @@ Mission topology surface, and a persistent evidence rail.
 The Evidence Spine is a vertical, numbered chain whose nodes are durable facts,
 not decorative steps. Selecting a Task filters the chain to the proof that can
 advance that Task.
+
+## Implemented operator surfaces
+
+- **工作台** derives the next action from API health, authentication, Project
+  configuration, Mission state, and persisted Worker heartbeats.
+- **协作室** displays durable messages, explicit recipients, selected-message
+  planning, and Planner progress.
+- **Mission** projects the real Task DAG, gates, Runs, Evidence, Review,
+  Integration, and final-delivery state.
+- **协作产物** reads the real Project Artifact ledger, reconstructs LIVE Yjs
+  state, and switches to exact immutable Versions.
+- **评测实验** lists persisted Scenario Versions and Experiments and rebuilds
+  paired reports from Trial metrics.
+- **运行记录** queries redacted, Project-scoped Run and event ledgers.
+- **配置与启停** persists repository, Worktree, argv, timeout, context, and
+  Agent model configuration, then controls only Worker children owned by the
+  current API when local runtime control is enabled.
+
+The primary operating language is Chinese while stable domain names such as
+Agent, Mission, Worker, Worktree, Evidence, Artifact, Review, Integration, and
+Evaluation remain visible. Model names, commit ids, token counts, durations,
+event sequence values, and failure codes use monospace treatment.
+
+## Data and security boundary
+
+No main operator surface may substitute sample metrics, sample Missions, or
+invented Worker state when an API query is empty or fails. Browser identity is
+the authenticated PostgreSQL session, not a user-editable actor header. API
+keys and internal Agent credentials never enter Web state. Destructive or
+advancing actions must name the exact gate they affect and remain auditable.
 
 ## Self-critique
 
