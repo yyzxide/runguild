@@ -110,7 +110,10 @@ The control-plane foundation is executable:
   context instead of being guessed by the model;
 - persistent Yjs WebSocket rooms with State Vector differential sync,
   persistence-before-broadcast, bounded message queues, heartbeat cleanup, and
-  ephemeral Awareness snapshots/removals;
+  ephemeral Awareness snapshots/removals; every new Update creates a
+  transactional Outbox notification, and Redis-connected API instances read
+  the exact seq/hash back from PostgreSQL before broadcasting it once to local
+  peers; subscriber recovery forces a durable full-state resync;
 - Agent-native `artifact.read`, semantic `artifact.edit`, immutable
   `artifact.create_version`, and evidence-bound `artifact.submit_for_review`
   tools;
@@ -197,7 +200,8 @@ orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
 and API contracts. The external PostgreSQL integration test remains opt-in.
 The next implementation slices repeat the real-model benchmark after closing
 its usage-accounting gaps, and complete production identity, deployment,
-horizontal worker fencing, and cross-instance collaboration fan-out.
+horizontal worker fencing, and cross-instance Awareness fan-out with stale
+presence expiry.
 
 ## Repository layout
 
@@ -323,7 +327,7 @@ cp .env.example .env
 docker compose up -d postgres redis
 npm run build
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control npm run db:migrate
-DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control npm run api:start
+DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control REDIS_URL=redis://localhost:6379 npm run api:start
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control REDIS_URL=redis://localhost:6379 npm run worker:start
 ~~~
 

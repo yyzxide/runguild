@@ -46,8 +46,11 @@ workarounds.
   Worker history, and Trace records. Moving only the Git repository starts with
   a new ledger. Use `pg_dump`/`pg_restore` if the existing execution history
   must move too.
-- Redis is not a fact source and does not need to be migrated. Restarting
-  Scheduler/Workers republishes or polls durable PostgreSQL work.
+- Redis is not a fact source and does not need to be migrated. The Scheduler
+  publishes durable Outbox coordinates, and each API uses `REDIS_URL` for
+  cross-instance Artifact wake-up. Restarting Workers republishes or polls
+  PostgreSQL work; reconnecting API subscribers rebuild active Yjs rooms from
+  PostgreSQL instead of trusting missed Pub/Sub history.
 - Docker named volumes and the earlier Snap-Docker backup are outside Git.
 
 ## Personal-machine checklist

@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { canonicalJson, withTransaction } from '@runguild/database'
+import { EVENT_TOPICS } from '@runguild/protocol'
 import type {
+  ArtifactUpdateCommittedNotification,
   ActorRef,
   AgentId,
   ArtifactId,
@@ -57,6 +59,13 @@ export interface ArtifactSyncState {
   readonly stateVector: Uint8Array
   readonly stateHash: string
   readonly throughUpdateSeq: bigint
+}
+
+export interface PersistedArtifactUpdate {
+  readonly seq: bigint
+  readonly updateHash: string
+  readonly update: Uint8Array
+  readonly origin: ArtifactUpdateOrigin
 }
 
 export interface ArtifactCompactionResult {
@@ -130,6 +139,11 @@ interface SnapshotRow {
 interface UpdateRow {
   readonly seq: string | bigint
   readonly update_bytes: Uint8Array
+}
+
+interface PersistedUpdateRow extends UpdateRow {
+  readonly update_hash: string
+  readonly origin: ArtifactUpdateOrigin
 }
 
 interface VersionRow {
@@ -423,6 +437,23 @@ export class ArtifactRepository {
       const newRow = inserted.rows[0]
       if (newRow) {
         await client.query('UPDATE artifacts SET updated_at = NOW() WHERE id = $1', [input.artifactId])
+        const notification: ArtifactUpdateCommittedNotification = {
+          schemaVersion: 1,
+          type: 'artifact.update_committed',
+          workspaceId: input.workspaceId,
+          artifactId: input.artifactId,
+          seq: newRow.seq,
+          updateHash,
+        }
+        await client.query(
+          'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
+          [
+            'artifact_update_' + newRow.seq,
+            EVENT_TOPICS.artifactUpdates,
+            input.artifactId,
+            JSON.stringify(notification),
+          ],
+        )
         return { seq: BigInt(newRow.seq), updateHash, inserted: true }
       }
       const existing = await client.query<{ seq: string; update_bytes: Uint8Array }>(
@@ -436,6 +467,35 @@ export class ArtifactRepository {
       }
       return { seq: BigInt(row.seq), updateHash, inserted: false }
     })
+  }
+
+  async readPersistedUpdate(input: {
+    readonly workspaceId: WorkspaceId
+    readonly artifactId: ArtifactId
+    readonly seq: bigint
+    readonly updateHash: string
+  }): Promise<PersistedArtifactUpdate | null> {
+    if (input.seq < 1n) throw new RangeError('Artifact update sequence must be positive')
+    const result = await this.pool.query<PersistedUpdateRow>(
+      'SELECT update.seq::text, update.update_hash, update.update_bytes, update.origin ' +
+      'FROM artifact_yjs_updates update ' +
+      'JOIN artifacts artifact ON artifact.id = update.artifact_id ' +
+      'WHERE update.seq = $1 AND update.artifact_id = $2 AND update.update_hash = $3 ' +
+      'AND artifact.workspace_id = $4',
+      [input.seq.toString(), input.artifactId, input.updateHash, input.workspaceId],
+    )
+    const row = result.rows[0]
+    if (!row) return null
+    const update = bytes(row.update_bytes)
+    if (digest(update) !== row.update_hash) {
+      throw new Error('Persisted Artifact update hash does not match its bytes')
+    }
+    return {
+      seq: BigInt(row.seq),
+      updateHash: row.update_hash,
+      update,
+      origin: row.origin,
+    }
   }
 
   async syncState(input: {

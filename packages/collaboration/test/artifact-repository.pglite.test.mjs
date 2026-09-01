@@ -105,6 +105,37 @@ test('concurrent Yjs updates converge, deduplicate, compact, and support differe
       update: alice,
       origin: { kind: 'user', userId: 'user_editor', sessionId: 'relay-session' },
     })
+    const persistedFirst = await repository.readPersistedUpdate({
+      workspaceId: 'ws_collab',
+      artifactId: 'artifact_collab',
+      seq: first.seq,
+      updateHash: first.updateHash,
+    })
+    assert.ok(persistedFirst)
+    assert.deepEqual([...persistedFirst.update], [...alice])
+    assert.equal(persistedFirst.origin.sessionId, 'alice-session')
+    assert.equal(await repository.readPersistedUpdate({
+      workspaceId: 'ws_other',
+      artifactId: 'artifact_collab',
+      seq: first.seq,
+      updateHash: first.updateHash,
+    }), null)
+    const notification = await database.query(
+      'SELECT topic, partition_key, payload FROM outbox_events WHERE id = $1',
+      ['artifact_update_' + first.seq],
+    )
+    assert.deepEqual(notification.rows[0], {
+      topic: 'mission.artifact-updates.v1',
+      partition_key: 'artifact_collab',
+      payload: {
+        schemaVersion: 1,
+        type: 'artifact.update_committed',
+        workspaceId: 'ws_collab',
+        artifactId: 'artifact_collab',
+        seq: first.seq.toString(),
+        updateHash: first.updateHash,
+      },
+    })
     const second = await repository.appendUpdate({
       workspaceId: 'ws_collab',
       artifactId: 'artifact_collab',
@@ -171,15 +202,51 @@ test('concurrent Yjs updates converge, deduplicate, compact, and support differe
     const rows = await database.query(
       "SELECT COUNT(*)::int AS updates, " +
       "(SELECT through_update_seq::text FROM artifact_yjs_snapshots " +
-      "WHERE artifact_id = 'artifact_collab') AS snapshot_through " +
+      "WHERE artifact_id = 'artifact_collab') AS snapshot_through, " +
+      "(SELECT COUNT(*)::int FROM outbox_events " +
+      "WHERE topic = 'mission.artifact-updates.v1') AS update_notifications " +
       "FROM artifact_yjs_updates WHERE artifact_id = 'artifact_collab'",
     )
     assert.deepEqual(rows.rows[0], {
       updates: 3,
       snapshot_through: state.throughUpdateSeq.toString(),
+      update_notifications: 3,
     })
     converged.destroy()
     previous.destroy()
+  } finally {
+    await database.close()
+  }
+})
+
+test('Artifact update and its cross-instance notification commit atomically', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new ArtifactRepository(poolAdapter(database))
+    await repository.create({
+      artifactId: 'artifact_atomic_fanout',
+      workspaceId: 'ws_collab',
+      projectId: 'project_collab',
+      missionId: 'mission_collab',
+      title: 'Atomic fan-out',
+      createdBy: 'user_editor',
+    })
+    await database.query(
+      "INSERT INTO outbox_events (id, topic, partition_key, payload) " +
+        "VALUES ('artifact_update_1', 'occupied', 'occupied', '{}'::jsonb)",
+    )
+    await assert.rejects(repository.appendUpdate({
+      workspaceId: 'ws_collab',
+      artifactId: 'artifact_atomic_fanout',
+      update: paragraphUpdate('Must roll back'),
+      origin: { kind: 'user', userId: 'user_editor', sessionId: 'atomic-session' },
+    }), /duplicate key|unique/i)
+    const updates = await database.query(
+      "SELECT COUNT(*)::int AS count FROM artifact_yjs_updates " +
+        "WHERE artifact_id = 'artifact_atomic_fanout'",
+    )
+    assert.equal(updates.rows[0].count, 0)
   } finally {
     await database.close()
   }

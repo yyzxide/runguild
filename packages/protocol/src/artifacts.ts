@@ -41,6 +41,15 @@ export type ArtifactUpdateOrigin =
   | UserArtifactOrigin
   | ServiceArtifactOrigin
 
+export interface ArtifactUpdateCommittedNotification {
+  readonly schemaVersion: 1
+  readonly type: 'artifact.update_committed'
+  readonly workspaceId: WorkspaceId
+  readonly artifactId: ArtifactId
+  readonly seq: string
+  readonly updateHash: string
+}
+
 export type ArtifactOperation =
   | {
       readonly kind: 'insert_section'

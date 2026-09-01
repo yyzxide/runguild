@@ -132,7 +132,16 @@ still the document source of truth: a received Update is appended successfully
 before any peer sees it. Rooms accelerate propagation only. State Vector sync
 restores clients after disconnect or process restart, while heartbeat,
 backpressure limits, and disconnect cleanup bound ephemeral room state.
-Cross-instance room fan-out remains part of horizontal API scaling.
+Each inserted Update creates an Outbox notification in the same transaction.
+The Scheduler publishes only its Workspace/Artifact/seq/hash coordinates to
+Redis. Every subscribed API instance validates the notification shape, reads
+that exact row back through an exact Workspace predicate, verifies its content
+hash, and then performs ordered, bounded, duplicate-free local broadcast. A
+Redis subscriber reconnect sends a PostgreSQL-rebuilt full state to every
+local room, covering Pub/Sub messages missed while disconnected. Redis never
+supplies document bytes or authority. Cross-instance Awareness remains a
+separate horizontal-scaling slice because it is ephemeral rather than Outbox
+data.
 
 The Conversation Plane is durable rather than WebSocket-dependent. A project
 room has explicit Workspace-scoped members; messages have a stable sequence,
@@ -244,7 +253,7 @@ instead of consuming the delivery budget on unbounded repair.
 | Pre-model Worktree setup, lease, argv hash, and result hashes | PostgreSQL `task_worktree_setups` | Worker process timers |
 | Frozen Run instructions and per-hop model context | PostgreSQL Context Snapshots | Provider continuation cache |
 | Yjs content | PostgreSQL update log and snapshot | Y.Doc room and Redis fan-out |
-| Presence and carets | None | Awareness and Redis |
+| Presence and carets | None | Process-local Awareness; cross-instance Redis presence is pending |
 | Tool side effects | PostgreSQL tool execution record plus target system | Event stream |
 | Run trace and cost | PostgreSQL | In-memory telemetry buffer |
 | Project-scoped redacted Run Trace query | PostgreSQL agent_runs/events/LLM/tool ledgers | Web Trace projection |
@@ -334,6 +343,13 @@ clients. The WebSocket room accepts explicit `sync`, `update`, and `awareness`
 messages. Persisted Updates are acknowledged to the sender and broadcast to
 peers only after the append commits. Awareness is schema-bounded, broadcast as
 a snapshot/update/removal lifecycle, and never enters Artifact history.
+For cross-instance delivery, the append transaction also writes an
+`artifact.update_committed` Outbox notification. Redis transports only the
+coordinates; the receiving API reloads and hash-checks the Update from
+PostgreSQL. Repeated Outbox publication and local/remote delivery races are
+coalesced by a bounded seq/hash ledger per API instance. Each connection also
+records the latest full-sync Update sequence, so a delayed notification already
+contained in that database snapshot is not sent again.
 
 The operator query surface lists Artifacts only through an exact
 Workspace/Project predicate. Artifact detail reconstructs the current Y.Doc,

@@ -23,9 +23,11 @@ import { ArtifactRepository } from '@runguild/collaboration'
 import { createApiApp } from './app.js'
 import { attachArtifactRealtimeServer } from './artifact-realtime.js'
 import { LocalWorkerSupervisor } from './local-worker-supervisor.js'
+import { RedisArtifactFanout } from './redis-artifact-fanout.js'
 
 const databaseUrl = process.env.DATABASE_URL
 if (!databaseUrl) throw new Error('DATABASE_URL is required')
+const redisUrl = process.env.REDIS_URL?.trim()
 
 const port = Number(process.env.PORT ?? 4000)
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -38,6 +40,12 @@ if (process.env.AUTO_MIGRATE === 'true') {
 }
 
 const artifacts = new ArtifactRepository(pool)
+const reportArtifactFanoutError = (error: Error) => {
+  process.stderr.write(JSON.stringify({ type: 'artifact.fanout_error', message: error.message }) + '\n')
+}
+const artifactFanout = redisUrl
+  ? new RedisArtifactFanout(redisUrl, { onError: reportArtifactFanoutError })
+  : undefined
 const developmentSetup = process.env.ENABLE_DEV_BOOTSTRAP === 'true'
   ? new DevelopmentSetupRepository(pool)
   : undefined
@@ -45,7 +53,7 @@ const localRuntimeControl = process.env.ENABLE_LOCAL_RUNTIME_CONTROL === 'true'
   ? new LocalWorkerSupervisor({
       databaseUrl,
       activity: new WorkerInstanceRepository(pool),
-      ...(process.env.REDIS_URL?.trim() ? { redisUrl: process.env.REDIS_URL.trim() } : {}),
+      ...(redisUrl ? { redisUrl } : {}),
       ...(process.env.OPENAI_API_KEY?.trim() ? { openaiApiKey: process.env.OPENAI_API_KEY.trim() } : {}),
       ...(process.env.OPENAI_BASE_URL?.trim() ? { openaiBaseUrl: process.env.OPENAI_BASE_URL.trim() } : {}),
       ...(process.env.OPENAI_REASONING_EFFORT?.trim()
@@ -84,11 +92,15 @@ const app = createApiApp({
 const server = app.listen(port, () => {
   process.stdout.write('API listening on port ' + port + '\n')
 })
-const artifactRealtime = attachArtifactRealtimeServer(server, { repository: artifacts })
+const artifactRealtime = attachArtifactRealtimeServer(server, {
+  repository: artifacts,
+  ...(artifactFanout ? { fanout: artifactFanout, onFanoutError: reportArtifactFanoutError } : {}),
+})
 
 async function shutdown(): Promise<void> {
   await localRuntimeControl?.shutdown()
   await artifactRealtime.close()
+  artifactFanout?.close()
   server.close()
   await pool.end()
 }

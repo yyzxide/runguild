@@ -168,6 +168,27 @@ Update and State Vector fields use the same base64url encoding as HTTP. The
 server serializes messages per connection, limits pending work and payload
 size, and broadcasts an Update only after durable persistence succeeds.
 
+Cross-instance propagation uses the internal topic
+`mission.artifact-updates.v1` with a bounded notification:
+
+~~~text
+artifact.update_committed {
+  schemaVersion: 1,
+  workspaceId,
+  artifactId,
+  seq,
+  updateHash
+}
+~~~
+
+The notification contains no Yjs bytes. A receiving API must reload the exact
+Update through the Workspace/Artifact/seq/hash predicate and verify the stored
+bytes before sending the ordinary `update` WebSocket message. Duplicate
+notifications are coalesced, and notifications at or below a connection's
+latest full-sync sequence are suppressed. After Redis subscription recovery,
+active rooms receive a PostgreSQL-rebuilt `sync` message with
+`reason: fanout_recovered`.
+
 ## 8. Evidence
 
 Evidence is typed rather than stored only as prose:

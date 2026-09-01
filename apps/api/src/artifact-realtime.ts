@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 
-import type { ArtifactRepository } from '@runguild/collaboration'
+import type { ArtifactRepository, PersistedArtifactUpdate } from '@runguild/collaboration'
 import type {
   ActorRef,
   AgentId,
   ArtifactId,
+  ArtifactUpdateCommittedNotification,
   ArtifactUpdateOrigin,
   RunId,
   TaskId,
@@ -17,10 +18,19 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { z } from 'zod'
 
 const MAX_PENDING_MESSAGES = 64
+const MAX_DELIVERED_UPDATES = 8_192
 const MAX_AWARENESS_BYTES = 16 * 1024
 const HEARTBEAT_INTERVAL_MS = 30_000
 
-type ArtifactRealtimeRepository = Pick<ArtifactRepository, 'appendUpdate' | 'authorizeActor' | 'syncState'>
+type ArtifactRealtimeRepository = Pick<
+  ArtifactRepository,
+  'appendUpdate' | 'authorizeActor' | 'readPersistedUpdate' | 'syncState'
+>
+
+export interface ArtifactRealtimeFanout {
+  subscribe(listener: (notification: unknown) => void): () => void
+  onRecovered(listener: () => void): () => void
+}
 
 export type ArtifactRealtimePrincipal =
   | {
@@ -49,6 +59,8 @@ export interface ArtifactRealtimeServerOptions {
     input: ArtifactRealtimeAuthenticationInput,
   ) => Promise<ArtifactRealtimePrincipal | null> | ArtifactRealtimePrincipal | null
   readonly heartbeatIntervalMs?: number
+  readonly fanout?: ArtifactRealtimeFanout
+  readonly onFanoutError?: (error: Error) => void
 }
 
 interface ArtifactLocation {
@@ -64,6 +76,7 @@ interface ConnectedClient {
   pendingMessages: number
   queue: Promise<void>
   alive: boolean
+  syncedThroughUpdateSeq: bigint
   awareness?: AwarenessState
 }
 
@@ -105,6 +118,15 @@ const clientMessageSchema = z.discriminatedUnion('type', [
     state: awarenessSchema,
   }).strict(),
 ])
+
+const committedNotificationSchema = z.object({
+  schemaVersion: z.literal(1),
+  type: z.literal('artifact.update_committed'),
+  workspaceId: z.string().min(1).max(200),
+  artifactId: z.string().min(1).max(200),
+  seq: z.string().regex(/^[1-9][0-9]*$/),
+  updateHash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
 
 function header(request: IncomingMessage, name: string): string | undefined {
   const value = request.headers[name]
@@ -177,6 +199,26 @@ function publicIdentity(principal: ArtifactRealtimePrincipal): Readonly<Record<s
     : { kind: 'agent', actorId: principal.agentId, runId: principal.runId }
 }
 
+function publicOrigin(origin: ArtifactUpdateOrigin): Readonly<Record<string, string>> {
+  if (origin.kind === 'user') {
+    return { kind: 'user', actorId: origin.userId, sessionId: origin.sessionId }
+  }
+  if (origin.kind === 'agent') {
+    return { kind: 'agent', actorId: origin.agentId, runId: origin.runId }
+  }
+  return { kind: 'service', actorId: origin.serviceId, operation: origin.operation }
+}
+
+function originMatchesClient(origin: ArtifactUpdateOrigin, client: ConnectedClient): boolean {
+  if (origin.kind === 'user' && client.principal.kind === 'user') {
+    return origin.userId === client.principal.userId && origin.sessionId === client.principal.sessionId
+  }
+  if (origin.kind === 'agent' && client.principal.kind === 'agent') {
+    return origin.agentId === client.principal.agentId && origin.runId === client.principal.runId
+  }
+  return false
+}
+
 function actor(principal: ArtifactRealtimePrincipal): Extract<
   ActorRef,
   { readonly kind: 'user' | 'agent' }
@@ -188,6 +230,13 @@ function actor(principal: ArtifactRealtimePrincipal): Extract<
 
 function roomKey(location: ArtifactLocation): string {
   return location.workspaceId + '\u0000' + location.artifactId
+}
+
+function deliveryKey(
+  location: ArtifactLocation,
+  update: Pick<PersistedArtifactUpdate, 'seq' | 'updateHash'>,
+): string {
+  return roomKey(location) + '\u0000' + update.seq.toString() + '\u0000' + update.updateHash
 }
 
 function send(socket: WebSocket, value: unknown): void {
@@ -216,6 +265,11 @@ export class ArtifactRealtimeServer {
   private readonly heartbeat: ReturnType<typeof setInterval>
   private readonly authenticate: NonNullable<ArtifactRealtimeServerOptions['authenticate']>
   private readonly handleUpgradeBound: (request: IncomingMessage) => void
+  private readonly deliveredUpdates = new Map<string, true>()
+  private readonly fanoutQueues = new Map<string, Promise<void>>()
+  private readonly unsubscribeFanout: (() => void) | undefined
+  private readonly unsubscribeRecovery: (() => void) | undefined
+  private recovery = Promise.resolve()
 
   constructor(
     private readonly server: HttpServer,
@@ -229,15 +283,26 @@ export class ArtifactRealtimeServer {
       options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS,
     )
     this.heartbeat.unref()
+    this.unsubscribeFanout = options.fanout?.subscribe((notification) => {
+      this.enqueueFanout(notification)
+    })
+    this.unsubscribeRecovery = options.fanout?.onRecovered(() => {
+      this.recovery = this.recovery
+        .then(() => this.resyncRooms())
+        .catch((error: unknown) => this.reportFanoutError(error))
+    })
   }
 
   async close(): Promise<void> {
     clearInterval(this.heartbeat)
+    this.unsubscribeFanout?.()
+    this.unsubscribeRecovery?.()
     this.server.off('upgrade', this.handleUpgradeBound)
     for (const clients of this.rooms.values()) {
       for (const client of clients) client.socket.close(1001, 'Server shutting down')
     }
     await new Promise<void>((resolve) => this.websocketServer.close(() => resolve()))
+    await Promise.allSettled([...this.fanoutQueues.values(), this.recovery])
   }
 
   private async handleUpgrade(request: IncomingMessage): Promise<void> {
@@ -277,6 +342,7 @@ export class ArtifactRealtimeServer {
       pendingMessages: 0,
       queue: Promise.resolve(),
       alive: true,
+      syncedThroughUpdateSeq: 0n,
     }
     const key = roomKey(location)
     const clients = this.rooms.get(key) ?? new Set<ConnectedClient>()
@@ -355,13 +421,12 @@ export class ArtifactRealtimeServer {
       inserted: persisted.inserted,
     })
     if (persisted.inserted) {
-      this.broadcast(client, {
-        type: 'update',
-        update: parsed.data.update,
-        seq: persisted.seq.toString(),
+      this.deliverUpdate(client.location, {
+        seq: persisted.seq,
         updateHash: persisted.updateHash,
-        origin: publicIdentity(client.principal),
-      }, true)
+        update,
+        origin: origin(client.principal),
+      }, client)
     }
   }
 
@@ -370,6 +435,7 @@ export class ArtifactRealtimeServer {
       ...client.location,
       ...(stateVector ? { remoteStateVector: stateVector } : {}),
     })
+    client.syncedThroughUpdateSeq = state.throughUpdateSeq
     send(client.socket, {
       type: 'sync',
       update: Buffer.from(state.update).toString('base64url'),
@@ -385,6 +451,104 @@ export class ArtifactRealtimeServer {
       identity: publicIdentity(client.principal),
       state: client.awareness ?? {},
     }
+  }
+
+  private enqueueFanout(notification: unknown): void {
+    const parsed = committedNotificationSchema.safeParse(notification)
+    if (!parsed.success) {
+      this.reportFanoutError(new Error('Artifact fan-out notification does not match protocol v1'))
+      return
+    }
+    const value = parsed.data as ArtifactUpdateCommittedNotification
+    const location: ArtifactLocation = {
+      workspaceId: value.workspaceId as WorkspaceId,
+      artifactId: value.artifactId as ArtifactId,
+    }
+    const key = roomKey(location)
+    if (!this.rooms.has(key)) return
+    const previous = this.fanoutQueues.get(key) ?? Promise.resolve()
+    const next = previous
+      .then(() => this.deliverCommittedNotification(location, value))
+      .catch((error: unknown) => this.reportFanoutError(error))
+    this.fanoutQueues.set(key, next)
+    void next.then(() => {
+      if (this.fanoutQueues.get(key) === next) this.fanoutQueues.delete(key)
+    })
+  }
+
+  private async deliverCommittedNotification(
+    location: ArtifactLocation,
+    notification: ArtifactUpdateCommittedNotification,
+  ): Promise<void> {
+    if (!this.rooms.has(roomKey(location))) return
+    const key = deliveryKey(location, {
+      seq: BigInt(notification.seq),
+      updateHash: notification.updateHash,
+    })
+    if (this.deliveredUpdates.has(key)) return
+    const persisted = await this.options.repository.readPersistedUpdate({
+      ...location,
+      seq: BigInt(notification.seq),
+      updateHash: notification.updateHash,
+    })
+    if (!persisted) return
+    this.deliverUpdate(location, persisted)
+  }
+
+  private deliverUpdate(
+    location: ArtifactLocation,
+    update: PersistedArtifactUpdate,
+    sourceClient?: ConnectedClient,
+  ): void {
+    const key = deliveryKey(location, update)
+    if (this.deliveredUpdates.has(key)) return
+    this.deliveredUpdates.set(key, true)
+    if (this.deliveredUpdates.size > MAX_DELIVERED_UPDATES) {
+      const oldest = this.deliveredUpdates.keys().next().value as string | undefined
+      if (oldest) this.deliveredUpdates.delete(oldest)
+    }
+    const clients = this.rooms.get(roomKey(location))
+    if (!clients) return
+    const message = {
+      type: 'update',
+      update: Buffer.from(update.update).toString('base64url'),
+      seq: update.seq.toString(),
+      updateHash: update.updateHash,
+      origin: publicOrigin(update.origin),
+    }
+    for (const peer of clients) {
+      if (sourceClient ? peer === sourceClient : originMatchesClient(update.origin, peer)) continue
+      if (update.seq <= peer.syncedThroughUpdateSeq) continue
+      send(peer.socket, message)
+    }
+  }
+
+  private async resyncRooms(): Promise<void> {
+    for (const clients of this.rooms.values()) {
+      const first = clients.values().next().value as ConnectedClient | undefined
+      if (!first) continue
+      try {
+        const state = await this.options.repository.syncState(first.location)
+        const message = {
+          type: 'sync',
+          update: Buffer.from(state.update).toString('base64url'),
+          stateVector: Buffer.from(state.stateVector).toString('base64url'),
+          stateHash: state.stateHash,
+          throughUpdateSeq: state.throughUpdateSeq.toString(),
+          reason: 'fanout_recovered',
+        }
+        for (const client of clients) {
+          client.syncedThroughUpdateSeq = state.throughUpdateSeq
+          send(client.socket, message)
+        }
+      } catch (error) {
+        this.reportFanoutError(error)
+      }
+    }
+  }
+
+  private reportFanoutError(error: unknown): void {
+    this.options.onFanoutError?.(error instanceof Error ? error : new Error(String(error)))
   }
 
   private broadcast(client: ConnectedClient, value: unknown, excludeSender = false): void {
