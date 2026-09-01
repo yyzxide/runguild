@@ -189,6 +189,44 @@ latest full-sync sequence are suppressed. After Redis subscription recovery,
 active rooms receive a PostgreSQL-rebuilt `sync` message with
 `reason: fanout_recovered`.
 
+Ephemeral presence uses the separate internal topic
+`mission.artifact-awareness.v1` and never enters the Outbox:
+
+~~~text
+artifact.awareness_updated {
+  schemaVersion: 1,
+  sourceInstanceId,
+  workspaceId,
+  artifactId,
+  version,
+  client: { clientId, identity, state }
+}
+artifact.awareness_removed {
+  schemaVersion: 1,
+  sourceInstanceId,
+  workspaceId,
+  artifactId,
+  version,
+  clientId
+}
+artifact.awareness_probe {
+  schemaVersion: 1,
+  sourceInstanceId,
+  workspaceId,
+  artifactId
+}
+~~~
+
+`sourceInstanceId` identifies one API process generation. A client version
+increases whenever its authenticated local connection changes or removes its
+state; equal-version heartbeats only renew the receiver TTL and stale versions
+are ignored. The first local client in a room publishes a probe, to which other
+instances answer with their current local presence. Graceful disconnect sends
+a removal. Missing removals are bounded by a three-heartbeat TTL, and Redis
+subscriber recovery clears remote entries before republishing and probing.
+The payload is schema/size bounded and scoped to an already-authorized local
+Workspace/Artifact room, but remains non-authoritative display state.
+
 ## 8. Evidence
 
 Evidence is typed rather than stored only as prose:

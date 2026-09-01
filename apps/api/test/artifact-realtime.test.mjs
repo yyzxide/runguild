@@ -59,14 +59,26 @@ async function openClient(url, actorId, sessionId) {
 
 function fanoutHub() {
   const endpoints = []
+  const publishedAwareness = []
   return {
     endpoint() {
       const notifications = new Set()
+      const awarenessNotifications = new Set()
       const recoveries = new Set()
       const endpoint = {
         subscribe(listener) {
           notifications.add(listener)
           return () => notifications.delete(listener)
+        },
+        subscribeAwareness(listener) {
+          awarenessNotifications.add(listener)
+          return () => awarenessNotifications.delete(listener)
+        },
+        async publishAwareness(notification) {
+          publishedAwareness.push(notification)
+          for (const target of endpoints) {
+            for (const listener of target.awarenessNotifications) listener(notification)
+          }
         },
         onRecovered(listener) {
           recoveries.add(listener)
@@ -78,7 +90,11 @@ function fanoutHub() {
         deliver(notification) {
           for (const listener of notifications) listener(notification)
         },
+        deliverAwareness(notification) {
+          for (const listener of awarenessNotifications) listener(notification)
+        },
         notifications,
+        awarenessNotifications,
       }
       endpoints.push(endpoint)
       return endpoint
@@ -88,6 +104,7 @@ function fanoutHub() {
         for (const listener of endpoint.notifications) listener(notification)
       }
     },
+    publishedAwareness,
   }
 }
 
@@ -334,6 +351,196 @@ test('Artifact realtime fans durable updates across instances once and resyncs a
     assert.deepEqual(errors, [])
   } finally {
     for (const client of [alice, carol, bob, foreign]) client.socket.close()
+    await Promise.all([realtimeA.close(), realtimeB.close()])
+    serverA.close()
+    serverB.close()
+    await Promise.all([once(serverA, 'close'), once(serverB, 'close')])
+  }
+})
+
+test('Artifact realtime discovers, versions, expires, and recovers cross-instance Awareness', async () => {
+  const repository = {
+    async authorizeActor() {},
+    async syncState() {
+      return {
+        update: Uint8Array.from([0, 0]),
+        stateVector: Uint8Array.from([0]),
+        stateHash: 'empty_hash',
+        throughUpdateSeq: 0n,
+      }
+    },
+    async appendUpdate() {
+      throw new Error('not used')
+    },
+    async readPersistedUpdate() {
+      return null
+    },
+  }
+  const hub = fanoutHub()
+  const fanoutA = hub.endpoint()
+  const fanoutB = hub.endpoint()
+  const serverA = createServer()
+  const serverB = createServer()
+  const errors = []
+  const realtimeA = attachArtifactRealtimeServer(serverA, {
+    repository,
+    fanout: fanoutA,
+    instanceId: 'api_instance_a',
+    heartbeatIntervalMs: 20,
+    awarenessTtlMs: 60,
+    onFanoutError: (error) => errors.push(error),
+  })
+  const realtimeB = attachArtifactRealtimeServer(serverB, {
+    repository,
+    fanout: fanoutB,
+    instanceId: 'api_instance_b',
+    heartbeatIntervalMs: 20,
+    awarenessTtlMs: 60,
+    onFanoutError: (error) => errors.push(error),
+  })
+  serverA.listen(0, '127.0.0.1')
+  serverB.listen(0, '127.0.0.1')
+  await Promise.all([once(serverA, 'listening'), once(serverB, 'listening')])
+  const addressA = serverA.address()
+  const addressB = serverB.address()
+  assert.ok(addressA && typeof addressA !== 'string')
+  assert.ok(addressB && typeof addressB !== 'string')
+  const roomPath = '/api/v1/workspaces/ws_realtime/artifacts/artifact_realtime/collaboration'
+  const alice = await openClient(
+    'ws://127.0.0.1:' + addressA.port + roomPath,
+    'user_alice',
+    'session_alice',
+  )
+  let bob
+  let foreign
+
+  try {
+    alice.socket.send(JSON.stringify({
+      type: 'awareness',
+      state: { displayName: 'Alice', color: '#3366ff', cursor: { anchor: 2, head: 4 } },
+    }))
+    const firstUpdate = await new Promise((resolve, reject) => {
+      const started = Date.now()
+      const poll = () => {
+        const found = hub.publishedAwareness.find(
+          (notification) => notification.type === 'artifact.awareness_updated' &&
+            notification.sourceInstanceId === 'api_instance_a',
+        )
+        if (found) return resolve(found)
+        if (Date.now() - started > 500) return reject(new Error('Awareness publication was not observed'))
+        setTimeout(poll, 5)
+      }
+      poll()
+    })
+    assert.equal(firstUpdate.version, 1)
+
+    bob = await openClient(
+      'ws://127.0.0.1:' + addressB.port + roomPath,
+      'user_bob',
+      'session_bob',
+    )
+    const discovered = await bob.inbox.next(
+      (message) => message.type === 'awareness.update' &&
+        message.client.identity.actorId === 'user_alice',
+    )
+    assert.equal(discovered.client.state.cursor.head, 4)
+    const remoteClientId = discovered.client.clientId
+
+    foreign = await openClient(
+      'ws://127.0.0.1:' + addressB.port +
+        '/api/v1/workspaces/ws_other/artifacts/artifact_realtime/collaboration',
+      'user_foreign',
+      'session_foreign',
+    )
+    await expectNoMessage(
+      foreign.inbox,
+      (message) => message.type === 'awareness.update' &&
+        message.client?.identity?.actorId === 'user_alice',
+    )
+
+    fanoutB.deliverAwareness(firstUpdate)
+    await expectNoMessage(
+      bob.inbox,
+      (message) => message.type === 'awareness.update' && message.client.clientId === remoteClientId,
+    )
+    fanoutB.deliverAwareness({
+      ...firstUpdate,
+      client: {
+        ...firstUpdate.client,
+        state: { ...firstUpdate.client.state, cursor: { anchor: 90, head: 99 } },
+      },
+    })
+    await expectNoMessage(
+      bob.inbox,
+      (message) => message.type === 'awareness.update' && message.client.state.cursor?.head === 99,
+    )
+    assert.match(errors.shift().message, /version was reused/)
+
+    alice.socket.send(JSON.stringify({
+      type: 'awareness',
+      state: { displayName: 'Alice', color: '#3366ff', cursor: { anchor: 8, head: 9 } },
+    }))
+    const changed = await bob.inbox.next(
+      (message) => message.type === 'awareness.update' &&
+        message.client.clientId === remoteClientId && message.client.state.cursor?.head === 9,
+    )
+    assert.equal(changed.client.state.cursor.anchor, 8)
+    fanoutB.deliverAwareness(firstUpdate)
+    await expectNoMessage(
+      bob.inbox,
+      (message) => message.type === 'awareness.update' && message.client.state.cursor?.head === 4,
+    )
+
+    fanoutB.recover()
+    await bob.inbox.next(
+      (message) => message.type === 'awareness.remove' && message.clientId === remoteClientId,
+    )
+    await bob.inbox.next(
+      (message) => message.type === 'sync' && message.reason === 'fanout_recovered',
+    )
+    const rediscovered = await bob.inbox.next(
+      (message) => message.type === 'awareness.update' &&
+        message.client.clientId === remoteClientId && message.client.state.cursor?.head === 9,
+    )
+    assert.equal(rediscovered.client.identity.actorId, 'user_alice')
+
+    const expiredClientId = 'presence_expired_remote'
+    fanoutB.deliverAwareness({
+      schemaVersion: 1,
+      type: 'artifact.awareness_updated',
+      sourceInstanceId: 'api_expired',
+      workspaceId: 'ws_realtime',
+      artifactId: 'artifact_realtime',
+      version: 1,
+      client: {
+        clientId: expiredClientId,
+        identity: { kind: 'user', actorId: 'user_expired', sessionId: 'session_expired' },
+        state: { displayName: 'Expired' },
+      },
+    })
+    await bob.inbox.next(
+      (message) => message.type === 'awareness.update' && message.client.clientId === expiredClientId,
+    )
+    await bob.inbox.next(
+      (message) => message.type === 'awareness.remove' && message.clientId === expiredClientId,
+      500,
+    )
+
+    alice.socket.close()
+    await once(alice.socket, 'close')
+    await bob.inbox.next(
+      (message) => message.type === 'awareness.remove' && message.clientId === remoteClientId,
+    )
+    fanoutB.deliverAwareness(firstUpdate)
+    await expectNoMessage(
+      bob.inbox,
+      (message) => message.type === 'awareness.update' && message.client.clientId === remoteClientId,
+    )
+    assert.deepEqual(errors, [])
+  } finally {
+    if (alice.socket.readyState !== WebSocket.CLOSED) alice.socket.close()
+    if (bob && bob.socket.readyState !== WebSocket.CLOSED) bob.socket.close()
+    if (foreign && foreign.socket.readyState !== WebSocket.CLOSED) foreign.socket.close()
     await Promise.all([realtimeA.close(), realtimeB.close()])
     serverA.close()
     serverB.close()

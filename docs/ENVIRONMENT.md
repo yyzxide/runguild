@@ -50,7 +50,9 @@ workarounds.
   publishes durable Outbox coordinates, and each API uses `REDIS_URL` for
   cross-instance Artifact wake-up. Restarting Workers republishes or polls
   PostgreSQL work; reconnecting API subscribers rebuild active Yjs rooms from
-  PostgreSQL instead of trusting missed Pub/Sub history.
+  PostgreSQL instead of trusting missed Pub/Sub history. Awareness also uses
+  Redis, but it is intentionally non-durable: API instances re-probe peers and
+  expire stale presence, so no Awareness data needs backup or migration.
 - Docker named volumes and the earlier Snap-Docker backup are outside Git.
 
 ## Personal-machine checklist

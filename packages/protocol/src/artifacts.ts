@@ -50,6 +50,62 @@ export interface ArtifactUpdateCommittedNotification {
   readonly updateHash: string
 }
 
+export interface ArtifactAwarenessState {
+  readonly displayName?: string | undefined
+  readonly color?: string | undefined
+  readonly status?: string | undefined
+  readonly activeBlockId?: string | undefined
+  readonly cursor?: {
+    readonly anchor: number
+    readonly head: number
+  } | undefined
+}
+
+export type ArtifactAwarenessIdentity =
+  | {
+      readonly kind: 'user'
+      readonly actorId: UserId
+      readonly sessionId: string
+    }
+  | {
+      readonly kind: 'agent'
+      readonly actorId: AgentId
+      readonly runId: RunId
+    }
+
+export interface ArtifactAwarenessClient {
+  readonly clientId: string
+  readonly identity: ArtifactAwarenessIdentity
+  readonly state: ArtifactAwarenessState
+}
+
+export type ArtifactAwarenessNotification =
+  | {
+      readonly schemaVersion: 1
+      readonly type: 'artifact.awareness_updated'
+      readonly sourceInstanceId: string
+      readonly workspaceId: WorkspaceId
+      readonly artifactId: ArtifactId
+      readonly version: number
+      readonly client: ArtifactAwarenessClient
+    }
+  | {
+      readonly schemaVersion: 1
+      readonly type: 'artifact.awareness_removed'
+      readonly sourceInstanceId: string
+      readonly workspaceId: WorkspaceId
+      readonly artifactId: ArtifactId
+      readonly version: number
+      readonly clientId: string
+    }
+  | {
+      readonly schemaVersion: 1
+      readonly type: 'artifact.awareness_probe'
+      readonly sourceInstanceId: string
+      readonly workspaceId: WorkspaceId
+      readonly artifactId: ArtifactId
+    }
+
 export type ArtifactOperation =
   | {
       readonly kind: 'insert_section'

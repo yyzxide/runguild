@@ -116,6 +116,10 @@ Expected flow:
 - Browser and Agent edits converge through a Y.Doc.
 - Yjs updates are persisted before they are considered durable.
 - Awareness is ephemeral and never used as authorization.
+- Cross-instance Awareness is versioned, room-scoped, bounded, refreshed by
+  heartbeat, and removed on graceful disconnect or TTL expiry after a crash.
+- A newly active API room probes peer instances instead of waiting for the next
+  periodic refresh; Redis reconnection clears and rebuilds remote presence.
 - Review creates an immutable Artifact Version.
 - Every Agent edit records Agent, Run, Task, and operation intent.
 - A committed Update is announced to other API instances through a

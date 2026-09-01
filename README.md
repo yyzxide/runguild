@@ -113,7 +113,9 @@ The control-plane foundation is executable:
   ephemeral Awareness snapshots/removals; every new Update creates a
   transactional Outbox notification, and Redis-connected API instances read
   the exact seq/hash back from PostgreSQL before broadcasting it once to local
-  peers; subscriber recovery forces a durable full-state resync;
+  peers; subscriber recovery forces a durable full-state resync; a separate
+  ephemeral Redis channel propagates versioned Awareness, probes new rooms,
+  republishes heartbeats, and expires stale remote presence;
 - Agent-native `artifact.read`, semantic `artifact.edit`, immutable
   `artifact.create_version`, and evidence-bound `artifact.submit_for_review`
   tools;
@@ -200,8 +202,7 @@ orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
 and API contracts. The external PostgreSQL integration test remains opt-in.
 The next implementation slices repeat the real-model benchmark after closing
 its usage-accounting gaps, and complete production identity, deployment,
-horizontal worker fencing, and cross-instance Awareness fan-out with stale
-presence expiry.
+and the remaining horizontal worker fencing and operations boundaries.
 
 ## Repository layout
 

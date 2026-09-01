@@ -139,9 +139,13 @@ that exact row back through an exact Workspace predicate, verifies its content
 hash, and then performs ordered, bounded, duplicate-free local broadcast. A
 Redis subscriber reconnect sends a PostgreSQL-rebuilt full state to every
 local room, covering Pub/Sub messages missed while disconnected. Redis never
-supplies document bytes or authority. Cross-instance Awareness remains a
-separate horizontal-scaling slice because it is ephemeral rather than Outbox
-data.
+supplies document bytes or authority. Awareness uses a separate non-Outbox
+Redis topic because it is explicitly ephemeral: source instances publish
+versioned update/removal messages and periodic refreshes, while a new room
+probes other instances for their current local members. Receivers keep only a
+bounded TTL cache. Subscriber recovery removes remote presence immediately,
+rebuilds durable Yjs state, republishes local presence, and probes again, so a
+crashed API cannot leave a permanent phantom collaborator.
 
 The Conversation Plane is durable rather than WebSocket-dependent. A project
 room has explicit Workspace-scoped members; messages have a stable sequence,
@@ -253,7 +257,7 @@ instead of consuming the delivery budget on unbounded repair.
 | Pre-model Worktree setup, lease, argv hash, and result hashes | PostgreSQL `task_worktree_setups` | Worker process timers |
 | Frozen Run instructions and per-hop model context | PostgreSQL Context Snapshots | Provider continuation cache |
 | Yjs content | PostgreSQL update log and snapshot | Y.Doc room and Redis fan-out |
-| Presence and carets | None | Process-local Awareness; cross-instance Redis presence is pending |
+| Presence and carets | None | Bounded process cache plus ephemeral Redis fan-out, probe, heartbeat, and TTL |
 | Tool side effects | PostgreSQL tool execution record plus target system | Event stream |
 | Run trace and cost | PostgreSQL | In-memory telemetry buffer |
 | Project-scoped redacted Run Trace query | PostgreSQL agent_runs/events/LLM/tool ledgers | Web Trace projection |
@@ -350,6 +354,13 @@ PostgreSQL. Repeated Outbox publication and local/remote delivery races are
 coalesced by a bounded seq/hash ledger per API instance. Each connection also
 records the latest full-sync Update sequence, so a delayed notification already
 contained in that database snapshot is not sent again.
+Awareness uses `mission.artifact-awareness.v1` directly rather than the
+Outbox. Each API process has a generation-specific instance id; every local
+connection has a monotonically increasing Awareness version. Remote APIs
+ignore stale or repeated versions, retain graceful-removal tombstones briefly,
+and expire unrefreshed presence after three heartbeat intervals. Exact
+Workspace/Artifact room keys prevent cross-room display. Awareness payloads
+remain display hints only and never grant access or become review evidence.
 
 The operator query surface lists Artifacts only through an exact
 Workspace/Project predicate. Artifact detail reconstructs the current Y.Doc,
