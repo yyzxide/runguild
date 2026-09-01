@@ -16,6 +16,7 @@ import {
   KeyRound,
   LoaderCircle,
   Link2,
+  LogOut,
   MessageCircle,
   Network,
   Plus,
@@ -40,6 +41,7 @@ import {
   type ConversationPlanningRequest,
   type ConversationSnapshot,
   type DevelopmentSetup,
+  type AuthenticationSession,
   type MissionSnapshot,
   type ProjectOperatorOverview,
   type ProjectRuntimeConfigurationResponse,
@@ -66,10 +68,10 @@ const viewMeta: Record<View, { readonly label: string; readonly icon: LucideIcon
 }
 const primaryViews: readonly View[] = ['start', 'team', 'mission']
 
-const defaultIdentity: TestIdentity = {
-  workspaceId: 'demo_workspace',
-  projectId: 'demo_project',
-  userId: 'demo_user',
+const emptyIdentity: TestIdentity = {
+  workspaceId: '',
+  projectId: '',
+  userId: '',
 }
 
 const roleLabels: Record<string, string> = {
@@ -108,7 +110,18 @@ function StatusPill({ tone, children }: { readonly tone: string; readonly childr
   return <span className={`status-pill status-pill--${tone}`}>{children}</span>
 }
 
-function AppNavigation({ view, onNavigate }: { readonly view: View; readonly onNavigate: (view: View) => void }) {
+function AppNavigation({
+  view,
+  session,
+  onNavigate,
+  onLogout,
+}: {
+  readonly view: View
+  readonly session: AuthenticationSession
+  readonly onNavigate: (view: View) => void
+  readonly onLogout: () => void
+}) {
+  const initials = session.user.displayName.trim().slice(0, 2) || session.user.id.slice(0, 2)
   return (
     <nav className="app-nav" aria-label="主导航">
       <button className="brand-mark" aria-label="RunGuild" onClick={() => onNavigate('start')}>
@@ -125,15 +138,31 @@ function AppNavigation({ view, onNavigate }: { readonly view: View; readonly onN
           )
         })}
       </div>
-      <div className="user-avatar" aria-label="当前用户：本地开发者">本地</div>
+      <button className="user-avatar" aria-label={`退出当前用户：${session.user.displayName}`} title={`${session.user.displayName} · ${session.user.role}`} onClick={onLogout}>
+        <span>{initials}</span><LogOut size={13} />
+      </button>
     </nav>
   )
 }
 
-function TopBar({ view, connection, projectId, onOpenCommand }: { readonly view: View; readonly connection: ConnectionState; readonly projectId: string; readonly onOpenCommand: () => void }) {
+function TopBar({
+  view,
+  connection,
+  projects,
+  projectId,
+  onProjectChange,
+  onOpenCommand,
+}: {
+  readonly view: View
+  readonly connection: ConnectionState
+  readonly projects: AuthenticationSession['projects']
+  readonly projectId: string
+  readonly onProjectChange: (projectId: string) => void
+  readonly onOpenCommand: () => void
+}) {
   return (
     <header className="topbar">
-      <div className="workspace-switcher" aria-label={`当前项目：${projectId}`}><span className="workspace-glyph">R</span><span>{projectId}</span></div>
+      <label className="workspace-switcher" aria-label={`当前项目：${projectId}`}><span className="workspace-glyph">R</span><select value={projectId} onChange={(event) => onProjectChange(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label>
       <div className="topbar__context"><span>{viewMeta[view].eyebrow}</span></div>
       <button className="command-trigger" onClick={onOpenCommand}><Search size={15} /><span>查找页面或功能</span><kbd><Command size={11} />K</kbd></button>
       <div className={`system-state system-state--${connection}`}>
@@ -318,7 +347,7 @@ function RuntimeConfigPanel({
 }
 
 function StartView({
-  connection, setup, overview, mission, identity, busy, error, onIdentityChange, onCheck, onBootstrap, onCreate, onPropose, onApprove, onRefresh, onSelectMission, onOpenMission, onOpenTeam, onOpenRuntime,
+  connection, setup, overview, mission, identity, busy, error, onCheck, onBootstrap, onCreate, onPropose, onApprove, onRefresh, onSelectMission, onOpenMission, onOpenTeam, onOpenRuntime,
 }: {
   readonly connection: ConnectionState
   readonly setup: DevelopmentSetup | null
@@ -327,7 +356,6 @@ function StartView({
   readonly identity: TestIdentity
   readonly busy: string | null
   readonly error: string | null
-  readonly onIdentityChange: (identity: TestIdentity) => void
   readonly onCheck: () => void
   readonly onBootstrap: () => void
   readonly onCreate: (title: string, goal: string) => void
@@ -529,9 +557,9 @@ function StartView({
             <div className="test-step__heading"><div><span className="micro-label">准备数据</span><h2>初始化本地测试环境</h2></div>{setup ? <StatusPill tone="verified">已完成</StatusPill> : null}</div>
             <p>幂等创建一个 Workspace、Project、开发用户，以及规划/研究/构建/审查四个 Agent。重复点击不会产生重复数据。</p>
             <div className="identity-grid">
-              <label>工作区 ID<input value={identity.workspaceId} disabled={Boolean(setup)} onChange={(event) => onIdentityChange({ ...identity, workspaceId: event.target.value })} /></label>
-              <label>项目 ID<input value={identity.projectId} disabled={Boolean(setup)} onChange={(event) => onIdentityChange({ ...identity, projectId: event.target.value })} /></label>
-              <label>用户 ID<input value={identity.userId} disabled={Boolean(setup)} onChange={(event) => onIdentityChange({ ...identity, userId: event.target.value })} /></label>
+              <label>工作区 ID<input value={identity.workspaceId} readOnly aria-readonly="true" /></label>
+              <label>项目 ID<input value={identity.projectId} readOnly aria-readonly="true" /></label>
+              <label>认证用户<input value={identity.userId} readOnly aria-readonly="true" /></label>
             </div>
             <button className="primary-action" disabled={connection !== 'online' || Boolean(setup) || Boolean(busy)} onClick={onBootstrap}>
               {busy === 'bootstrap' ? <LoaderCircle className="is-spinning" size={16} /> : <Database size={16} />}{setup ? '环境已初始化' : '初始化测试环境'}
@@ -967,11 +995,77 @@ function CommandPalette({ onClose, onNavigate }: { readonly onClose: () => void;
   return <div className="command-backdrop" role="presentation" onMouseDown={onClose}><div className="command-palette" role="dialog" aria-modal="true" aria-label="快捷导航" onMouseDown={(event) => event.stopPropagation()}><div className="command-palette__search"><Search size={18} /><input autoFocus placeholder="查找页面或功能…" /><kbd>esc</kbd></div><span className="micro-label">可操作页面</span><div className="command-results">{primaryViews.map((key) => { const item = viewMeta[key]; const Icon = item.icon; return <button key={key} onClick={() => { onNavigate(key); onClose() }}><Icon size={17} /><span><strong>{item.label}</strong><small>{item.eyebrow}</small></span><code>↵</code></button> })}</div></div></div>
 }
 
+function AuthenticationChecking({ connection }: { readonly connection: ConnectionState }) {
+  return <main className="auth-shell"><section className="auth-checking" aria-live="polite"><span className="auth-seal"><LoaderCircle className="is-spinning" size={24} /></span><div><span className="micro-label">RunGuild 访问门禁</span><h1>正在恢复操作会话</h1><p>{connection === 'offline' ? 'API 暂时不可用，正在等待连接状态。' : '正在校验 HttpOnly Cookie 与 PostgreSQL 会话。'}</p></div></section></main>
+}
+
+function LoginView({
+  connection,
+  onLogin,
+}: {
+  readonly connection: ConnectionState
+  readonly onLogin: (input: { readonly workspaceId: string; readonly userId: string; readonly password: string }) => Promise<void>
+}) {
+  const [workspaceId, setWorkspaceId] = useState(() => window.localStorage.getItem('runguild:login-workspace') ?? 'demo_workspace')
+  const [userId, setUserId] = useState(() => window.localStorage.getItem('runguild:login-user') ?? 'demo_user')
+  const [password, setPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [loginError, setLoginError] = useState<string | null>(null)
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setLoginError(null)
+    try {
+      await onLogin({ workspaceId: workspaceId.trim(), userId: userId.trim(), password })
+      window.localStorage.setItem('runguild:login-workspace', workspaceId.trim())
+      window.localStorage.setItem('runguild:login-user', userId.trim())
+      setPassword('')
+    } catch (caught) {
+      setLoginError(caught instanceof Error ? caught.message : '登录失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return (
+    <main className="auth-shell">
+      <section className="auth-console">
+        <header className="auth-console__brand"><span className="brand-mark__orbit" /><strong>RG</strong><div><span>RunGuild</span><small>持久化多 Agent 执行平台</small></div></header>
+        <div className="auth-console__body">
+          <div className="auth-intro">
+            <span className="micro-label">生产身份边界 · Session Gate</span>
+            <h1><span>进入真实</span><span>操作平面</span></h1>
+            <p>登录后才能查看 Mission、控制 Worker 或批准交付。浏览器声明的用户 Header 不再被信任。</p>
+            <ol className="auth-manifest" aria-label="访问门禁清单">
+              <li><span>01</span><ShieldCheck size={17} /><div><strong>会话是持久事实</strong><small>Token 只进 HttpOnly Cookie，数据库仅保存哈希与过期状态。</small></div></li>
+              <li><span>02</span><KeyRound size={17} /><div><strong>写操作双重校验</strong><small>SameSite Cookie、允许来源与 CSRF Token 必须同时成立。</small></div></li>
+              <li><span>03</span><Bot size={17} /><div><strong>Agent 使用另一条通道</strong><small>内部 Bearer Token 来自进程环境，不写数据库，也不返回浏览器。</small></div></li>
+            </ol>
+          </div>
+          <form className="auth-form" onSubmit={(event) => void submit(event)}>
+            <div className="auth-form__heading"><span className={`system-state__signal system-state__signal--${connection}`} /><div><strong>操作员登录</strong><small>API {connection === 'online' ? '已连接' : connection === 'checking' ? '检查中' : '未连接'}</small></div></div>
+            <label><span>Workspace ID</span><input autoComplete="organization" value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)} required maxLength={200} /></label>
+            <label><span>User ID</span><input autoComplete="username" value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength={200} /></label>
+            <label><span>密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={1_024} /></label>
+            {loginError ? <div className="auth-error" role="alert"><CircleAlert size={16} /><span>{loginError}</span></div> : null}
+            <button className="auth-submit" type="submit" disabled={submitting || connection !== 'online' || !workspaceId.trim() || !userId.trim() || !password}>{submitting ? <LoaderCircle className="is-spinning" size={17} /> : <ArrowRight size={17} />}验证并进入</button>
+            <p className="auth-form__hint">首次使用先在服务器执行 <code>npm run auth:set-password</code>。密码与 API Key 都不会进入前端存储。</p>
+          </form>
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function NoProjectAccess({ session, onLogout }: { readonly session: AuthenticationSession; readonly onLogout: () => void }) {
+  return <main className="auth-shell"><section className="auth-checking"><span className="auth-seal"><FolderGit2 size={23} /></span><div><span className="micro-label">账号已通过认证</span><h1>当前 Workspace 还没有可操作项目</h1><p>请先由管理员创建 Project，再重新登录刷新项目权限。</p><button className="secondary-action" onClick={onLogout}><LogOut size={15} />退出登录</button></div></section></main>
+}
+
 export function App() {
   const [view, setView] = useState<View>(fromHash)
   const [commandOpen, setCommandOpen] = useState(false)
   const [connection, setConnection] = useState<ConnectionState>('checking')
-  const [identity, setIdentity] = useState<TestIdentity>(defaultIdentity)
+  const [authentication, setAuthentication] = useState<AuthenticationSession | null | undefined>(undefined)
+  const [identity, setIdentity] = useState<TestIdentity>(emptyIdentity)
   const [setup, setSetup] = useState<DevelopmentSetup | null>(null)
   const [overview, setOverview] = useState<ProjectOperatorOverview | null>(null)
   const [runtimeConfiguration, setRuntimeConfiguration] = useState<ProjectRuntimeConfigurationResponse | null>(null)
@@ -985,6 +1079,28 @@ export function App() {
       ?? '')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const clearProjectState = useCallback(() => {
+    setSetup(null)
+    setOverview(null)
+    setRuntimeConfiguration(null)
+    setRuntimePanelOpen(false)
+    setMission(null)
+    setMissionId('')
+    window.localStorage.removeItem('runguild:last-mission')
+    window.localStorage.removeItem('mission-control:last-mission')
+  }, [])
+  const applyAuthentication = useCallback((session: AuthenticationSession) => {
+    const rememberedProject = window.localStorage.getItem('runguild:last-project')
+    const project = session.projects.find((candidate) => candidate.id === rememberedProject) ?? session.projects[0]
+    setAuthentication(session)
+    setIdentity({
+      workspaceId: session.user.workspaceId,
+      projectId: project?.id ?? '',
+      userId: session.user.id,
+    })
+    if (project) window.localStorage.setItem('runguild:last-project', project.id)
+  }, [])
 
   const acceptMission = useCallback((snapshot: MissionSnapshot) => {
     setMissionId(snapshot.id)
@@ -1020,33 +1136,64 @@ export function App() {
   const run = async (name: string, operation: () => Promise<void>) => { setBusy(name); setError(null); try { await operation() } catch (caught) { setError(caught instanceof Error ? caught.message : '发生未知错误') } finally { setBusy(null) } }
   const checkConnection = () => void run('health', async () => { setConnection('checking'); try { await missionApi.health(); setConnection('online'); await syncOverview().catch(() => setOverview(null)); await syncRuntimeConfiguration().catch(() => setRuntimeConfiguration(null)) } catch (caught) { setConnection('offline'); throw caught } })
   const refreshMission = () => { if (!missionId) return; void run('refresh', async () => { setMission(await missionApi.getMission(identity, missionId)); await syncOverview() }) }
-  const changeIdentity = (next: TestIdentity) => {
-    setIdentity(next)
-    setSetup(null)
-    setOverview(null)
-    setRuntimeConfiguration(null)
-    setRuntimePanelOpen(false)
-    setMission(null)
-    setMissionId('')
-    window.localStorage.removeItem('runguild:last-mission')
-    window.localStorage.removeItem('mission-control:last-mission')
+  const changeProject = (projectId: string) => {
+    if (!authentication || !authentication.projects.some((project) => project.id === projectId)) return
+    clearProjectState()
+    window.localStorage.setItem('runguild:last-project', projectId)
+    setIdentity({ workspaceId: authentication.user.workspaceId, projectId, userId: authentication.user.id })
+  }
+
+  const logout = () => {
+    void missionApi.logout().catch(() => undefined).finally(() => {
+      clearProjectState()
+      setAuthentication(null)
+      setIdentity(emptyIdentity)
+    })
   }
 
   useEffect(() => { const update = () => setView(fromHash()); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update) }, [])
-  useEffect(() => { void missionApi.health().then(() => setConnection('online')).catch(() => setConnection('offline')) }, [])
   useEffect(() => {
-    if (connection !== 'online') return
+    let active = true
+    void missionApi.health()
+      .then(async () => {
+        if (!active) return
+        setConnection('online')
+        try {
+          const session = await missionApi.session()
+          if (active) applyAuthentication(session)
+        } catch {
+          if (active) setAuthentication(null)
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setConnection('offline')
+        setAuthentication(null)
+      })
+    return () => { active = false }
+  }, [applyAuthentication])
+  useEffect(() => {
+    const authenticationRequired = () => {
+      clearProjectState()
+      setAuthentication(null)
+      setIdentity(emptyIdentity)
+    }
+    window.addEventListener('runguild:authentication-required', authenticationRequired)
+    return () => window.removeEventListener('runguild:authentication-required', authenticationRequired)
+  }, [clearProjectState])
+  useEffect(() => {
+    if (connection !== 'online' || !authentication || !identity.projectId) return
     void syncOverview().catch(() => setOverview(null))
     const interval = window.setInterval(() => void syncOverview().catch(() => undefined), 5_000)
     return () => window.clearInterval(interval)
-  }, [connection, syncOverview])
+  }, [authentication, connection, identity.projectId, syncOverview])
   useEffect(() => {
-    if (connection !== 'online' || !overview) return
+    if (connection !== 'online' || !authentication || !overview) return
     void syncRuntimeConfiguration().catch(() => setRuntimeConfiguration(null))
     const interval = window.setInterval(() => void syncRuntimeConfiguration().catch(() => undefined), 5_000)
     return () => window.clearInterval(interval)
-  }, [connection, overview?.project.id, syncRuntimeConfiguration])
-  useEffect(() => { if (connection !== 'online' || !missionId || mission) return; void missionApi.getMission(identity, missionId).then((snapshot) => { window.localStorage.setItem('runguild:last-mission', missionId); window.localStorage.removeItem('mission-control:last-mission'); setMission(snapshot) }).catch(() => { window.localStorage.removeItem('runguild:last-mission'); window.localStorage.removeItem('mission-control:last-mission') }) }, [connection, identity, mission, missionId])
+  }, [authentication, connection, overview?.project.id, syncRuntimeConfiguration])
+  useEffect(() => { if (connection !== 'online' || !authentication || !missionId || mission) return; void missionApi.getMission(identity, missionId).then((snapshot) => { window.localStorage.setItem('runguild:last-mission', missionId); window.localStorage.removeItem('mission-control:last-mission'); setMission(snapshot) }).catch(() => { window.localStorage.removeItem('runguild:last-mission'); window.localStorage.removeItem('mission-control:last-mission') }) }, [authentication, connection, identity, mission, missionId])
   useEffect(() => { const keydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setCommandOpen((open) => !open) } if (event.key === 'Escape') { setCommandOpen(false); setRuntimePanelOpen(false) } }; window.addEventListener('keydown', keydown); return () => window.removeEventListener('keydown', keydown) }, [])
 
   const openRuntimePanel = () => {
@@ -1078,7 +1225,7 @@ export function App() {
   }
 
   const startProps = {
-    connection, setup, overview, mission, identity, busy, error, onIdentityChange: changeIdentity, onCheck: checkConnection,
+    connection, setup, overview, mission, identity, busy, error, onCheck: checkConnection,
     onBootstrap: () => void run('bootstrap', async () => { setSetup(await missionApi.bootstrap(identity)); await syncOverview(); await syncRuntimeConfiguration() }),
     onCreate: (title: string, goal: string) => void run('create', async () => { const id = await missionApi.createMission(identity, title, goal, setup?.conversationId); setMissionId(id); window.localStorage.setItem('runguild:last-mission', id); setMission(await missionApi.getMission(identity, id)); await syncOverview() }),
     onPropose: () => void run('propose', async () => { if (!mission) return; await missionApi.proposePlan(identity, mission.id, guidedPlan); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() }),
@@ -1099,5 +1246,9 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, connection, setup, overview, mission, identity, busy, error, missionId, acceptMission, acceptMissionFromPlanning, syncOverview])
 
-  return <div className="app-shell"><AppNavigation view={view} onNavigate={navigate} /><div className="app-stage"><TopBar view={view} connection={connection} projectId={overview?.project.name ?? identity.projectId} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
+  if (authentication === undefined) return <AuthenticationChecking connection={connection} />
+  if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />
+  if (!authentication.projects.length) return <NoProjectAccess session={authentication} onLogout={logout} />
+
+  return <div className="app-shell"><AppNavigation view={view} session={authentication} onNavigate={navigate} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
 }

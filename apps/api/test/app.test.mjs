@@ -634,7 +634,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     evaluations: evaluations.service,
     developmentSetup: development.service,
     localRuntimeControl: localRuntimeControl.service,
-  })
+  }, { allowInsecureActorHeaders: true })
 
   await withServer(app, async (baseUrl) => {
     const bootstrapped = await fetch(baseUrl + '/api/v1/development/bootstrap', {

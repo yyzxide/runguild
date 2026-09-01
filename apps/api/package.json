@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "main": "./dist/server.js",
+  "scripts": {
+    "auth:set-password": "node dist/set-password.js"
+  },
   "dependencies": {
     "@runguild/collaboration": "0.0.1",
     "@runguild/database": "0.0.1",

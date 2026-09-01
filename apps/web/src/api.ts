@@ -111,6 +111,18 @@ export interface TestIdentity {
   readonly userId: string
 }
 
+export interface AuthenticationSession {
+  readonly user: {
+    readonly id: string
+    readonly workspaceId: string
+    readonly displayName: string
+    readonly role: 'owner' | 'operator' | 'viewer'
+  }
+  readonly projects: readonly { readonly id: string; readonly name: string }[]
+  readonly expiresAt: string
+  readonly idleExpiresAt: string
+}
+
 export interface DevelopmentSetup extends TestIdentity {
   readonly conversationId: string
   readonly agents: readonly { readonly id: string; readonly role: string; readonly name: string }[]
@@ -473,10 +485,29 @@ export interface ConversationPlanningRequest {
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
+function cookie(name: string): string | undefined {
+  for (const entry of document.cookie.split(';')) {
+    const separator = entry.indexOf('=')
+    if (separator < 1 || entry.slice(0, separator).trim() !== name) continue
+    return entry.slice(separator + 1).trim()
+  }
+  return undefined
+}
+
+function csrfToken(): string | undefined {
+  return cookie('__Host-runguild_csrf') ?? cookie('runguild_csrf')
+}
+
 async function request<ResponseBody>(path: string, init: RequestInit = {}): Promise<ResponseBody> {
   let response: Response
   try {
-    response = await fetch(apiBase + path, init)
+    const headers = new Headers(init.headers)
+    const method = init.method?.toUpperCase() ?? 'GET'
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      const token = csrfToken()
+      if (token) headers.set('x-csrf-token', token)
+    }
+    response = await fetch(apiBase + path, { ...init, credentials: 'include', headers })
   } catch {
     throw new Error('无法连接 API。请确认 PostgreSQL 和 API 服务已经启动。')
   }
@@ -484,18 +515,37 @@ async function request<ResponseBody>(path: string, init: RequestInit = {}): Prom
   if (!response.ok) {
     const payload = body as { error?: { message?: string; code?: string; reason?: string } } | null
     const message = payload?.error?.message ?? payload?.error?.reason ?? payload?.error?.code
+    if (response.status === 401 && path !== '/api/v1/auth/login' && path !== '/api/v1/auth/session') {
+      window.dispatchEvent(new Event('runguild:authentication-required'))
+    }
     throw new Error(message ? `请求失败：${message}` : `请求失败（HTTP ${response.status}）`)
   }
   return body as ResponseBody
 }
 
-function actorHeaders(userId: string): Record<string, string> {
-  return { 'content-type': 'application/json', 'x-actor-id': userId, 'x-actor-kind': 'user' }
+function actorHeaders(_userId: string): Record<string, string> {
+  return { 'content-type': 'application/json' }
 }
 
 export const missionApi = {
   async health(): Promise<void> {
     await request<{ readonly status: string }>('/health')
+  },
+
+  session(): Promise<AuthenticationSession> {
+    return request('/api/v1/auth/session')
+  },
+
+  login(input: { readonly workspaceId: string; readonly userId: string; readonly password: string }): Promise<AuthenticationSession> {
+    return request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+  },
+
+  async logout(): Promise<void> {
+    await request('/api/v1/auth/logout', { method: 'POST' })
   },
 
   bootstrap(identity: TestIdentity): Promise<DevelopmentSetup> {
@@ -700,7 +750,7 @@ export const missionApi = {
   getMission(identity: TestIdentity, missionId: string): Promise<MissionSnapshot> {
     return request(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/missions/${encodeURIComponent(missionId)}`,
-      { headers: { 'x-actor-id': identity.userId, 'x-actor-kind': 'user' } },
+      { headers: actorHeaders(identity.userId) },
     )
   },
 

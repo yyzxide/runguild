@@ -18,6 +18,33 @@ Every domain event carries:
 Correlation groups one user intent or Mission operation. Causation points to
 the command or event that directly produced the new event.
 
+### Transport identity
+
+Browser REST identity is a server-resolved PostgreSQL session, never
+`x-actor-id`. The public authentication exchange is:
+
+~~~text
+POST /api/v1/auth/login
+GET  /api/v1/auth/session
+POST /api/v1/auth/logout
+~~~
+
+Login accepts one Workspace id, User id, and password from an exact allowed
+Origin. Success returns only the User/role, allowed Projects, and expiry times;
+the random session token is an HttpOnly SameSite Cookie and the random CSRF
+token is a separate SameSite Cookie. Unsafe authenticated requests must echo
+that CSRF value in `x-csrf-token`. The API compares the two tokens in fixed time
+and verifies the CSRF hash stored with the resolved session. Password change
+advances `credential_version`, invalidating every older session. Authentication
+errors are generic; a database-backed block returns 429 plus `Retry-After`.
+
+Agent HTTP or Artifact WebSocket requests use `Authorization: Bearer <internal
+token>` before the server considers `x-actor-kind: agent`, `x-actor-id`, and
+the required Run/Task/Tool/intent origin headers. The Bearer token exists only
+in process environments. Browser and Agent transports then enter the same
+Workspace/domain authorization repositories; transport proof alone never
+approves a plan, Tool, Review, or integration.
+
 ## 2. Commands and events
 
 A command requests a state change and may be rejected. An event records a fact

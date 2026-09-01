@@ -87,6 +87,12 @@ Expected flow:
 
 ### Workspace and conversation
 
+- A human signs in to one exact Workspace with a revocable PostgreSQL session;
+  the browser cannot choose its own actor identity.
+- Owner and operator roles may use mutating operator commands; viewer is
+  read-only. Domain-specific approval/reviewer rules remain additional gates.
+- Browser writes require same-origin Cookie/CSRF proof. Agent transport uses a
+  separate environment-only credential and cannot impersonate a browser User.
 - One user can create a project and conversation.
 - Persistent agents can receive mentions and post progress summaries.
 - A message or selected message range can create a Mission proposal.
@@ -187,6 +193,10 @@ Expected flow:
 - Tenant checks are enforced at every command boundary.
 - Secrets must not enter prompts, events, or persisted tool output.
 - Tool output is size-bounded and sensitive fields are redacted.
+- Plaintext passwords, session/CSRF tokens, internal Agent tokens, and model
+  API keys never enter PostgreSQL events, API responses, browser storage, or
+  prompts outside their narrowly required transport location.
+- Login throttling and session revocation remain correct across API instances.
 
 ## 8. Differentiation from Cumora
 
@@ -262,3 +272,8 @@ The first portfolio-quality release is accepted when automated tests prove:
     its isolated Worktree, calls no model before they pass, and recovers an
     interrupted setup without reusing success from another generation or
     command hash.
+27. A browser-supplied actor header cannot authenticate. Login creates only
+    hashed, expiring, revocable PostgreSQL session state; unsafe requests fail
+    without matching Origin and CSRF proof, cross-Workspace paths fail, viewer
+    writes fail, and an Agent requires the independent environment Bearer
+    credential before its scoped origin headers are considered.

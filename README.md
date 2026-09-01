@@ -184,6 +184,14 @@ The control-plane foundation is executable:
   the real Project repository/branch, configured Agent models, project-scoped
   active Runs, and recent Mission register, and supports switching a Mission
   directly from the Web;
+- production browser identity boundaries backed by PostgreSQL credentials and
+  revocable sessions: scrypt password hashes, hashed session/CSRF tokens,
+  absolute and idle expiry, credential-version invalidation, database-backed
+  login throttling, owner/operator/viewer roles, exact Workspace scope, and an
+  append-only authentication event ledger. The Web uses HttpOnly SameSite
+  cookies plus Origin/CSRF checks; browser actor headers are ignored. Internal
+  Agent HTTP/WebSocket access requires a separate environment-only Bearer
+  token;
 - an exact-version final-delivery gate: after every Task is complete, a
   Workspace human approves the selected immutable Artifact Version before the
   Mission can move from `reviewing` to `completed`;
@@ -201,8 +209,8 @@ The local suite covers protocol, migrations, Conversation routing, Mission
 orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
 and API contracts. The external PostgreSQL integration test remains opt-in.
 The next implementation slices repeat the real-model benchmark after closing
-its usage-accounting gaps, and complete production identity, deployment,
-and the remaining horizontal worker fencing and operations boundaries.
+its usage-accounting gaps, then harden deployment/secret rotation and the
+remaining horizontal operations boundaries.
 
 ## Repository layout
 
@@ -248,9 +256,23 @@ cp .env.example .env
 # Edit .env. Set ENABLE_LOCAL_RUNTIME_CONTROL=true to enable Web process
 # controls, and set OPENAI_API_KEY before starting an Agent Worker.
 npm run api:local
-# in another terminal
+# On a new database, create the development records once while the API runs:
+curl -fsS -X POST http://127.0.0.1:4000/api/v1/development/bootstrap \
+  -H 'content-type: application/json' -d '{}'
+# Set an existing user's password in a second terminal. Input is hidden:
+npm run auth:set-password -- --workspace demo_workspace --user demo_user --role owner
 npm run web:start
 ~~~
+
+`ENABLE_DEV_BOOTSTRAP=true` is a local provisioning aid, not a production
+identity provider. Disable it after local initialization. The password command
+runs migrations, requires the User to exist, never prints the password/hash,
+and revokes that User's older sessions whenever the credential changes. For
+non-interactive secret injection, pass `--password-stdin`; do not place a real
+password in Git. Production must set `AUTH_ALLOWED_ORIGINS` to the exact Web
+origin, use HTTPS with `AUTH_COOKIE_SECURE=true`, and serve Web/API through the
+same origin. Generate `INTERNAL_AGENT_TOKEN` with at least 32 unpredictable
+characters when an Agent needs HTTP or Artifact WebSocket access.
 
 The published database ports are configurable with `POSTGRES_PORT` and
 `REDIS_PORT`. If another local Redis already owns port 6379, for example, set
@@ -445,11 +467,13 @@ GET  /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/evaluation-experiments/:experimentId/report
 ~~~
 
-The current WebSocket authentication adapter mirrors the REST development
-identity headers: `x-actor-id` plus `x-session-id` for a user, or the complete
-Agent Run/Task/Tool origin headers for an Agent. A production identity-provider
-adapter will replace these development headers without changing room or Yjs
-semantics.
+Artifact WebSocket authentication uses the same PostgreSQL browser session and
+exact allowed Origin as REST; the server owns the Awareness session identity.
+Agent connections must send the environment-only Bearer token plus the complete
+Agent/Run/Task/Tool/intent origin headers. Plain actor headers without the
+Bearer token are not authentication. The header-only adapter remains available
+only through an explicit in-process test option and is not enabled by the
+server entrypoint.
 
 PostgreSQL integration tests are opt-in:
 

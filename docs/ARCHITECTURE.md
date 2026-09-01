@@ -252,6 +252,8 @@ instead of consuming the delivery budget on unbounded repair.
 | Task ownership and lease | PostgreSQL | Worker memory |
 | Worker process presence and expiry | PostgreSQL Worker Instance heartbeat | Web five-second projection |
 | Project launch inputs | PostgreSQL Project Runtime Configuration (never API keys) | API-owned local child-process map |
+| Human credentials, roles, session validity, login throttling, and auth audit | PostgreSQL hashes/versioned rows | HttpOnly/CSRF browser cookies containing plaintext random tokens |
+| Internal Agent API identity | API process environment Bearer token plus durable Run/Task authorization | Request headers after token validation |
 | Mission working deliverable | PostgreSQL primary `mission_deliverable` Artifact, Yjs state, and immutable Versions | Model prompt and Web Artifact projections |
 | Task Worktree, reviewed HEAD, and integration state | PostgreSQL plus Git object database | Worker path cache |
 | Pre-model Worktree setup, lease, argv hash, and result hashes | PostgreSQL `task_worktree_setups` | Worker process timers |
@@ -262,6 +264,35 @@ instead of consuming the delivery budget on unbounded repair.
 | Run trace and cost | PostgreSQL | In-memory telemetry buffer |
 | Project-scoped redacted Run Trace query | PostgreSQL agent_runs/events/LLM/tool ledgers | Web Trace projection |
 | Project-scoped Evaluation Scenario, Trial, and report inputs | PostgreSQL immutable Scenario Version plus Run ledgers | Rebuildable Web report projection |
+
+### Identity and transport boundary
+
+Human authentication and domain authorization are separate checks. A successful
+password verification creates a random session token and random CSRF token;
+PostgreSQL receives only their SHA-256 hashes, the exact Workspace/User/role,
+credential version, source/user-agent hashes, idle/absolute expiry, and later
+revocation. Passwords use parameter-fixed scrypt hashes with per-credential
+random salts. Changing a credential increments its version and revokes every
+older session in one transaction. Failed login counters and blocks are also
+PostgreSQL facts so horizontally scaled API instances cannot bypass each
+other's throttle.
+
+The browser receives a SameSite=Strict session Cookie with `HttpOnly` and a
+separate readable CSRF Cookie. Unsafe REST requests require an exact configured
+Origin plus a header/Cookie/hashed-session CSRF match. Production Cookies use
+the `__Host-` prefix and `Secure`; production startup rejects an empty allowed
+Origin set. Workspace ids in REST/Artifact WebSocket paths must equal the
+session Workspace before repository authorization runs. `viewer` is globally
+read-only, while `operator` and `owner` may enter the existing domain gates.
+The Web cannot select or claim a User id: it receives the User and allowed
+Project list from `/auth/session`.
+
+Agent transport identity never reuses the browser session. An Agent must first
+prove an unpredictable Bearer token kept only in the API/Worker environment;
+only then are its Actor/Run/Task/Tool/intent headers accepted and checked by
+the Artifact/domain repository. The production server never enables the
+header-only test authenticator. Redis carries neither credentials nor session
+truth.
 
 ## 5. Mission execution flow
 

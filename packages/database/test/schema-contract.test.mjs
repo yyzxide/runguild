@@ -13,6 +13,7 @@ const conversationMigrationUrl = new URL('../migrations/0010_conversations.sql',
 const conversationPlanningMigrationUrl = new URL('../migrations/0011_conversation_planning.sql', import.meta.url)
 const workerInstancesMigrationUrl = new URL('../migrations/0012_worker_instances.sql', import.meta.url)
 const projectScopedAgentMigrationUrl = new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url)
+const authenticationMigrationUrl = new URL('../migrations/0021_authentication.sql', import.meta.url)
 const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
@@ -174,6 +175,23 @@ test('Agent Worker schema fences legacy processes before requiring one Project',
   assert.match(sql, /kind IN \('agent', 'integration'\)/)
   assert.match(sql, /status = 'stale'/)
   assert.match(runner, /0020_project_scoped_agent_workers\.sql/)
+})
+
+test('Authentication schema stores only hashes, versions sessions, and keeps an audit ledger', async () => {
+  const sql = await readFile(authenticationMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(sql, /role IN \('owner', 'operator', 'viewer'\)/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS user_credentials/)
+  assert.match(sql, /credential_version/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS auth_sessions/)
+  assert.match(sql, /token_hash/)
+  assert.match(sql, /csrf_token_hash/)
+  assert.match(sql, /idle_expires_at/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS auth_login_attempts/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS auth_events/)
+  assert.doesNotMatch(sql, /password\s+TEXT|session_token\s+TEXT|csrf_token\s+TEXT/i)
+  assert.match(runner, /0021_authentication\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

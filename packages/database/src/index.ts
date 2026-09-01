@@ -1,4 +1,5 @@
 export * from './events.js'
+export * from './authentication-repository.js'
 export * from './evaluation-repository.js'
 export * from './evidence-repository.js'
 export * from './execution-context-repository.js'

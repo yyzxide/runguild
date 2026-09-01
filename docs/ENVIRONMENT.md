@@ -37,7 +37,12 @@ workarounds.
 ## Local state that Git does not move
 
 - `.env` is ignored. Recreate it on the target machine and copy secrets through
-  a secure channel; never commit `OPENAI_API_KEY`.
+  a secure channel; never commit `OPENAI_API_KEY` or `INTERNAL_AGENT_TOKEN`.
+- PostgreSQL stores password hashes, revocable session hashes, CSRF hashes,
+  expiry, roles, throttling state, and authentication events. It never stores a
+  plaintext password, browser cookie, CSRF token, internal Agent token, or API
+  key. Restoring PostgreSQL therefore restores credentials but not active
+  plaintext tokens held only by clients/process environments.
 - `project_runtime_configs` stores the repository path, Worktree root, setup
   argv, test allowlist, timeouts, context limits, and Agent model names in
   PostgreSQL. Paths such as `/home/sid/runguild` and
@@ -59,13 +64,17 @@ workarounds.
 
 1. Clone the repository and install the Node version declared in
    `package.json` plus conventional Docker Compose.
-2. Copy `.env.example` to `.env`; set a fresh API key, the chosen compatible
-   endpoint/model, and host ports that are free on that machine.
+2. Copy `.env.example` to `.env`; set a fresh API key and
+   `INTERNAL_AGENT_TOKEN`, the chosen compatible endpoint/model, exact
+   `AUTH_ALLOWED_ORIGINS`, HTTPS Cookie policy, and free host ports.
 3. Start PostgreSQL and Redis with `docker compose up -d postgres redis` and
    verify both health checks.
 4. Run `npm ci`, `npm run build`, and `npm run db:migrate`.
-5. Bootstrap or restore PostgreSQL, then set the new absolute repository and
-   Worktree paths in the Web project configuration.
+5. Bootstrap or restore PostgreSQL. For a new User, run the development
+   bootstrap once and then `npm run auth:set-password -- --workspace <id>
+   --user <id> --role owner`; for a restored database, rotate the password when
+   the old credential should not remain valid. Then set the new absolute
+   repository and Worktree paths in the Web project configuration.
 6. Keep `ENABLE_LOCAL_RUNTIME_CONTROL=false` unless the API is intentionally
    allowed to own local Worker child processes.
 7. Run `npm test`; the external PostgreSQL suite additionally requires a
@@ -75,6 +84,13 @@ Run the Web with `npm run web:start` from the repository root. When a custom
 Vite host flag is needed, avoid passing it through that nested script; use
 `npm run dev --workspace @runguild/web -- --host 127.0.0.1` so npm does not
 misread the host value as Vite's project root.
+
+For production, terminate TLS before RunGuild, forward Web and `/api` on one
+origin, set `AUTH_COOKIE_SECURE=true`, and configure that exact origin in
+`AUTH_ALLOWED_ORIGINS`. The API deliberately does not implement permissive
+cross-origin credentials. `ENABLE_DEV_BOOTSTRAP` and
+`ENABLE_LOCAL_RUNTIME_CONTROL` should both remain false unless that deployment
+explicitly needs and protects those local-only capabilities.
 
 If a future fix is introduced only because of a machine constraint, document
 the affected file, reason, portable default, and removal condition in this file

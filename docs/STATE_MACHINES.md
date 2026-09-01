@@ -145,6 +145,27 @@ immutable Version creation, Review submission, and explicit status. A stale
 hidden call is rejected before side effects. Failed verification ends the Run
 so another bounded attempt can resume its existing Worktree.
 
+## Human authentication session
+
+~~~text
+absent -> active -> revoked
+            |----> idle_expired
+            |----> absolute_expired
+            +----> credential_superseded
+
+login failures -> blocked -> eligible after blocked_until
+~~~
+
+An active session requires an unrevoked row, current User/Credential pair,
+exact `credential_version`, and both future idle and absolute expiry. Resolving
+it atomically advances only the idle deadline, never the absolute deadline.
+Password change increments the credential version and revokes active rows in
+the same transaction. Logout revokes only the exact session and appends one
+audit event. A write additionally requires an allowed Origin, matching CSRF
+Cookie/header/hash, a non-viewer role, Workspace scope, and the existing
+domain-specific human gate. Redis loss cannot authenticate, extend, revoke, or
+unblock a session.
+
 ## Tool execution
 
 ~~~text

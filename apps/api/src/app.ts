@@ -67,6 +67,11 @@ import { buildEvaluationReport } from '@runguild/evaluation'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
+import {
+  AuthenticationError,
+  type RequestAuthentication,
+  type SessionAuthentication,
+} from './authentication.js'
 import type { LocalRuntimeControl, LocalWorkerCommand } from './local-worker-supervisor.js'
 
 type MissionService = Pick<
@@ -121,7 +126,12 @@ export interface ApiDependencies {
   readonly runTraces: RunTraceService
   readonly developmentSetup?: DevelopmentSetupService
   readonly localRuntimeControl?: LocalRuntimeControl
+  readonly authentication?: SessionAuthentication
   readonly healthcheck?: () => Promise<void>
+}
+
+export interface CreateApiAppOptions {
+  readonly allowInsecureActorHeaders?: boolean
 }
 
 const idSchema = z.string().min(1).max(200)
@@ -136,6 +146,12 @@ const developmentBootstrapSchema = z.object({
   projectName: z.string().min(1).max(200).default('RunGuild 演示项目'),
   userId: idSchema.default('demo_user'),
   displayName: z.string().min(1).max(200).default('本地开发者'),
+})
+
+const signInSchema = z.object({
+  workspaceId: idSchema,
+  userId: idSchema,
+  password: z.string().min(1).max(1_024),
 })
 
 const criterionSchema = z.object({
@@ -372,21 +388,54 @@ function correlationId(req: Request): CorrelationId {
 
 type RequestActor = Extract<ActorRef, { readonly kind: 'user' | 'agent' }>
 
-function requestActor(req: Request, res: Response): RequestActor | null {
-  const value = req.header('x-actor-id')?.trim()
-  if (!value) {
-    res.status(401).json({ error: { code: 'missing_actor', message: 'x-actor-id header is required' } })
-    return null
-  }
-  const kind = req.header('x-actor-kind')?.trim() || 'user'
-  if (kind === 'agent') {
-    return { kind: 'agent', id: value as AgentId }
-  }
-  if (kind === 'user') {
-    return { kind: 'user', id: value as UserId }
-  }
-  res.status(400).json({ error: { code: 'invalid_actor_kind', message: 'x-actor-kind must be user or agent' } })
+function requestAuthentication(res: Response): RequestAuthentication | null {
+  return (res.locals.authentication as RequestAuthentication | undefined) ?? null
+}
+
+function requestActor(_req: Request, res: Response): RequestActor | null {
+  const authentication = requestAuthentication(res)
+  if (authentication) return authentication.actor
+  res.status(401).json({ error: { code: 'authentication_required', message: '需要有效登录会话' } })
   return null
+}
+
+function insecureHeaderAuthentication(req: Request): RequestAuthentication | null {
+  const value = req.header('x-actor-id')?.trim()
+  const kind = req.header('x-actor-kind')?.trim() || 'user'
+  if (!value || (kind !== 'user' && kind !== 'agent')) return null
+  return kind === 'agent'
+    ? { mode: 'agent_token', actor: { kind: 'agent', id: value as AgentId } }
+    : {
+        mode: 'session',
+        actor: { kind: 'user', id: value as UserId },
+        session: {
+          id: 'insecure_header_test_session',
+          workspaceId: (req.params.workspaceId ?? req.header('x-workspace-id') ?? '') as WorkspaceId,
+          userId: value as UserId,
+          displayName: value,
+          role: 'owner',
+          csrfTokenHash: '',
+          credentialVersion: 1,
+          createdAt: new Date(0),
+          lastSeenAt: new Date(0),
+          idleExpiresAt: new Date(8_640_000_000_000_000),
+          expiresAt: new Date(8_640_000_000_000_000),
+        },
+      }
+}
+
+function workspaceIdFromPath(path: string): string | null {
+  const encoded = /^\/workspaces\/([^/]+)(?:\/|$)/.exec(path)?.[1]
+  if (!encoded) return null
+  try {
+    return decodeURIComponent(encoded)
+  } catch {
+    return ''
+  }
+}
+
+function isSafeMethod(method: string): boolean {
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
 }
 
 function route(
@@ -410,9 +459,15 @@ function invalidBody(res: Response, error: z.ZodError): void {
   })
 }
 
-export function createApiApp(dependencies: ApiDependencies) {
+export function createApiApp(dependencies: ApiDependencies, options: CreateApiAppOptions = {}) {
   const app = express()
   app.disable('x-powered-by')
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Referrer-Policy', 'no-referrer')
+    res.setHeader('X-Frame-Options', 'DENY')
+    next()
+  })
   app.use(express.json({ limit: '2mb' }))
 
   app.get('/health', route(async (_req, res) => {
@@ -435,6 +490,92 @@ export function createApiApp(dependencies: ApiDependencies) {
       res.json(result)
     }))
   }
+
+  app.post('/api/v1/auth/login', route(async (req, res) => {
+    if (!dependencies.authentication) {
+      res.status(404).json({ error: { code: 'authentication_unavailable' } })
+      return
+    }
+    if (!dependencies.authentication.originAllowed(req)) {
+      res.status(403).json({ error: { code: 'origin_forbidden', message: '请求来源未获准' } })
+      return
+    }
+    const body = signInSchema.safeParse(req.body ?? {})
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const signedIn = await dependencies.authentication.signIn({ ...body.data, request: req })
+    dependencies.authentication.setSessionCookies(res, {
+      sessionToken: signedIn.sessionToken,
+      csrfToken: signedIn.csrfToken,
+      expiresAt: signedIn.authentication.session.expiresAt,
+    })
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(signedIn.view)
+  }))
+
+  app.use('/api/v1', (req, res, next) => {
+    void (async () => {
+      const authentication = dependencies.authentication
+        ? await dependencies.authentication.authenticateHttp(req)
+        : options.allowInsecureActorHeaders ? insecureHeaderAuthentication(req) : null
+      if (authentication) res.locals.authentication = authentication
+      if (!authentication) {
+        res.status(401).json({ error: { code: 'authentication_required', message: '需要有效登录会话' } })
+        return
+      }
+      if (!dependencies.authentication && options.allowInsecureActorHeaders) {
+        next()
+        return
+      }
+      if (authentication.mode === 'session') {
+        const workspaceId = workspaceIdFromPath(req.path)
+        if (workspaceId !== null && workspaceId !== authentication.session.workspaceId) {
+          res.status(404).json({ error: { code: 'resource_not_found' } })
+          return
+        }
+        if (!isSafeMethod(req.method) && dependencies.authentication) {
+          if (!dependencies.authentication.originAllowed(req)) {
+            res.status(403).json({ error: { code: 'origin_forbidden', message: '请求来源未获准' } })
+            return
+          }
+          if (!dependencies.authentication.verifyCsrf(req, authentication)) {
+            res.status(403).json({ error: { code: 'csrf_invalid', message: 'CSRF 校验失败' } })
+            return
+          }
+        }
+        if (!isSafeMethod(req.method) && authentication.session.role === 'viewer'
+            && req.path !== '/auth/logout') {
+          res.status(403).json({ error: { code: 'read_only_role', message: '当前账号只有只读权限' } })
+          return
+        }
+      }
+      next()
+    })().catch(next)
+  })
+
+  app.get('/api/v1/auth/session', route(async (_req, res) => {
+    const authentication = requestAuthentication(res)
+    if (!authentication || authentication.mode !== 'session' || !dependencies.authentication) {
+      res.status(401).json({ error: { code: 'browser_session_required' } })
+      return
+    }
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(await dependencies.authentication.sessionView(authentication.session))
+  }))
+
+  app.post('/api/v1/auth/logout', route(async (req, res) => {
+    const authentication = requestAuthentication(res)
+    if (!authentication || authentication.mode !== 'session' || !dependencies.authentication) {
+      res.status(401).json({ error: { code: 'browser_session_required' } })
+      return
+    }
+    await dependencies.authentication.signOut(authentication, req)
+    dependencies.authentication.clearSessionCookies(res)
+    res.setHeader('Cache-Control', 'no-store')
+    res.status(204).end()
+  }))
 
   app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/operator-overview', route(async (req, res) => {
     const actorRef = requestActor(req, res)
@@ -1537,6 +1678,13 @@ export function createApiApp(dependencies: ApiDependencies) {
     }
     if (error instanceof ConversationPlanningError) {
       res.status(422).json({ error: { code: 'conversation_planning_invalid', message: error.message } })
+      return
+    }
+    if (error instanceof AuthenticationError) {
+      if (error.retryAfterSeconds) res.setHeader('Retry-After', String(error.retryAfterSeconds))
+      res.status(error.status).json({
+        error: { code: error.code, message: error.message },
+      })
       return
     }
     const message = error instanceof Error ? error.message : 'Unknown error'

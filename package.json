@@ -13,6 +13,7 @@
     "clean": "tsc -b --clean",
     "api:start": "node apps/api/dist/server.js",
     "api:local": "node --env-file-if-exists=.env apps/api/dist/server.js",
+    "auth:set-password": "node --env-file-if-exists=.env apps/api/dist/set-password.js",
     "db:migrate": "node packages/database/dist/cli.js",
     "worker:start": "node apps/worker/dist/main.js",
     "agent:start": "node apps/worker/dist/agent-main.js",

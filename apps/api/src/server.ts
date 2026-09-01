@@ -1,4 +1,5 @@
 import {
+  AuthenticationRepository,
   MissionRepository,
   ProjectOperatorRepository,
   ProjectRuntimeConfigRepository,
@@ -22,12 +23,29 @@ import { ArtifactRepository } from '@runguild/collaboration'
 
 import { createApiApp } from './app.js'
 import { attachArtifactRealtimeServer } from './artifact-realtime.js'
+import { SessionAuthentication } from './authentication.js'
 import { LocalWorkerSupervisor } from './local-worker-supervisor.js'
 import { RedisArtifactFanout } from './redis-artifact-fanout.js'
 
 const databaseUrl = process.env.DATABASE_URL
 if (!databaseUrl) throw new Error('DATABASE_URL is required')
 const redisUrl = process.env.REDIS_URL?.trim()
+const production = process.env.NODE_ENV === 'production'
+const configuredOrigins = process.env.AUTH_ALLOWED_ORIGINS?.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+const allowedOrigins = configuredOrigins?.length
+  ? configuredOrigins
+  : production ? [] : ['http://127.0.0.1:4173', 'http://localhost:4173']
+if (production && allowedOrigins.length === 0) {
+  throw new Error('AUTH_ALLOWED_ORIGINS is required in production')
+}
+if (production && process.env.AUTH_COOKIE_SECURE === 'false') {
+  throw new Error('AUTH_COOKIE_SECURE cannot be false in production')
+}
+if (production && process.env.ENABLE_DEV_BOOTSTRAP === 'true') {
+  throw new Error('ENABLE_DEV_BOOTSTRAP cannot be enabled in production')
+}
 
 const port = Number(process.env.PORT ?? 4000)
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -40,6 +58,19 @@ if (process.env.AUTO_MIGRATE === 'true') {
 }
 
 const artifacts = new ArtifactRepository(pool)
+const authentication = new SessionAuthentication(new AuthenticationRepository(pool), {
+  secureCookies: production || process.env.AUTH_COOKIE_SECURE === 'true',
+  allowedOrigins,
+  ...(process.env.AUTH_SESSION_LIFETIME_SECONDS?.trim()
+    ? { sessionLifetimeSeconds: Number(process.env.AUTH_SESSION_LIFETIME_SECONDS) }
+    : {}),
+  ...(process.env.AUTH_SESSION_IDLE_SECONDS?.trim()
+    ? { sessionIdleSeconds: Number(process.env.AUTH_SESSION_IDLE_SECONDS) }
+    : {}),
+  ...(process.env.INTERNAL_AGENT_TOKEN?.trim()
+    ? { internalAgentToken: process.env.INTERNAL_AGENT_TOKEN.trim() }
+    : {}),
+})
 const reportArtifactFanoutError = (error: Error) => {
   process.stderr.write(JSON.stringify({ type: 'artifact.fanout_error', message: error.message }) + '\n')
 }
@@ -85,6 +116,7 @@ const app = createApiApp({
   runTraces: new RunTraceRepository(pool),
   ...(developmentSetup ? { developmentSetup } : {}),
   ...(localRuntimeControl ? { localRuntimeControl } : {}),
+  authentication,
   healthcheck: async () => {
     await pool.query('SELECT 1')
   },
@@ -94,6 +126,7 @@ const server = app.listen(port, () => {
 })
 const artifactRealtime = attachArtifactRealtimeServer(server, {
   repository: artifacts,
+  authenticate: (input) => authentication.authenticateRealtime(input),
   ...(artifactFanout ? { fanout: artifactFanout, onFanoutError: reportArtifactFanoutError } : {}),
 })
 
