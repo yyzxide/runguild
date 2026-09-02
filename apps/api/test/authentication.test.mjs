@@ -143,7 +143,10 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
       allowedOrigins: ['http://127.0.0.1:4173'],
     })
     const overviewCalls = []
-    const app = createApiApp(apiDependencies(authentication, overviewCalls))
+    const app = createApiApp(apiDependencies(authentication, overviewCalls), {
+      authenticationMode: 'team',
+      defaultWorkspaceId: 'ws',
+    })
     await withServer(app, async (baseUrl) => {
       const spoofed = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project/operator-overview', {
         headers: { 'x-actor-id': 'owner' },
@@ -158,7 +161,7 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
 
       const login = await fetch(baseUrl + '/api/v1/auth/login', {
         method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1:4173' },
-        body: JSON.stringify({ workspaceId: 'ws', userId: 'owner', password: 'correct horse battery staple owner' }),
+        body: JSON.stringify({ userId: 'owner', password: 'correct horse battery staple owner' }),
       })
       assert.equal(login.status, 200)
       const cookies = sessionCookies(login)
@@ -197,6 +200,43 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
       })
       assert.equal(readOnly.status, 403)
       assert.equal((await readOnly.json()).error.code, 'read_only_role')
+    })
+  })
+})
+
+test('local mode creates the configured loopback owner session without exposing a password login', async () => {
+  await withDatabase(async ({ database, repository }) => {
+    await database.exec("INSERT INTO users (id, workspace_id, display_name) VALUES ('local-user', 'ws', 'Local User')")
+    const authentication = new SessionAuthentication(repository, {
+      secureCookies: false,
+      allowedOrigins: ['http://127.0.0.1:4173'],
+    })
+    await assert.rejects(() => authentication.signInLocal({
+      workspaceId: 'ws', userId: 'local-user', request: request({}, '192.0.2.10'),
+    }), (error) => error.code === 'local_authentication_forbidden')
+    await assert.rejects(() => authentication.signInLocal({
+      workspaceId: 'ws', userId: 'local-user',
+      request: request({ 'x-forwarded-for': '127.0.0.1' }),
+    }), (error) => error.code === 'local_authentication_forbidden')
+
+    const app = createApiApp(apiDependencies(authentication, []), {
+      authenticationMode: 'local',
+      defaultWorkspaceId: 'ws',
+      localUserId: 'local-user',
+    })
+    await withServer(app, async (baseUrl) => {
+      const mode = await fetch(baseUrl + '/api/v1/auth/mode')
+      assert.deepEqual(await mode.json(), { mode: 'local' })
+
+      const login = await fetch(baseUrl + '/api/v1/auth/local', {
+        method: 'POST', headers: { origin: 'http://127.0.0.1:4173' },
+      })
+      assert.equal(login.status, 200)
+      const view = await login.json()
+      assert.equal(view.user.id, 'local-user')
+      assert.equal(view.user.role, 'owner')
+      assert.deepEqual(view.projects.map((project) => project.name), ['Project'])
+      assert.ok(sessionCookies(login).raw.some((value) => value.includes('HttpOnly')))
     })
   })
 })

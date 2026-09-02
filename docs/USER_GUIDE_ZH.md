@@ -55,11 +55,15 @@ REDIS_PORT=6379
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control
 REDIS_URL=redis://localhost:6379
 PORT=4000
+HOST=127.0.0.1
 
 AUTO_MIGRATE=true
 ENABLE_DEV_BOOTSTRAP=true
 ENABLE_LOCAL_RUNTIME_CONTROL=true
 
+AUTH_MODE=local
+AUTH_DEFAULT_WORKSPACE_ID=demo_workspace
+LOCAL_AUTH_USER_ID=demo_user
 AUTH_ALLOWED_ORIGINS=http://127.0.0.1:4173,http://localhost:4173
 AUTH_COOKIE_SECURE=false
 
@@ -103,7 +107,7 @@ node --env-file=.env packages/database/dist/cli.js
 
 迁移可重复执行；已经应用的 Migration 不会重复修改数据库。各 Migration 的用途见 [MIGRATIONS.md](MIGRATIONS.md)。
 
-### 3.4 首次创建本地 Workspace
+### 3.4 首次创建本地工作区
 
 启动 API：
 
@@ -111,15 +115,7 @@ node --env-file=.env packages/database/dist/cli.js
 npm run api:local
 ```
 
-保持 API 终端运行，另开终端执行一次：
-
-```bash
-curl -fsS -X POST http://127.0.0.1:4000/api/v1/development/bootstrap \
-  -H 'content-type: application/json' \
-  -d '{}'
-```
-
-默认会幂等创建：
+默认 `AUTH_MODE=local` 只允许 API 监听 Loopback。首次打开 Web 时，它会自动建立本地 Session；若默认记录尚不存在且 `ENABLE_DEV_BOOTSTRAP=true`，还会先幂等创建：
 
 - Workspace：`demo_workspace`
 - Project：`demo_project`
@@ -127,7 +123,17 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/development/bootstrap \
 - Planner、Researcher、Builder、Reviewer Agent
 - 项目团队协作室
 
-设置登录密码：
+本地模式不需要设置密码，也不会把安全边界取消：API 仍签发可撤销的 HttpOnly Cookie Session，并继续执行工作区范围、Origin 和 CSRF 校验。自动会话只接受直接来自 `127.0.0.1` 或 `::1` 且没有转发头的请求。
+
+若要部署给多人使用，改为：
+
+```env
+AUTH_MODE=team
+AUTH_DEFAULT_WORKSPACE_ID=demo_workspace
+HOST=0.0.0.0
+```
+
+然后为已有用户设置登录密码：
 
 ```bash
 npm run auth:set-password -- \
@@ -136,9 +142,9 @@ npm run auth:set-password -- \
   --role owner
 ```
 
-密码输入不会回显。完成初始化后可把 `.env` 中的 `ENABLE_DEV_BOOTSTRAP` 改为 `false`，再重启 API；这不会删除已有数据。
+密码输入不会回显。生产环境会拒绝 `AUTH_MODE=local`，且必须设置精确的 Web Origin 和安全 Cookie。完成初始化后可把 `.env` 中的 `ENABLE_DEV_BOOTSTRAP` 改为 `false`，再重启 API；这不会删除已有数据。
 
-### 3.5 启动 Web 并登录
+### 3.5 启动 Web 并选择工作区
 
 另开终端：
 
@@ -147,12 +153,7 @@ cd ~/runguild
 npm run web:start
 ```
 
-打开 `http://127.0.0.1:4173`，使用以下身份和刚设置的密码登录：
-
-```text
-Workspace ID: demo_workspace
-User ID: demo_user
-```
+打开 `http://127.0.0.1:4173`。本地模式会直接显示工作区列表；选择“RunGuild 演示项目”即可进入其团队协作室。界面中的“工作区”对应后端 Project（一个仓库和一支 Agent 团队），后端 Workspace 仅作为租户与权限边界，不向普通用户展示 ID。团队模式只输入用户名和密码，租户范围由服务器配置决定。
 
 ## 4. 第一次进入 Web 后的项目配置
 

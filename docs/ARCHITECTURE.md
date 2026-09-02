@@ -287,6 +287,16 @@ read-only, while `operator` and `owner` may enter the existing domain gates.
 The Web cannot select or claim a User id: it receives the User and allowed
 Project list from `/auth/session`.
 
+The entry flow has two explicit deployment modes. `team` verifies a password
+inside the server-configured tenant; the browser never supplies a Workspace id.
+`local` is development-only, requires a loopback listener, rejects forwarding
+headers, creates an opaque credential for the configured local User when needed,
+and issues the same persisted Session as team mode. In the Web, database
+Projects are presented as user-facing workspaces; the database Workspace stays
+an internal tenant boundary. Authentication first opens the workspace launcher,
+and entering a workspace opens its Team Room rather than an infrastructure
+dashboard.
+
 Agent transport identity never reuses the browser session. An Agent must first
 prove an unpredictable Bearer token kept only in the API/Worker environment;
 only then are its Actor/Run/Task/Tool/intent headers accepted and checked by

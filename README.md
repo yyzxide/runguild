@@ -266,20 +266,30 @@ cp .env.example .env
 # Edit .env. Set ENABLE_LOCAL_RUNTIME_CONTROL=true to enable Web process
 # controls, and set OPENAI_API_KEY before starting an Agent Worker.
 npm run api:local
-# On a new database, create the development records once while the API runs:
-curl -fsS -X POST http://127.0.0.1:4000/api/v1/development/bootstrap \
-  -H 'content-type: application/json' -d '{}'
-# Set an existing user's password in a second terminal. Input is hidden:
-npm run auth:set-password -- --workspace demo_workspace --user demo_user --role owner
 npm run web:start
 ~~~
 
-The Web listens on `http://127.0.0.1:4173`. For the first installation, daily
+The Web listens on `http://127.0.0.1:4173`. With the default `AUTH_MODE=local`,
+the API is bound to loopback, the first Web visit idempotently provisions the
+demo records when needed, and a normal hashed Session is created automatically;
+there is no password or internal-id form. Select a user-facing workspace, then
+start in its Team Room. For the first installation, daily
 startup, end-to-end Mission workflow, backup, recovery, and cost-control
 checklists, use the [Chinese personal-machine guide](docs/USER_GUIDE_ZH.md).
 
 `ENABLE_DEV_BOOTSTRAP=true` is a local provisioning aid, not a production
-identity provider. Disable it after local initialization. The password command
+identity provider. Disable it after local initialization. `AUTH_MODE=local` is
+rejected in production and startup also rejects a non-loopback `HOST`. Direct
+local login rejects forwarding headers, but still issues the same durable,
+revocable HttpOnly-Cookie Session used by team mode. For a shared deployment,
+set `AUTH_MODE=team`, configure `AUTH_DEFAULT_WORKSPACE_ID`, and provision a
+password with the command below; the browser asks for only username and password.
+
+~~~bash
+npm run auth:set-password -- --workspace demo_workspace --user demo_user --role owner
+~~~
+
+The password command
 runs migrations, requires the User to exist, never prints the password/hash,
 and revokes that User's older sessions whenever the credential changes. For
 non-interactive secret injection, pass `--password-stdin`; do not place a real
@@ -293,8 +303,11 @@ The published database ports are configurable with `POSTGRES_PORT` and
 `REDIS_PORT=6380` and `REDIS_URL=redis://localhost:6380` in `.env` before
 running Compose. Container-side ports remain the standard 5432 and 6379.
 
-The Web home page is an operator workflow, not a presentation dashboard: check
-the API, initialize the local Project once, enter the Team Room, select durable
+The Web opens on a workspace launcher. In user-facing language, a Project is a
+workspace containing one repository, Agent team, conversations, Missions,
+Artifacts, Runs, and Evaluations; the database-level Workspace remains the
+hidden tenant/security boundary. Entering a workspace opens its Team Room first.
+Select durable
 messages for the Planner, approve the proposed DAG, and then inspect or switch
 Missions from the same page. An Agent's `active` status means its configuration
 is enabled; Worker online/stale/stopped state comes from separately persisted

@@ -132,6 +132,9 @@ export interface ApiDependencies {
 
 export interface CreateApiAppOptions {
   readonly allowInsecureActorHeaders?: boolean
+  readonly authenticationMode?: 'local' | 'team'
+  readonly defaultWorkspaceId?: string
+  readonly localUserId?: string
 }
 
 const idSchema = z.string().min(1).max(200)
@@ -149,7 +152,7 @@ const developmentBootstrapSchema = z.object({
 })
 
 const signInSchema = z.object({
-  workspaceId: idSchema,
+  workspaceId: idSchema.optional(),
   userId: idSchema,
   password: z.string().min(1).max(1_024),
 })
@@ -461,6 +464,7 @@ function invalidBody(res: Response, error: z.ZodError): void {
 
 export function createApiApp(dependencies: ApiDependencies, options: CreateApiAppOptions = {}) {
   const app = express()
+  const authenticationMode = options.authenticationMode ?? 'team'
   app.disable('x-powered-by')
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -474,6 +478,11 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
     await dependencies.healthcheck?.()
     res.json({ status: 'ok' })
   }))
+
+  app.get('/api/v1/auth/mode', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ mode: authenticationMode })
+  })
 
   if (dependencies.developmentSetup) {
     app.post('/api/v1/development/bootstrap', route(async (req, res) => {
@@ -505,7 +514,39 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       invalidBody(res, body.error)
       return
     }
-    const signedIn = await dependencies.authentication.signIn({ ...body.data, request: req })
+    const workspaceId = body.data.workspaceId ?? options.defaultWorkspaceId
+    if (!workspaceId) {
+      res.status(400).json({ error: { code: 'workspace_not_configured', message: '服务器尚未配置默认工作区' } })
+      return
+    }
+    const signedIn = await dependencies.authentication.signIn({ ...body.data, workspaceId, request: req })
+    dependencies.authentication.setSessionCookies(res, {
+      sessionToken: signedIn.sessionToken,
+      csrfToken: signedIn.csrfToken,
+      expiresAt: signedIn.authentication.session.expiresAt,
+    })
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(signedIn.view)
+  }))
+
+  app.post('/api/v1/auth/local', route(async (req, res) => {
+    if (authenticationMode !== 'local') {
+      res.status(404).json({ error: { code: 'local_authentication_unavailable' } })
+      return
+    }
+    if (!dependencies.authentication || !options.defaultWorkspaceId || !options.localUserId) {
+      res.status(503).json({ error: { code: 'local_authentication_not_configured' } })
+      return
+    }
+    if (!dependencies.authentication.originAllowed(req)) {
+      res.status(403).json({ error: { code: 'origin_forbidden', message: '请求来源未获准' } })
+      return
+    }
+    const signedIn = await dependencies.authentication.signInLocal({
+      workspaceId: options.defaultWorkspaceId,
+      userId: options.localUserId,
+      request: req,
+    })
     dependencies.authentication.setSessionCookies(res, {
       sessionToken: signedIn.sessionToken,
       csrfToken: signedIn.csrfToken,

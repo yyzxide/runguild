@@ -113,18 +113,22 @@ function StatusPill({ tone, children }: { readonly tone: string; readonly childr
 function AppNavigation({
   view,
   session,
+  authenticationMode,
   onNavigate,
+  onLeaveWorkspace,
   onLogout,
 }: {
   readonly view: View
   readonly session: AuthenticationSession
+  readonly authenticationMode: 'local' | 'team'
   readonly onNavigate: (view: View) => void
+  readonly onLeaveWorkspace: () => void
   readonly onLogout: () => void
 }) {
   const initials = session.user.displayName.trim().slice(0, 2) || session.user.id.slice(0, 2)
   return (
     <nav className="app-nav" aria-label="主导航">
-      <button className="brand-mark" aria-label="RunGuild" onClick={() => onNavigate('start')}>
+      <button className="brand-mark" aria-label="返回工作区列表" onClick={onLeaveWorkspace}>
         <span className="brand-mark__orbit" /><strong>RG</strong>
       </button>
       <div className="app-nav__main">
@@ -138,8 +142,8 @@ function AppNavigation({
           )
         })}
       </div>
-      <button className="user-avatar" aria-label={`退出当前用户：${session.user.displayName}`} title={`${session.user.displayName} · ${session.user.role}`} onClick={onLogout}>
-        <span>{initials}</span><LogOut size={13} />
+      <button className="user-avatar" aria-label={authenticationMode === 'team' ? `退出当前用户：${session.user.displayName}` : `当前用户：${session.user.displayName}`} title={`${session.user.displayName} · ${session.user.role}`} onClick={authenticationMode === 'team' ? onLogout : undefined}>
+        <span>{initials}</span>{authenticationMode === 'team' ? <LogOut size={13} /> : null}
       </button>
     </nav>
   )
@@ -162,7 +166,7 @@ function TopBar({
 }) {
   return (
     <header className="topbar">
-      <label className="workspace-switcher" aria-label={`当前项目：${projectId}`}><span className="workspace-glyph">R</span><select value={projectId} onChange={(event) => onProjectChange(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label>
+      <label className="workspace-switcher" aria-label="切换工作区"><span className="workspace-glyph">R</span><select value={projectId} onChange={(event) => onProjectChange(event.target.value)}><option value="">所有工作区</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></label>
       <div className="topbar__context"><span>{viewMeta[view].eyebrow}</span></div>
       <button className="command-trigger" onClick={onOpenCommand}><Search size={15} /><span>查找页面或功能</span><kbd><Command size={11} />K</kbd></button>
       <div className={`system-state system-state--${connection}`}>
@@ -258,9 +262,9 @@ function RuntimeConfigPanel({
 
   return (
     <div className="runtime-config-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="runtime-config-panel" role="dialog" aria-modal="true" aria-label="项目运行设置" onMouseDown={(event) => event.stopPropagation()}>
+      <section className="runtime-config-panel" role="dialog" aria-modal="true" aria-label="工作区运行设置" onMouseDown={(event) => event.stopPropagation()}>
         <header className="runtime-config-panel__header">
-          <div><span className="micro-label">项目启动清单</span><h1>让这个项目真正跑起来</h1><p>保存项目级启动参数，然后在右侧启动本地 Worker。模型密钥只来自 API 进程环境，不会进入浏览器或数据库。</p></div>
+          <div><span className="micro-label">工作区启动清单</span><h1>让这个工作区真正跑起来</h1><p>保存工作区级启动参数，然后在右侧启动本地 Worker。模型密钥只来自 API 进程环境，不会进入浏览器或数据库。</p></div>
           <button aria-label="关闭运行设置" onClick={onClose}><X size={20} /></button>
         </header>
 
@@ -291,7 +295,7 @@ function RuntimeConfigPanel({
                   <header><strong>最近执行</strong><span>{(runtime.recentSetups ?? []).length} 条</span></header>
                   {(runtime.recentSetups ?? []).length === 0 ? <p>尚无准备执行记录。保存命令并启动 Agent Worker 后，这里会显示真实状态。</p> : (runtime.recentSetups ?? []).slice(0, 4).map((setup) => <article key={setup.id}>
                     <span className={`setup-status setup-status--${setup.status}`}><i />{{ running: '执行中', succeeded: '已通过', failed: '未通过' }[setup.status]}</span>
-                    <div><code>{setup.taskId}</code><small>generation {setup.worktreeGeneration} · 第 {setup.attempt} 次 · {setup.commands.length} 条命令</small></div>
+                    <div><strong>Worktree 准备任务</strong><small>generation {setup.worktreeGeneration} · 第 {setup.attempt} 次 · {setup.commands.length} 条命令</small></div>
                     <time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(setup.updatedAt))}</time>
                   </article>)}
                 </div>
@@ -318,7 +322,7 @@ function RuntimeConfigPanel({
                   {runtime.configuration.agents.map((agent, index) => {
                     const model = draft.agentModels[index]
                     if (!model) return null
-                    return <div key={agent.id}><span className="room-avatar room-avatar--agent"><Bot size={13} /></span><p><strong>{agent.name}</strong><small>{roleLabels[agent.role] ?? agent.role} · {agent.id}</small></p><label><span>提供商</span><input value={model.modelProvider} onChange={(event) => setDraft({ ...draft, agentModels: draft.agentModels.map((item, itemIndex) => itemIndex === index ? { ...item, modelProvider: event.target.value } : item) })} /></label><label><span>模型</span><input value={model.modelName} onChange={(event) => setDraft({ ...draft, agentModels: draft.agentModels.map((item, itemIndex) => itemIndex === index ? { ...item, modelName: event.target.value } : item) })} /></label></div>
+                    return <div key={agent.id}><span className="room-avatar room-avatar--agent"><Bot size={13} /></span><p><strong>{agent.name}</strong><small>{roleLabels[agent.role] ?? agent.role}</small></p><label><span>提供商</span><input value={model.modelProvider} onChange={(event) => setDraft({ ...draft, agentModels: draft.agentModels.map((item, itemIndex) => itemIndex === index ? { ...item, modelProvider: event.target.value } : item) })} /></label><label><span>模型</span><input value={model.modelName} onChange={(event) => setDraft({ ...draft, agentModels: draft.agentModels.map((item, itemIndex) => itemIndex === index ? { ...item, modelName: event.target.value } : item) })} /></label></div>
                   })}
                 </div>
               </div>
@@ -456,8 +460,8 @@ function StartView({
   }
   if (connection === 'online' && !setup) {
     action = {
-      number: '02', eyebrow: '建立工作上下文', title: '初始化这个项目的 Agent 团队',
-      detail: '创建本地 Workspace、Project、用户和规划/研究/构建/审查 Agent。这个操作幂等，可以安全重试。',
+      number: '02', eyebrow: '建立工作上下文', title: '初始化这个工作区的 Agent 团队',
+      detail: '创建本地租户、工作区、用户和规划/研究/构建/审查 Agent。这个操作幂等，可以安全重试。',
       label: '初始化工作区', icon: Database, onClick: onBootstrap,
     }
   } else if (connection === 'online' && setup && !mission) {
@@ -506,7 +510,7 @@ function StartView({
       </section>
 
       <section className="operation-runway" aria-label="真实任务路径">
-        <header><span>真实任务路径</span><code>{mission ? mission.id : identity.projectId}</code></header>
+        <header><span>真实任务路径</span><code>{mission ? mission.title : overview?.project.name ?? '当前工作区'}</code></header>
         <div>{stages.map((stage, index) => { const Icon = stage.icon; return <div className={`runway-stage runway-stage--${stage.state}`} key={stage.label}><span>{stage.state === 'done' ? <Check size={14} /> : <Icon size={15} />}</span><div><strong>{stage.label}</strong><small>{stage.detail}</small></div><code>{String(index + 1).padStart(2, '0')}</code></div> })}</div>
       </section>
 
@@ -531,19 +535,19 @@ function StartView({
         </section>
 
         <aside className="current-context">
-          <div className="current-context__heading"><div><span className="micro-label">当前工作上下文</span><h2>{overview?.project.name ?? (setup ? identity.projectId : '尚未建立工作区')}</h2></div><span className={`context-live context-live--${connection}`}><i />{connection === 'online' ? 'API 已连接' : connection === 'checking' ? '检查中' : 'API 未连接'}</span></div>
-          <dl><div><dt>代码仓库</dt><dd><code>{overview?.project.repositoryPath ?? overview?.project.repositoryUrl ?? '未配置'}</code></dd></div><div><dt>默认分支</dt><dd><code>{overview?.project.defaultBranch ?? '—'}</code></dd></div><div><dt>Conversation</dt><dd><code>{overview?.project.conversationId ?? setup?.conversationId ?? '—'}</code></dd></div><div><dt>当前 Mission</dt><dd>{mission ? <><strong>{mission.title}</strong><small>{missionStatusLabels[mission.status]} · {mission.tasks.length} 个任务</small></> : <span>尚未选择</span>}</dd></div></dl>
-          <div className="configured-agents"><div><span className="micro-label">项目 Agent 配置</span><code>{overview ? configuredAgents.length : setup ? configuredAgents.length || '读取中' : '—'}</code></div>{configuredAgents.length ? configuredAgents.map((agent) => <div key={agent.id}><span className="room-avatar room-avatar--agent"><Bot size={13} /></span><p><strong>{agent.name}</strong><small>{roleLabels[agent.role] ?? agent.role}{agent.modelName ? ` · ${agent.modelName}` : ''}</small>{agent.activeRunCount !== null ? <em className={`agent-runtime agent-runtime--${agent.worker?.state ?? 'never_seen'}`}><i />{agent.worker ? `Worker ${workerStateLabels[agent.worker.state]} · ${heartbeatTime(agent.worker.lastHeartbeatAt)}` : 'Worker 未启动'}{agent.activeRunCount ? ` · ${agent.activeRunCount} 个 Run` : ''}</em> : null}</p></div>) : <p>{setup ? '正在从项目协作室读取 Agent 配置。' : '初始化工作区后，这里会显示真实 Agent 配置。'}</p>}<p className="runtime-disclaimer">进程状态由持久化心跳判定，超过实例声明的有效期会显示“心跳失联”。</p></div>
+          <div className="current-context__heading"><div><span className="micro-label">当前工作上下文</span><h2>{overview?.project.name ?? '正在载入工作区'}</h2></div><span className={`context-live context-live--${connection}`}><i />{connection === 'online' ? 'API 已连接' : connection === 'checking' ? '检查中' : 'API 未连接'}</span></div>
+          <dl><div><dt>代码仓库</dt><dd><code>{overview?.project.repositoryPath ?? overview?.project.repositoryUrl ?? '未配置'}</code></dd></div><div><dt>默认分支</dt><dd><code>{overview?.project.defaultBranch ?? '—'}</code></dd></div><div><dt>协作会话</dt><dd>{overview?.project.conversationId ?? setup?.conversationId ? <span>已就绪</span> : <span>尚未建立</span>}</dd></div><div><dt>当前 Mission</dt><dd>{mission ? <><strong>{mission.title}</strong><small>{missionStatusLabels[mission.status]} · {mission.tasks.length} 个任务</small></> : <span>尚未选择</span>}</dd></div></dl>
+          <div className="configured-agents"><div><span className="micro-label">工作区 Agent 配置</span><code>{overview ? configuredAgents.length : setup ? configuredAgents.length || '读取中' : '—'}</code></div>{configuredAgents.length ? configuredAgents.map((agent) => <div key={agent.id}><span className="room-avatar room-avatar--agent"><Bot size={13} /></span><p><strong>{agent.name}</strong><small>{roleLabels[agent.role] ?? agent.role}{agent.modelName ? ` · ${agent.modelName}` : ''}</small>{agent.activeRunCount !== null ? <em className={`agent-runtime agent-runtime--${agent.worker?.state ?? 'never_seen'}`}><i />{agent.worker ? `Worker ${workerStateLabels[agent.worker.state]} · ${heartbeatTime(agent.worker.lastHeartbeatAt)}` : 'Worker 未启动'}{agent.activeRunCount ? ` · ${agent.activeRunCount} 个 Run` : ''}</em> : null}</p></div>) : <p>{setup ? '正在从工作区协作室读取 Agent 配置。' : '初始化工作区后，这里会显示真实 Agent 配置。'}</p>}<p className="runtime-disclaimer">进程状态由持久化心跳判定，超过实例声明的有效期会显示“心跳失联”。</p></div>
         </aside>
       </div>
 
       {overview ? (
         <section className="mission-register">
-          <header><div><span className="micro-label">项目 Mission</span><h2>继续已有任务，或从协作室发起新任务</h2></div><code>{overview.missions.length} 条真实记录</code></header>
+          <header><div><span className="micro-label">工作区 Mission</span><h2>继续已有任务，或从协作室发起新任务</h2></div><code>{overview.missions.length} 条真实记录</code></header>
           {overview.missions.length ? <div className="mission-register__list">{overview.missions.map((item) => {
             const selected = mission?.id === item.id
-            return <button key={item.id} className={selected ? 'is-selected' : ''} onClick={() => onSelectMission(item.id)} disabled={Boolean(busy)}><span className={`mission-register__status mission-register__status--${item.status}`}><i />{missionStatusLabels[item.status]}</span><div><strong>{item.title}</strong><code>{item.id}</code></div><span><strong>{item.completedTaskCount}/{item.taskCount}</strong><small>任务完成</small></span><span><strong>{item.activeRunCount}</strong><small>执行中 Run</small></span><time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(item.updatedAt))}</time><ArrowRight size={15} /></button>
-          })}</div> : <div className="mission-register__empty"><Network size={19} /><span><strong>这个项目还没有 Mission</strong><small>进入协作室，勾选关键消息并交给 Planner。</small></span><button onClick={onOpenTeam}>进入协作室<ArrowRight size={13} /></button></div>}
+            return <button key={item.id} className={selected ? 'is-selected' : ''} onClick={() => onSelectMission(item.id)} disabled={Boolean(busy)}><span className={`mission-register__status mission-register__status--${item.status}`}><i />{missionStatusLabels[item.status]}</span><div><strong>{item.title}</strong><small>最近更新</small></div><span><strong>{item.completedTaskCount}/{item.taskCount}</strong><small>任务完成</small></span><span><strong>{item.activeRunCount}</strong><small>执行中 Run</small></span><time>{new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(item.updatedAt))}</time><ArrowRight size={15} /></button>
+          })}</div> : <div className="mission-register__empty"><Network size={19} /><span><strong>这个工作区还没有 Mission</strong><small>进入协作室，勾选关键消息并交给 Planner。</small></span><button onClick={onOpenTeam}>进入协作室<ArrowRight size={13} /></button></div>}
         </section>
       ) : null}
 
@@ -644,7 +648,7 @@ function MissionContract({ mission }: { readonly mission: MissionSnapshot }) {
   return (
     <section className="mission-contract" aria-label="Mission 契约">
       <div className="contract-cell contract-cell--goal"><span className="micro-label">Mission 目标</span><strong>{mission.goal}</strong></div>
-      <div className="contract-cell"><span className="micro-label">数据来源</span><code>真实 API</code><small>{mission.id}</small></div>
+      <div className="contract-cell"><span className="micro-label">数据来源</span><code>真实 API</code><small>持久化 Mission 快照</small></div>
       <div className="contract-cell"><span className="micro-label">计划版本</span><code>v{mission.planVersion}</code><small>{mission.proposedPlan?.status ?? '尚未提交'}</small></div>
       <div className="contract-cell"><span className="micro-label">当前状态</span><code className="proof-value">{missionStatusLabels[mission.status]}</code><small>{mission.tasks.length} 个任务</small></div>
     </section>
@@ -687,18 +691,18 @@ function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDel
   useEffect(() => { if (!tasks.some((task) => task.id === selectedTaskId)) setSelectedTaskId(tasks[0]?.id ?? '') }, [selectedTaskId, tasks])
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
   if (!mission) return <section className="product-empty-state"><span><Network size={26} /></span><div><span className="micro-label">尚无 Mission</span><h1>先从一次真实任务讨论开始</h1><p>进入协作室描述目标并选择关键消息。Planner 提交计划、你批准之后，任务 DAG 才会出现在这里。</p></div><button className="primary-action" onClick={() => onNavigate('team')}>进入协作室<ArrowRight size={15} /></button></section>
-  if (!selectedTask) return <><section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><code>{mission.id}</code></div><h1>{mission.title}</h1><p>这个 Mission 已创建，但任务 DAG 尚未物化。</p></div><div className="page-actions"><StatusPill tone="active">{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button></div></section><MissionContract mission={mission} /><section className="mission-awaiting-state"><Network size={25} /><div><strong>{mission.status === 'awaiting_approval' ? '计划正在等待你的批准' : 'Planner 还没有提交可执行计划'}</strong><p>{mission.proposedPlan?.summary ?? '回到协作室查看 Planner 的规划进度。'}</p></div><button className="primary-action" onClick={() => onNavigate(mission.status === 'awaiting_approval' ? 'start' : 'team')}>{mission.status === 'awaiting_approval' ? '去工作台批准' : '查看协作室'}<ArrowRight size={14} /></button></section></>
-  const liveFacts: EvidenceFact[] = mission.tasks.map((task, index) => ({ id: task.id, taskId: task.id, sequence: String(index + 1).padStart(2, '0'), time: new Date(mission.updatedAt).toLocaleTimeString('zh-CN'), kind: '任务状态', title: `${task.title}：${task.status}`, detail: task.id, state: task.status === 'completed' ? 'verified' : ['claimed', 'running', 'reviewing'].includes(task.status) ? 'active' : 'pending' }))
+  if (!selectedTask) return <><section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><span>{mission.title}</span></div><h1>{mission.title}</h1><p>这个 Mission 已创建，但任务 DAG 尚未物化。</p></div><div className="page-actions"><StatusPill tone="active">{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button></div></section><MissionContract mission={mission} /><section className="mission-awaiting-state"><Network size={25} /><div><strong>{mission.status === 'awaiting_approval' ? '计划正在等待你的批准' : 'Planner 还没有提交可执行计划'}</strong><p>{mission.proposedPlan?.summary ?? '回到协作室查看 Planner 的规划进度。'}</p></div><button className="primary-action" onClick={() => onNavigate(mission.status === 'awaiting_approval' ? 'start' : 'team')}>{mission.status === 'awaiting_approval' ? '去工作台批准' : '查看协作室'}<ArrowRight size={14} /></button></section></>
+  const liveFacts: EvidenceFact[] = mission.tasks.map((task, index) => ({ id: task.id, taskId: task.id, sequence: String(index + 1).padStart(2, '0'), time: new Date(mission.updatedAt).toLocaleTimeString('zh-CN'), kind: '任务状态', title: `${task.title}：${task.status}`, detail: `状态由 Mission API 于 ${new Date(mission.updatedAt).toLocaleString('zh-CN')} 返回`, state: task.status === 'completed' ? 'verified' : ['claimed', 'running', 'reviewing'].includes(task.status) ? 'active' : 'pending' }))
   return (
     <>
-      <section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><code>{mission.id}</code></div><h1>{mission.title}</h1><p>以下任务和依赖直接读取自后端数据库。</p></div><div className="page-actions"><StatusPill tone="active"><span className="pulse-dot" />{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button><button className="primary-action" onClick={() => onNavigate('team')}><MessageCircle size={15} />打开协作室</button></div></section>
+      <section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><span>{mission.title}</span></div><h1>{mission.title}</h1><p>以下任务和依赖直接读取自后端数据库。</p></div><div className="page-actions"><StatusPill tone="active"><span className="pulse-dot" />{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button><button className="primary-action" onClick={() => onNavigate('team')}><MessageCircle size={15} />打开协作室</button></div></section>
       <MissionContract mission={mission} />
       {mission.status === 'reviewing' || mission.status === 'completed' ? <section className={`final-delivery-gate final-delivery-gate--${mission.finalDelivery?.approvalStatus ?? 'missing'}`}>
         <span className="final-delivery-gate__mark">{mission.finalDelivery?.approvalStatus === 'approved' ? <CircleCheck size={22} /> : mission.finalDelivery ? <ShieldCheck size={22} /> : <CircleAlert size={22} />}</span>
         <div>
           <span className="micro-label">Final delivery gate</span>
           <strong>{mission.finalDelivery?.approvalStatus === 'approved' ? '最终交付版本已批准' : mission.finalDelivery ? '所有 Task 已完成，等待最终人工批准' : '缺少可冻结的最终交付版本'}</strong>
-          {mission.finalDelivery ? <p>Artifact Version <code>v{mission.finalDelivery.version}</code> · <code>{mission.finalDelivery.artifactVersionId}</code> · SHA-256 <code>{mission.finalDelivery.contentHash.slice(0, 16)}…</code></p> : <p>Mission 已进入审查态，但数据库中没有属于该 Mission 的 Artifact Version。请先排查产物冻结链路。</p>}
+          {mission.finalDelivery ? <p>Artifact Version <code>v{mission.finalDelivery.version}</code> · SHA-256 <code>{mission.finalDelivery.contentHash.slice(0, 16)}…</code></p> : <p>Mission 已进入审查态，但数据库中没有属于该 Mission 的 Artifact Version。请先排查产物冻结链路。</p>}
           {error && busy === null ? <em>{error}</em> : null}
         </div>
         {mission.status === 'reviewing' && mission.finalDelivery ? <button className="primary-action" onClick={onApproveDelivery} disabled={Boolean(busy)}>{busy === 'approve-delivery' ? <LoaderCircle className="is-spinning" size={15} /> : <ShieldCheck size={15} />}批准此版本并完成 Mission</button> : null}
@@ -913,17 +917,17 @@ function TeamRoomView({
   return (
     <>
       <section className="page-heading room-heading">
-        <div><div className="breadcrumb"><span>Conversation Plane</span><i>/</i><code>{conversationId || '尚未创建'}</code></div><h1>团队协作室</h1><p>先讨论和沉淀上下文，再选择关键消息交给 Planner 生成长任务 DAG；Mission 运行中也可以随时 @Agent 调整方向。</p></div>
+        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>团队协作室</span></div><h1>和 Agent 团队一起工作</h1><p>描述目标、约束和已有线索；选择关键消息交给 Planner 生成任务 DAG，运行中也可以随时 @Agent 调整方向。</p></div>
         <div className="page-actions"><StatusPill tone="live"><span className="pulse-dot" />5 秒同步</StatusPill><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
       </section>
       {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p></div></div> : null}
       <div className="room-workspace">
         <aside className="room-directory">
-          <div className="room-directory__heading"><span className="micro-label">项目会话</span><strong>{conversations.length}</strong></div>
+          <div className="room-directory__heading"><span className="micro-label">工作区会话</span><strong>{conversations.length}</strong></div>
           <div className="room-list">
             {conversations.map((conversation) => (
               <button key={conversation.id} className={conversation.id === conversationId ? 'is-active' : ''} onClick={() => setConversationId(conversation.id)}>
-                <span><MessageCircle size={15} /></span><div><strong>{conversation.title}</strong><small>{conversation.members.length} 位成员 · {conversation.kind === 'project_room' ? '项目房间' : '协作组'}</small></div>
+                <span><MessageCircle size={15} /></span><div><strong>{conversation.title}</strong><small>{conversation.members.length} 位成员 · {conversation.kind === 'project_room' ? '工作区房间' : '协作组'}</small></div>
               </button>
             ))}
           </div>
@@ -956,7 +960,7 @@ function TeamRoomView({
                     <p>{message.body}</p>
                     <div className="message-routing">
                       {message.mentions.map((agentId) => <span key={agentId}><AtSign size={11} />{activeConversation?.members.find((member) => member.id === agentId)?.name ?? agentId}</span>)}
-                      {message.entityRefs.missionId ? <span><Link2 size={11} />Mission · {message.entityRefs.missionId}</span> : null}
+                      {message.entityRefs.missionId ? <span><Link2 size={11} />已关联 Mission</span> : null}
                       {message.deliveries.map((delivery) => <span className={`delivery-chip delivery-chip--${delivery.status}`} key={delivery.agentId}><i />{deliveryLabels[delivery.status]}</span>)}
                     </div>
                     <button className="message-reply" onClick={() => setReplyTo(message)}>回复并保留引用</button>
@@ -969,7 +973,7 @@ function TeamRoomView({
             {replyTo ? <div className="reply-banner"><span>正在回复 <strong>{replyTo.authorName}</strong> · {replyTo.body.slice(0, 72)}</span><button onClick={() => setReplyTo(null)}>取消</button></div> : null}
             <div className="recipient-picker"><span><AtSign size={13} />选择需要行动的 Agent</span><div>{agents.map((agent) => <button key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div>
             <div className="composer-field"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder="例如：@规划 Agent 请结合当前实现重新检查任务边界，并在协作室说明是否需要调整计划。" /><button aria-label="发送消息" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={18} />}</button></div>
-            <div className="composer-scope"><span className={mission ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.id}` : '尚无 Mission：先讨论，再勾选消息交给 Planner'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
+            <div className="composer-scope"><span className={mission ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : '尚无 Mission：先讨论，再勾选消息交给 Planner'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
           </div>
         </section>
 
@@ -981,10 +985,10 @@ function TeamRoomView({
             <p>{selectedMessageIds.length ? `已固定选择 ${selectedMessageIds.length} 条消息，Planner 将只以这些事实作为任务来源。` : '在左侧勾选一条或多条关键消息，Planner 会生成可审查的任务 DAG。'}</p>
             <label><span>Mission 标题</span><input value={planningTitle} onChange={(event) => setPlanningTitle(event.target.value)} placeholder="例如：完成项目级角色系统" /></label>
             <button className="planning-action" disabled={!planner || selectedMessageIds.length === 0 || !planningTitle.trim() || planningBusy} onClick={() => void createPlanningRequest()}>{planningBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Network size={15} />}{planner ? '生成任务计划' : '缺少 Planner Agent'}</button>
-            {planningRequest ? <div className={`planning-progress planning-progress--${planningRequest.status}`}><span>{['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningStatusLabels[planningRequest.status]}</strong><small>尝试 {planningRequest.attempt}/{planningRequest.maxAttempts} · Mission {planningRequest.missionId}</small>{planningRequest.status === 'queued' ? <p className="planning-worker-hint">若长时间停留，请启动 Agent Worker：{planningRequest.plannerAgentId}</p> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('start')}>{planningRequest.status === 'approved' ? '查看 Mission' : '查看并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
+            {planningRequest ? <div className={`planning-progress planning-progress--${planningRequest.status}`}><span>{['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningStatusLabels[planningRequest.status]}</strong><small>第 {planningRequest.attempt}/{planningRequest.maxAttempts} 次尝试</small>{planningRequest.status === 'queued' ? <p className="planning-worker-hint">若长时间停留，请在运行设置中确认规划 Agent 已启动。</p> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('start')}>{planningRequest.status === 'approved' ? '查看 Mission' : '查看并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
           </section>
           <ol className="routing-steps"><li className="is-complete"><span>1</span><div><strong>持久化消息</strong><small>先写入 Conversation 账本</small></div></li><li className={mission ? 'is-complete' : ''}><span>2</span><div><strong>绑定执行上下文</strong><small>{mission ? mission.title : '需要先创建或恢复 Mission'}</small></div></li><li className={selectedAgents.length ? 'is-active' : ''}><span>3</span><div><strong>路由 @Agent</strong><small>运行中则 steer；空闲则下次加载</small></div></li></ol>
-          <div className="latest-delivery"><span className="micro-label">最近一次真实投递</span>{latestRoutedMessage ? <><strong>{latestRoutedMessage.body.slice(0, 80)}</strong>{latestRoutedMessage.deliveries.map((delivery) => <div key={delivery.agentId}><span className={`delivery-signal delivery-signal--${delivery.status}`} /><p><strong>{activeConversation?.members.find((member) => member.id === delivery.agentId)?.name ?? delivery.agentId}</strong><small>{deliveryLabels[delivery.status]}</small></p>{delivery.runId ? <code>{delivery.runId}</code> : <code>尚无 Run</code>}</div>)}</> : <p className="routing-placeholder">发送第一条 @Agent 消息后，这里会显示实际投递状态。</p>}</div>
+          <div className="latest-delivery"><span className="micro-label">最近一次真实投递</span>{latestRoutedMessage ? <><strong>{latestRoutedMessage.body.slice(0, 80)}</strong>{latestRoutedMessage.deliveries.map((delivery) => <div key={delivery.agentId}><span className={`delivery-signal delivery-signal--${delivery.status}`} /><p><strong>{activeConversation?.members.find((member) => member.id === delivery.agentId)?.name ?? 'Agent'}</strong><small>{deliveryLabels[delivery.status]}</small></p><code>{delivery.runId ? '已关联运行' : '等待任务运行'}</code></div>)}</> : <p className="routing-placeholder">发送第一条 @Agent 消息后，这里会显示实际投递状态。</p>}</div>
         </aside>
       </div>
     </>
@@ -995,8 +999,8 @@ function CommandPalette({ onClose, onNavigate }: { readonly onClose: () => void;
   return <div className="command-backdrop" role="presentation" onMouseDown={onClose}><div className="command-palette" role="dialog" aria-modal="true" aria-label="快捷导航" onMouseDown={(event) => event.stopPropagation()}><div className="command-palette__search"><Search size={18} /><input autoFocus placeholder="查找页面或功能…" /><kbd>esc</kbd></div><span className="micro-label">可操作页面</span><div className="command-results">{primaryViews.map((key) => { const item = viewMeta[key]; const Icon = item.icon; return <button key={key} onClick={() => { onNavigate(key); onClose() }}><Icon size={17} /><span><strong>{item.label}</strong><small>{item.eyebrow}</small></span><code>↵</code></button> })}</div></div></div>
 }
 
-function AuthenticationChecking({ connection }: { readonly connection: ConnectionState }) {
-  return <main className="auth-shell"><section className="auth-checking" aria-live="polite"><span className="auth-seal"><LoaderCircle className="is-spinning" size={24} /></span><div><span className="micro-label">RunGuild 访问门禁</span><h1>正在恢复操作会话</h1><p>{connection === 'offline' ? 'API 暂时不可用，正在等待连接状态。' : '正在校验 HttpOnly Cookie 与 PostgreSQL 会话。'}</p></div></section></main>
+function AuthenticationChecking({ connection, error }: { readonly connection: ConnectionState; readonly error?: string | null }) {
+  return <main className="auth-shell"><section className="auth-checking" aria-live="polite"><span className="auth-seal">{error ? <CircleAlert size={24} /> : <LoaderCircle className="is-spinning" size={24} />}</span><div><span className="micro-label">RunGuild 本地入口</span><h1>{error ? '无法建立本地会话' : '正在打开你的工作区'}</h1><p>{error ?? (connection === 'offline' ? 'API 暂时不可用，请确认本地服务已经启动。' : '正在校验现有 Session；本地模式无需输入内部标识或密码。')}</p></div></section></main>
 }
 
 function LoginView({
@@ -1004,9 +1008,8 @@ function LoginView({
   onLogin,
 }: {
   readonly connection: ConnectionState
-  readonly onLogin: (input: { readonly workspaceId: string; readonly userId: string; readonly password: string }) => Promise<void>
+  readonly onLogin: (input: { readonly userId: string; readonly password: string }) => Promise<void>
 }) {
-  const [workspaceId, setWorkspaceId] = useState(() => window.localStorage.getItem('runguild:login-workspace') ?? 'demo_workspace')
   const [userId, setUserId] = useState(() => window.localStorage.getItem('runguild:login-user') ?? 'demo_user')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -1016,8 +1019,7 @@ function LoginView({
     setSubmitting(true)
     setLoginError(null)
     try {
-      await onLogin({ workspaceId: workspaceId.trim(), userId: userId.trim(), password })
-      window.localStorage.setItem('runguild:login-workspace', workspaceId.trim())
+      await onLogin({ userId: userId.trim(), password })
       window.localStorage.setItem('runguild:login-user', userId.trim())
       setPassword('')
     } catch (caught) {
@@ -1034,7 +1036,7 @@ function LoginView({
           <div className="auth-intro">
             <span className="micro-label">生产身份边界 · Session Gate</span>
             <h1><span>进入真实</span><span>操作平面</span></h1>
-            <p>登录后才能查看 Mission、控制 Worker 或批准交付。浏览器声明的用户 Header 不再被信任。</p>
+            <p>登录后选择你要进入的工作区。组织范围由服务器和会话确定，不需要手工填写内部 ID。</p>
             <ol className="auth-manifest" aria-label="访问门禁清单">
               <li><span>01</span><ShieldCheck size={17} /><div><strong>会话是持久事实</strong><small>Token 只进 HttpOnly Cookie，数据库仅保存哈希与过期状态。</small></div></li>
               <li><span>02</span><KeyRound size={17} /><div><strong>写操作双重校验</strong><small>SameSite Cookie、允许来源与 CSRF Token 必须同时成立。</small></div></li>
@@ -1043,11 +1045,10 @@ function LoginView({
           </div>
           <form className="auth-form" onSubmit={(event) => void submit(event)}>
             <div className="auth-form__heading"><span className={`system-state__signal system-state__signal--${connection}`} /><div><strong>操作员登录</strong><small>API {connection === 'online' ? '已连接' : connection === 'checking' ? '检查中' : '未连接'}</small></div></div>
-            <label><span>Workspace ID</span><input autoComplete="organization" value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)} required maxLength={200} /></label>
-            <label><span>User ID</span><input autoComplete="username" value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength={200} /></label>
+            <label><span>用户名</span><input autoComplete="username" value={userId} onChange={(event) => setUserId(event.target.value)} required maxLength={200} /></label>
             <label><span>密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={1_024} /></label>
             {loginError ? <div className="auth-error" role="alert"><CircleAlert size={16} /><span>{loginError}</span></div> : null}
-            <button className="auth-submit" type="submit" disabled={submitting || connection !== 'online' || !workspaceId.trim() || !userId.trim() || !password}>{submitting ? <LoaderCircle className="is-spinning" size={17} /> : <ArrowRight size={17} />}验证并进入</button>
+            <button className="auth-submit" type="submit" disabled={submitting || connection !== 'online' || !userId.trim() || !password}>{submitting ? <LoaderCircle className="is-spinning" size={17} /> : <ArrowRight size={17} />}验证并进入</button>
             <p className="auth-form__hint">首次使用先在服务器执行 <code>npm run auth:set-password</code>。密码与 API Key 都不会进入前端存储。</p>
           </form>
         </div>
@@ -1056,8 +1057,43 @@ function LoginView({
   )
 }
 
-function NoProjectAccess({ session, onLogout }: { readonly session: AuthenticationSession; readonly onLogout: () => void }) {
-  return <main className="auth-shell"><section className="auth-checking"><span className="auth-seal"><FolderGit2 size={23} /></span><div><span className="micro-label">账号已通过认证</span><h1>当前 Workspace 还没有可操作项目</h1><p>请先由管理员创建 Project，再重新登录刷新项目权限。</p><button className="secondary-action" onClick={onLogout}><LogOut size={15} />退出登录</button></div></section></main>
+function NoProjectAccess({ session, authenticationMode, onLogout }: { readonly session: AuthenticationSession; readonly authenticationMode: 'local' | 'team'; readonly onLogout: () => void }) {
+  return <main className="auth-shell"><section className="auth-checking"><span className="auth-seal"><FolderGit2 size={23} /></span><div><span className="micro-label">账号已通过认证</span><h1>还没有可进入的工作区</h1><p>{session.user.displayName} 暂未被分配到任何工作区，请先完成初始化或联系管理员。</p>{authenticationMode === 'team' ? <button className="secondary-action" onClick={onLogout}><LogOut size={15} />退出登录</button> : null}</div></section></main>
+}
+
+function WorkspaceLauncher({
+  session,
+  authenticationMode,
+  onOpen,
+  onLogout,
+}: {
+  readonly session: AuthenticationSession
+  readonly authenticationMode: 'local' | 'team'
+  readonly onOpen: (projectId: string) => void
+  readonly onLogout: () => void
+}) {
+  const recentProjectId = window.localStorage.getItem('runguild:last-project')
+  return (
+    <main className="workspace-launcher">
+      <header className="workspace-launcher__bar">
+        <div className="workspace-brand"><span className="workspace-brand__mark"><span className="brand-mark__orbit" /><strong>RG</strong></span><div><strong>RunGuild</strong><small>多 Agent 工作空间</small></div></div>
+        <div className="workspace-account"><span>{authenticationMode === 'local' ? '本地会话' : '团队会话'}</span><strong>{session.user.displayName}</strong>{authenticationMode === 'team' ? <button onClick={onLogout}><LogOut size={14} />退出</button> : null}</div>
+      </header>
+      <section className="workspace-launcher__content">
+        <div className="workspace-launcher__heading"><span className="micro-label">你的工作区</span><h1>选择一个 Agent 团队开始工作</h1><p>每个工作区拥有独立的代码仓库、Agent 团队、协作会话、Mission、产物与运行记录。</p></div>
+        <div className="workspace-grid">
+          {session.projects.map((project, index) => (
+            <button className="workspace-card" key={project.id} onClick={() => onOpen(project.id)}>
+              <span className={`workspace-card__mark workspace-card__mark--${index % 4}`}><FolderGit2 size={23} /></span>
+              <span className="workspace-card__copy"><span>{project.id === recentProjectId ? '最近使用' : 'Agent 工作区'}</span><strong>{project.name}</strong><small><Bot size={13} />独立 Agent 团队与任务上下文</small></span>
+              <ArrowRight size={18} />
+            </button>
+          ))}
+        </div>
+        <aside className="workspace-launcher__note"><ShieldCheck size={16} /><span><strong>身份边界仍然存在</strong><small>界面不展示租户与资源 ID；API 仍通过 Session、工作区范围和 CSRF 校验每次操作。</small></span></aside>
+      </section>
+    </main>
+  )
 }
 
 export function App() {
@@ -1065,6 +1101,8 @@ export function App() {
   const [commandOpen, setCommandOpen] = useState(false)
   const [connection, setConnection] = useState<ConnectionState>('checking')
   const [authentication, setAuthentication] = useState<AuthenticationSession | null | undefined>(undefined)
+  const [authenticationMode, setAuthenticationMode] = useState<'local' | 'team' | undefined>(undefined)
+  const [authenticationError, setAuthenticationError] = useState<string | null>(null)
   const [identity, setIdentity] = useState<TestIdentity>(emptyIdentity)
   const [setup, setSetup] = useState<DevelopmentSetup | null>(null)
   const [overview, setOverview] = useState<ProjectOperatorOverview | null>(null)
@@ -1091,15 +1129,13 @@ export function App() {
     window.localStorage.removeItem('mission-control:last-mission')
   }, [])
   const applyAuthentication = useCallback((session: AuthenticationSession) => {
-    const rememberedProject = window.localStorage.getItem('runguild:last-project')
-    const project = session.projects.find((candidate) => candidate.id === rememberedProject) ?? session.projects[0]
+    setAuthenticationError(null)
     setAuthentication(session)
     setIdentity({
       workspaceId: session.user.workspaceId,
-      projectId: project?.id ?? '',
+      projectId: '',
       userId: session.user.id,
     })
-    if (project) window.localStorage.setItem('runguild:last-project', project.id)
   }, [])
 
   const acceptMission = useCallback((snapshot: MissionSnapshot) => {
@@ -1137,10 +1173,17 @@ export function App() {
   const checkConnection = () => void run('health', async () => { setConnection('checking'); try { await missionApi.health(); setConnection('online'); await syncOverview().catch(() => setOverview(null)); await syncRuntimeConfiguration().catch(() => setRuntimeConfiguration(null)) } catch (caught) { setConnection('offline'); throw caught } })
   const refreshMission = () => { if (!missionId) return; void run('refresh', async () => { setMission(await missionApi.getMission(identity, missionId)); await syncOverview() }) }
   const changeProject = (projectId: string) => {
-    if (!authentication || !authentication.projects.some((project) => project.id === projectId)) return
+    if (!authentication) return
+    if (!projectId) {
+      clearProjectState()
+      setIdentity({ workspaceId: authentication.user.workspaceId, projectId: '', userId: authentication.user.id })
+      return
+    }
+    if (!authentication.projects.some((project) => project.id === projectId)) return
     clearProjectState()
     window.localStorage.setItem('runguild:last-project', projectId)
     setIdentity({ workspaceId: authentication.user.workspaceId, projectId, userId: authentication.user.id })
+    navigate('team')
   }
 
   const logout = () => {
@@ -1158,11 +1201,33 @@ export function App() {
       .then(async () => {
         if (!active) return
         setConnection('online')
+        const { mode } = await missionApi.authenticationMode()
+        if (!active) return
+        setAuthenticationMode(mode)
         try {
           const session = await missionApi.session()
           if (active) applyAuthentication(session)
-        } catch {
-          if (active) setAuthentication(null)
+        } catch (sessionError) {
+          if (!active) return
+          if (mode === 'team') {
+            setAuthentication(null)
+            return
+          }
+          try {
+            let session: AuthenticationSession
+            try {
+              session = await missionApi.localLogin()
+            } catch {
+              await missionApi.bootstrapLocal()
+              session = await missionApi.localLogin()
+            }
+            if (active) applyAuthentication(session)
+          } catch (caught) {
+            if (active) {
+              setAuthenticationError(caught instanceof Error ? caught.message : sessionError instanceof Error ? sessionError.message : '本地会话初始化失败')
+              setAuthentication(undefined)
+            }
+          }
         }
       })
       .catch(() => {
@@ -1175,12 +1240,19 @@ export function App() {
   useEffect(() => {
     const authenticationRequired = () => {
       clearProjectState()
-      setAuthentication(null)
       setIdentity(emptyIdentity)
+      if (authenticationMode === 'local') {
+        setAuthentication(undefined)
+        void missionApi.localLogin()
+          .then(applyAuthentication)
+          .catch((caught: unknown) => setAuthenticationError(caught instanceof Error ? caught.message : '本地会话恢复失败'))
+      } else {
+        setAuthentication(null)
+      }
     }
     window.addEventListener('runguild:authentication-required', authenticationRequired)
     return () => window.removeEventListener('runguild:authentication-required', authenticationRequired)
-  }, [clearProjectState])
+  }, [applyAuthentication, authenticationMode, clearProjectState])
   useEffect(() => {
     if (connection !== 'online' || !authentication || !identity.projectId) return
     void syncOverview().catch(() => setOverview(null))
@@ -1246,9 +1318,10 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, connection, setup, overview, mission, identity, busy, error, missionId, acceptMission, acceptMissionFromPlanning, syncOverview])
 
-  if (authentication === undefined) return <AuthenticationChecking connection={connection} />
+  if (authentication === undefined || authenticationMode === undefined) return <AuthenticationChecking connection={connection} error={authenticationError} />
   if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />
-  if (!authentication.projects.length) return <NoProjectAccess session={authentication} onLogout={logout} />
+  if (!authentication.projects.length) return <NoProjectAccess session={authentication} authenticationMode={authenticationMode} onLogout={logout} />
+  if (!identity.projectId) return <WorkspaceLauncher session={authentication} authenticationMode={authenticationMode} onOpen={changeProject} onLogout={logout} />
 
-  return <div className="app-shell"><AppNavigation view={view} session={authentication} onNavigate={navigate} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
+  return <div className="app-shell"><AppNavigation view={view} session={authentication} authenticationMode={authenticationMode} onNavigate={navigate} onLeaveWorkspace={() => changeProject('')} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
 }

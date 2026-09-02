@@ -211,7 +211,7 @@ export function TraceView({ identity }: TraceViewProps) {
     <>
       <section className="page-heading">
         <div>
-          <div className="breadcrumb"><span>运行记录</span><i>/</i><code>{selectedId ? selectedId.slice(0, 12) : '项目账本'}</code></div>
+          <div className="breadcrumb"><span>当前工作区</span><i>/</i><span>运行记录</span></div>
           <h1>项目运行账本</h1>
           <p>读取项目最近 Run 的真实审计摘要：状态、模型、Token 与估算成本、Context Snapshot 摘要，以及按持久化顺序排列的事件、模型调用与工具执行。仅返回脱敏摘要，不包含密钥或未脱敏模型内容。</p>
         </div>
@@ -263,7 +263,7 @@ export function TraceView({ identity }: TraceViewProps) {
                   <code className="trace-event__time">{run.startedAt ? new Date(run.startedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'}</code>
                   <span className="trace-event__type">{statusLabels[run.status] ?? run.status}</span>
                   <div><strong>{run.task.title}</strong><p>{run.mission.title} · {run.agent.name} · 尝试 {run.attempt} · Hop {run.currentHop}/{run.maxHops}</p></div>
-                  <code className="trace-event__duration">{run.runId.slice(0, 12)}</code>
+                  <code className="trace-event__duration">第 {run.attempt} 次尝试</code>
                 </button>
               ))}
             </div>

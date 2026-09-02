@@ -181,6 +181,13 @@ function sourceAddress(request: IncomingMessage): string {
   return request.socket.remoteAddress?.trim() || 'unknown-source'
 }
 
+function isDirectLoopbackRequest(request: IncomingMessage): boolean {
+  if (requestHeader(request, 'forwarded') || requestHeader(request, 'x-forwarded-for')) return false
+  const address = sourceAddress(request)
+  return address === '::1' || address === '127.0.0.1' || address.startsWith('127.')
+    || address.startsWith('::ffff:127.')
+}
+
 function userAgent(request: IncomingMessage): string {
   return requestHeader(request, 'user-agent')?.slice(0, 1_000) || 'unknown-user-agent'
 }
@@ -274,6 +281,69 @@ export class SessionAuthentication {
         retryAfter || undefined,
       )
     }
+    return this.issueSession({
+      credential,
+      request: input.request,
+      sourceHash,
+      principalHash,
+      loginKeyHash,
+    })
+  }
+
+  async signInLocal(input: {
+    readonly workspaceId: string
+    readonly userId: string
+    readonly request: IncomingMessage
+  }): Promise<{
+    readonly authentication: RequestAuthentication & { readonly mode: 'session' }
+    readonly sessionToken: string
+    readonly csrfToken: string
+    readonly view: AuthenticationSessionView
+  }> {
+    if (!isDirectLoopbackRequest(input.request)) {
+      throw new AuthenticationError(
+        'local_authentication_forbidden',
+        403,
+        '本地自动会话只接受直接的 Loopback 请求',
+      )
+    }
+    const workspaceId = input.workspaceId.trim() as WorkspaceId
+    const userId = input.userId.trim() as UserId
+    if (!workspaceId || !userId || workspaceId.length > 200 || userId.length > 200) {
+      throw new AuthenticationError('local_identity_invalid', 500, '本地身份配置无效')
+    }
+    let credential = await this.repository.getCredential(workspaceId, userId)
+    if (!credential) {
+      credential = await this.repository.ensureLocalCredential({
+        workspaceId,
+        userId,
+        passwordHash: await hashPassword(randomBytes(48).toString('base64url')),
+      }).catch(() => {
+        throw new AuthenticationError(
+          'local_identity_missing',
+          409,
+          '本地身份尚未初始化',
+        )
+      })
+    }
+    const sourceHash = digest(sourceAddress(input.request))
+    const principalHash = digest(workspaceId + '\u0000' + userId)
+    return this.issueSession({
+      credential,
+      request: input.request,
+      sourceHash,
+      principalHash,
+      loginKeyHash: digest(principalHash + '\u0000' + sourceHash),
+    })
+  }
+
+  private async issueSession(input: {
+    readonly credential: AuthenticationCredential
+    readonly request: IncomingMessage
+    readonly sourceHash: string
+    readonly principalHash: string
+    readonly loginKeyHash: string
+  }) {
     const sessionToken = randomBytes(32).toString('base64url')
     const csrfToken = randomBytes(32).toString('base64url')
     const now = Date.now()
@@ -284,23 +354,22 @@ export class SessionAuthentication {
     ))
     const session = await this.repository.createSession({
       id: 'auth_session_' + randomUUID(),
-      credential,
+      credential: input.credential,
       tokenHash: digest(sessionToken),
       csrfTokenHash: digest(csrfToken),
-      sourceHash,
+      sourceHash: input.sourceHash,
       userAgentHash: digest(userAgent(input.request)),
       idleExpiresAt,
       expiresAt,
-      principalHash,
-      loginKeyHash,
+      principalHash: input.principalHash,
+      loginKeyHash: input.loginKeyHash,
     })
-    const authentication = {
-      mode: 'session' as const,
-      actor: { kind: 'user' as const, id: session.userId },
-      session,
-    }
     return {
-      authentication,
+      authentication: {
+        mode: 'session' as const,
+        actor: { kind: 'user' as const, id: session.userId },
+        session,
+      },
       sessionToken,
       csrfToken,
       view: await this.sessionView(session),

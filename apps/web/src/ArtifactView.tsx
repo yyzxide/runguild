@@ -251,7 +251,7 @@ export function ArtifactView({ identity, missionId }: ArtifactViewProps) {
     <>
       <section className="page-heading artifact-heading">
         <div>
-          <div className="breadcrumb"><span>协作产物</span><i>/</i><code>{selected?.id.slice(0, 20) ?? '项目 Artifact 账本'}</code></div>
+          <div className="breadcrumb"><span>当前工作区</span><i>/</i><span>协作产物</span></div>
           <h1>活文档与冻结版本</h1>
           <p>读取项目真实 Yjs 状态和不可变 Artifact Version。这里用于核对 Agent 交付、哈希与版本来源；不会展示虚构协作者或样例评论。</p>
         </div>
@@ -281,7 +281,7 @@ export function ArtifactView({ identity, missionId }: ArtifactViewProps) {
                 <button className={artifact.id === selectedId ? 'is-selected' : ''} key={artifact.id} onClick={() => setSelectedId(artifact.id)}>
                   <span className="artifact-kind"><FileText size={12} />{artifact.kind}</span>
                   <strong>{artifact.title}</strong>
-                  <small>{artifact.missionId ? `Mission · ${artifact.missionId}` : '项目级 Artifact'}</small>
+                  <small>{artifact.missionId ? '已关联 Mission' : '工作区级 Artifact'}</small>
                   <div><code>update {artifact.throughUpdateSeq}</code><span>{artifact.versionCount} 个 Version</span></div>
                 </button>
               ))}
@@ -292,7 +292,7 @@ export function ArtifactView({ identity, missionId }: ArtifactViewProps) {
           <main className="artifact-document">
             {detailLoading ? <section className="artifact-state"><LoaderCircle className="is-spinning" size={21} /><strong>正在重建 Yjs 状态</strong></section> : detailError && !detail ? <section className="artifact-state artifact-state--error"><CircleAlert size={20} /><strong>Artifact 详情加载失败</strong><p>{detailError}</p></section> : detail ? <>
               <header className="artifact-document__header">
-                <div><span className="document-kicker">{detail.artifact.kind} · {selectedVersionId === 'live' ? '可变状态' : '不可变切片'}</span><h2>{detail.artifact.title}</h2><p>{detail.artifact.missionId ? `属于 Mission ${detail.artifact.missionId}` : '项目级协作产物'}</p></div>
+                <div><span className="document-kicker">{detail.artifact.kind} · {selectedVersionId === 'live' ? '可变状态' : '不可变切片'}</span><h2>{detail.artifact.title}</h2><p>{detail.artifact.missionId ? '属于当前关联 Mission' : '工作区级协作产物'}</p></div>
                 <span className={`artifact-mode artifact-mode--${selectedVersionId === 'live' ? 'live' : 'frozen'}`}>{selectedVersionId === 'live' ? <Waves size={13} /> : <ShieldCheck size={13} />}{selectedVersionId === 'live' ? 'LIVE' : selectedSummary ? versionLabel(selectedSummary) : 'VERSION'}</span>
               </header>
 

@@ -99,6 +99,43 @@ export class AuthenticationRepository {
     return result.rows[0] ? asCredential(result.rows[0]) : null
   }
 
+  async ensureLocalCredential(input: {
+    readonly workspaceId: WorkspaceId
+    readonly userId: UserId
+    readonly passwordHash: string
+  }): Promise<AuthenticationCredential> {
+    return withTransaction(this.pool, async (client) => {
+      const user = await client.query<{ readonly display_name: string; readonly role: UserRole }>(
+        'SELECT display_name, role FROM users WHERE workspace_id = $1 AND id = $2 FOR UPDATE',
+        [input.workspaceId, input.userId],
+      )
+      const account = user.rows[0]
+      if (!account) throw new Error('Local authentication user does not exist')
+      const existing = await client.query<CredentialRow>(
+        'SELECT credential.workspace_id, credential.user_id, user_account.display_name, ' +
+        'user_account.role, credential.password_hash, credential.credential_version ' +
+        'FROM user_credentials credential JOIN users user_account ON user_account.id = credential.user_id ' +
+        'AND user_account.workspace_id = credential.workspace_id ' +
+        'WHERE credential.workspace_id = $1 AND credential.user_id = $2',
+        [input.workspaceId, input.userId],
+      )
+      if (existing.rows[0]) return asCredential(existing.rows[0])
+      await client.query(
+        "UPDATE users SET role = 'owner' WHERE workspace_id = $1 AND id = $2",
+        [input.workspaceId, input.userId],
+      )
+      const inserted = await client.query<CredentialRow>(
+        'INSERT INTO user_credentials (workspace_id, user_id, password_hash) VALUES ($1, $2, $3) ' +
+        'RETURNING workspace_id, user_id, $4::text AS display_name, ' +
+        "'owner'::text AS role, password_hash, credential_version",
+        [input.workspaceId, input.userId, input.passwordHash, account.display_name],
+      )
+      const credential = inserted.rows[0]
+      if (!credential) throw new Error('Local authentication credential was not created')
+      return asCredential(credential)
+    })
+  }
+
   async setCredential(input: {
     readonly workspaceId: WorkspaceId
     readonly userId: UserId

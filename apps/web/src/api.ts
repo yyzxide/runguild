@@ -123,6 +123,10 @@ export interface AuthenticationSession {
   readonly idleExpiresAt: string
 }
 
+export interface AuthenticationMode {
+  readonly mode: 'local' | 'team'
+}
+
 export interface DevelopmentSetup extends TestIdentity {
   readonly conversationId: string
   readonly agents: readonly { readonly id: string; readonly role: string; readonly name: string }[]
@@ -515,7 +519,8 @@ async function request<ResponseBody>(path: string, init: RequestInit = {}): Prom
   if (!response.ok) {
     const payload = body as { error?: { message?: string; code?: string; reason?: string } } | null
     const message = payload?.error?.message ?? payload?.error?.reason ?? payload?.error?.code
-    if (response.status === 401 && path !== '/api/v1/auth/login' && path !== '/api/v1/auth/session') {
+    if (response.status === 401 && path !== '/api/v1/auth/login' && path !== '/api/v1/auth/local'
+        && path !== '/api/v1/auth/session') {
       window.dispatchEvent(new Event('runguild:authentication-required'))
     }
     throw new Error(message ? `请求失败：${message}` : `请求失败（HTTP ${response.status}）`)
@@ -536,11 +541,27 @@ export const missionApi = {
     return request('/api/v1/auth/session')
   },
 
-  login(input: { readonly workspaceId: string; readonly userId: string; readonly password: string }): Promise<AuthenticationSession> {
+  authenticationMode(): Promise<AuthenticationMode> {
+    return request('/api/v1/auth/mode')
+  },
+
+  localLogin(): Promise<AuthenticationSession> {
+    return request('/api/v1/auth/local', { method: 'POST' })
+  },
+
+  login(input: { readonly userId: string; readonly password: string }): Promise<AuthenticationSession> {
     return request('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
+    })
+  },
+
+  bootstrapLocal(): Promise<DevelopmentSetup> {
+    return request('/api/v1/development/bootstrap', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
     })
   },
 

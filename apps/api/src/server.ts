@@ -31,6 +31,16 @@ const databaseUrl = process.env.DATABASE_URL
 if (!databaseUrl) throw new Error('DATABASE_URL is required')
 const redisUrl = process.env.REDIS_URL?.trim()
 const production = process.env.NODE_ENV === 'production'
+const authenticationMode = process.env.AUTH_MODE?.trim() || (production ? 'team' : 'local')
+if (authenticationMode !== 'local' && authenticationMode !== 'team') {
+  throw new Error('AUTH_MODE must be local or team')
+}
+if (production && authenticationMode === 'local') {
+  throw new Error('AUTH_MODE=local cannot be used in production')
+}
+const defaultWorkspaceId = process.env.AUTH_DEFAULT_WORKSPACE_ID?.trim()
+  || (production ? '' : 'demo_workspace')
+const localUserId = process.env.LOCAL_AUTH_USER_ID?.trim() || (production ? '' : 'demo_user')
 const configuredOrigins = process.env.AUTH_ALLOWED_ORIGINS?.split(',')
   .map((origin) => origin.trim())
   .filter(Boolean)
@@ -51,6 +61,13 @@ const port = Number(process.env.PORT ?? 4000)
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   throw new Error('PORT must be a valid TCP port')
 }
+const host = process.env.HOST?.trim() || (production ? '0.0.0.0' : '127.0.0.1')
+const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost'])
+if (authenticationMode === 'local' && !loopbackHosts.has(host)) {
+  throw new Error('AUTH_MODE=local requires HOST to be a loopback address')
+}
+if (!defaultWorkspaceId) throw new Error('AUTH_DEFAULT_WORKSPACE_ID is required')
+if (authenticationMode === 'local' && !localUserId) throw new Error('LOCAL_AUTH_USER_ID is required in local mode')
 
 const pool = createDatabasePool(databaseUrl)
 if (process.env.AUTO_MIGRATE === 'true') {
@@ -120,9 +137,13 @@ const app = createApiApp({
   healthcheck: async () => {
     await pool.query('SELECT 1')
   },
+}, {
+  authenticationMode,
+  defaultWorkspaceId,
+  ...(authenticationMode === 'local' ? { localUserId } : {}),
 })
-const server = app.listen(port, () => {
-  process.stdout.write('API listening on port ' + port + '\n')
+const server = app.listen(port, host, () => {
+  process.stdout.write(`API listening on http://${host}:${port} (${authenticationMode} authentication)\n`)
 })
 const artifactRealtime = attachArtifactRealtimeServer(server, {
   repository: artifacts,
