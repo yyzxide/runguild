@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { PGlite } from '@electric-sql/pglite'
-import { AuthenticationRepository } from '@runguild/database'
+import { AuthenticationRepository, ProjectMembershipRepository } from '@runguild/database'
 
 import { createApiApp } from '../dist/app.js'
 import { SessionAuthentication, hashPassword, verifyPassword } from '../dist/authentication.js'
@@ -29,14 +29,17 @@ async function withDatabase(operation) {
   const database = new PGlite()
   try {
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0001_core.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0010_conversations.sql', import.meta.url), 'utf8'))
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0021_authentication.sql', import.meta.url), 'utf8'))
     await database.exec(
       "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace'), ('other', 'Other');" +
-      "INSERT INTO users (id, workspace_id, display_name) VALUES " +
-      "('owner', 'ws', 'Owner'), ('viewer', 'ws', 'Viewer');" +
+      "INSERT INTO users (id, workspace_id, display_name, role) VALUES " +
+      "('owner', 'ws', 'Owner', 'owner'), ('viewer', 'ws', 'Viewer', 'viewer');" +
       "INSERT INTO projects (id, workspace_id, name) VALUES ('project', 'ws', 'Project');",
     )
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
     const repository = new AuthenticationRepository(poolAdapter(database))
+    const projectMemberships = new ProjectMembershipRepository(poolAdapter(database))
     for (const [userId, role] of [['owner', 'owner'], ['viewer', 'viewer']]) {
       await repository.setCredential({
         workspaceId: 'ws', userId, role,
@@ -44,7 +47,7 @@ async function withDatabase(operation) {
         principalHash: digest('ws\0' + userId), sourceHash: digest('test-setup'),
       })
     }
-    await operation({ database, repository })
+    await operation({ database, repository, projectMemberships })
   } finally {
     await database.close()
   }
@@ -76,9 +79,10 @@ async function withServer(app, operation) {
   }
 }
 
-function apiDependencies(authentication, overviewCalls) {
+function apiDependencies(authentication, overviewCalls, projectMemberships) {
   return {
     authentication,
+    ...(projectMemberships ? { projectMemberships } : {}),
     missions: {}, conversations: {}, conversationPlanning: {}, runControls: {}, taskControls: {},
     toolApprovals: {}, artifacts: {}, reviews: {}, reviewerExecutions: {}, skills: {}, evaluations: {},
     projectRuntimeConfigs: {}, runTraces: {},
@@ -136,14 +140,14 @@ test('password hashing and session authentication keep browser and Agent trust p
   })
 })
 
-test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and viewer boundaries', async () => {
-  await withDatabase(async ({ repository }) => {
+test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and project-role boundaries', async () => {
+  await withDatabase(async ({ database, repository, projectMemberships }) => {
     const authentication = new SessionAuthentication(repository, {
       secureCookies: false,
       allowedOrigins: ['http://127.0.0.1:4173'],
     })
     const overviewCalls = []
-    const app = createApiApp(apiDependencies(authentication, overviewCalls), {
+    const app = createApiApp(apiDependencies(authentication, overviewCalls, projectMemberships), {
       authenticationMode: 'team',
       defaultWorkspaceId: 'ws',
     })
@@ -178,6 +182,28 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
       assert.equal(overview.status, 200)
       assert.deepEqual(overviewCalls, [{ workspaceId: 'ws', projectId: 'project', userId: 'owner' }])
 
+      const members = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project/members', {
+        headers: { cookie: cookies.header },
+      })
+      assert.equal(members.status, 200)
+      assert.deepEqual((await members.json()).members.map(({ userId, role }) => [userId, role]), [
+        ['owner', 'owner'], ['viewer', 'viewer'],
+      ])
+
+      const addMember = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project/members', {
+        method: 'POST',
+        headers: { cookie: cookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': cookies.csrf, 'content-type': 'application/json' },
+        body: JSON.stringify({ userId: 'operator', displayName: 'Operator', role: 'operator', password: 'correct horse battery staple operator' }),
+      })
+      assert.equal(addMember.status, 201)
+      assert.equal((await addMember.json()).members.some(({ userId }) => userId === 'operator'), true)
+
+      await database.exec("INSERT INTO projects (id, workspace_id, name) VALUES ('private_project', 'ws', 'Private')")
+      const privateProject = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/private_project/operator-overview', {
+        headers: { cookie: cookies.header },
+      })
+      assert.equal(privateProject.status, 404)
+
       const outside = await fetch(baseUrl + '/api/v1/workspaces/other/projects/project/operator-overview', {
         headers: { cookie: cookies.header },
       })
@@ -205,8 +231,12 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
 })
 
 test('local mode creates the configured loopback owner session without exposing a password login', async () => {
-  await withDatabase(async ({ database, repository }) => {
-    await database.exec("INSERT INTO users (id, workspace_id, display_name) VALUES ('local-user', 'ws', 'Local User')")
+  await withDatabase(async ({ database, repository, projectMemberships }) => {
+    await database.exec(
+      "INSERT INTO users (id, workspace_id, display_name, role) VALUES ('local-user', 'ws', 'Local User', 'owner');" +
+      "INSERT INTO project_memberships (workspace_id, project_id, user_id, role) " +
+      "VALUES ('ws', 'project', 'local-user', 'owner')",
+    )
     const authentication = new SessionAuthentication(repository, {
       secureCookies: false,
       allowedOrigins: ['http://127.0.0.1:4173'],
@@ -219,7 +249,7 @@ test('local mode creates the configured loopback owner session without exposing 
       request: request({ 'x-forwarded-for': '127.0.0.1' }),
     }), (error) => error.code === 'local_authentication_forbidden')
 
-    const app = createApiApp(apiDependencies(authentication, []), {
+    const app = createApiApp(apiDependencies(authentication, [], projectMemberships), {
       authenticationMode: 'local',
       defaultWorkspaceId: 'ws',
       localUserId: 'local-user',

@@ -50,23 +50,25 @@ import {
   type WorkerKind,
 } from './api'
 import { MissionGraph } from './MissionGraph'
+import { MembersView } from './MembersView'
 import { type EvidenceFact, type MissionTask, type TaskStatus } from './data'
 import { EvaluationView } from './EvaluationView'
 import { ArtifactView } from './ArtifactView'
 import { TraceView } from './TraceView'
 
-type View = 'start' | 'mission' | 'team' | 'artifacts' | 'evaluation' | 'trace'
+type View = 'start' | 'mission' | 'team' | 'members' | 'artifacts' | 'evaluation' | 'trace'
 type ConnectionState = 'checking' | 'online' | 'offline'
 
 const viewMeta: Record<View, { readonly label: string; readonly icon: LucideIcon; readonly eyebrow: string }> = {
   start: { label: '工作台', icon: LayoutDashboard, eyebrow: '状态、上下文与下一步操作' },
   mission: { label: 'Mission', icon: Network, eyebrow: '任务依赖与执行状态' },
   team: { label: '协作室', icon: MessageCircle, eyebrow: '讨论、规划与运行中干预' },
+  members: { label: '成员', icon: Users, eyebrow: '人类成员、角色与工作区访问' },
   artifacts: { label: '协作产物', icon: FileStack, eyebrow: '实时协作 · 冻结版本' },
   evaluation: { label: '评测实验', icon: FlaskConical, eyebrow: '单 Agent 与多 Agent 对照' },
   trace: { label: '运行记录', icon: Activity, eyebrow: '可审计执行账本' },
 }
-const primaryViews: readonly View[] = ['start', 'team', 'mission']
+const primaryViews: readonly View[] = ['start', 'team', 'mission', 'members']
 
 const emptyIdentity: TestIdentity = {
   workspaceId: '',
@@ -1085,7 +1087,7 @@ function WorkspaceLauncher({
           {session.projects.map((project, index) => (
             <button className="workspace-card" key={project.id} onClick={() => onOpen(project.id)}>
               <span className={`workspace-card__mark workspace-card__mark--${index % 4}`}><FolderGit2 size={23} /></span>
-              <span className="workspace-card__copy"><span>{project.id === recentProjectId ? '最近使用' : 'Agent 工作区'}</span><strong>{project.name}</strong><small><Bot size={13} />独立 Agent 团队与任务上下文</small></span>
+              <span className="workspace-card__copy"><span>{project.id === recentProjectId ? '最近使用' : 'Agent 工作区'}</span><strong>{project.name}</strong><small><Bot size={13} />{project.role === 'owner' ? 'Owner' : project.role === 'operator' ? 'Operator' : 'Viewer'} · 独立团队与任务上下文</small></span>
               <ArrowRight size={18} />
             </button>
           ))}
@@ -1311,12 +1313,13 @@ export function App() {
     if (view === 'start') return <StartView {...startProps} />
     if (view === 'evaluation') return <EvaluationView identity={identity} />
     if (view === 'team') return <TeamRoomView identity={identity} setup={setup} mission={mission} onNavigate={navigate} onMissionReady={acceptMissionFromPlanning} />
+    if (view === 'members') return <MembersView identity={identity} currentUserId={authentication?.user.id ?? identity.userId} currentRole={authentication?.projects.find((project) => project.id === identity.projectId)?.role ?? 'viewer'} />
     if (view === 'artifacts') return <ArtifactView identity={identity} missionId={mission?.id} />
     if (view === 'trace') return <TraceView identity={identity} />
     return <MissionView mission={mission} busy={busy} error={error} onNavigate={navigate} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
   // State is intentionally listed explicitly so API progress is reflected immediately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, connection, setup, overview, mission, identity, busy, error, missionId, acceptMission, acceptMissionFromPlanning, syncOverview])
+  }, [view, connection, setup, overview, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview])
 
   if (authentication === undefined || authenticationMode === undefined) return <AuthenticationChecking connection={connection} error={authenticationError} />
   if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />

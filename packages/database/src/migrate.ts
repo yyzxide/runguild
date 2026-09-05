@@ -25,6 +25,7 @@ const MIGRATIONS = [
   '0019_project_scoped_integration_workers.sql',
   '0020_project_scoped_agent_workers.sql',
   '0021_authentication.sql',
+  '0022_project_memberships.sql',
 ] as const
 
 function checksum(contents: string): string {

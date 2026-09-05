@@ -60,8 +60,11 @@ Expected flow:
 
 ## 5. Core entities
 
-- Workspace: security and team boundary.
-- Project: repository, conversations, agents, and missions.
+- Workspace: hidden tenant and authentication boundary.
+- Project: user-facing workspace containing a repository, conversations,
+  humans, agents, and missions.
+- Project Membership: one human's Owner, Operator, or Viewer role in one
+  Project.
 - Agent: persistent identity, role, skills, model policy, and permissions.
 - Conversation: natural collaboration and steering surface.
 - Mission: approved goal, acceptance criteria, budget, and lifecycle.
@@ -87,10 +90,19 @@ Expected flow:
 
 ### Workspace and conversation
 
-- A human signs in to one exact Workspace with a revocable PostgreSQL session;
-  the browser cannot choose its own actor identity.
-- Owner and operator roles may use mutating operator commands; viewer is
-  read-only. Domain-specific approval/reviewer rules remain additional gates.
+- A human signs in to the server-configured Workspace with a revocable
+  PostgreSQL session; the browser cannot choose its own tenant or actor
+  identity.
+- The workspace launcher lists only Projects with an explicit membership for
+  the signed-in User. Project and resource routes reject a non-member even when
+  the Project belongs to the same database Workspace.
+- Owner and Operator membership roles may use mutating operator commands;
+  Viewer is read-only. Only an Owner can manage Project members, and every
+  Project must retain at least one Owner. Domain-specific approval/reviewer
+  rules remain additional gates.
+- Adding a human mirrors that membership into the Project Room; removing a
+  human removes their Project conversation memberships. Role and membership
+  changes are audited and revoke the affected User's active sessions.
 - Browser writes require same-origin Cookie/CSRF proof. Agent transport uses a
   separate environment-only credential and cannot impersonate a browser User.
 - One user can create a project and conversation.

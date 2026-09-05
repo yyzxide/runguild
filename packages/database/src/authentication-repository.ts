@@ -31,6 +31,7 @@ export interface AuthenticationSession {
 export interface AuthenticationProject {
   readonly id: ProjectId
   readonly name: string
+  readonly role: UserRole
 }
 
 interface CredentialRow {
@@ -324,12 +325,16 @@ export class AuthenticationRepository {
     return touched.rows[0] ? asSession(touched.rows[0]) : null
   }
 
-  async listProjects(workspaceId: WorkspaceId): Promise<readonly AuthenticationProject[]> {
-    const result = await this.pool.query<{ readonly id: string; readonly name: string }>(
-      'SELECT id, name FROM projects WHERE workspace_id = $1 ORDER BY updated_at DESC, id',
-      [workspaceId],
+  async listProjects(workspaceId: WorkspaceId, userId: UserId): Promise<readonly AuthenticationProject[]> {
+    const result = await this.pool.query<{ readonly id: string; readonly name: string; readonly role: UserRole }>(
+      'SELECT project.id, project.name, membership.role FROM project_memberships membership ' +
+      'JOIN projects project ON project.id = membership.project_id ' +
+      'AND project.workspace_id = membership.workspace_id ' +
+      'WHERE membership.workspace_id = $1 AND membership.user_id = $2 ' +
+      'ORDER BY project.updated_at DESC, project.id',
+      [workspaceId, userId],
     )
-    return result.rows.map((row) => ({ id: row.id as ProjectId, name: row.name }))
+    return result.rows.map((row) => ({ id: row.id as ProjectId, name: row.name, role: row.role }))
   }
 
   async revokeSession(input: {

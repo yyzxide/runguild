@@ -61,6 +61,9 @@ advance that Task.
 - **评测实验** lists persisted Scenario Versions and Experiments and rebuilds
   paired reports from Trial metrics.
 - **运行记录** queries redacted, Project-scoped Run and event ledgers.
+- **成员** projects the persisted human membership ledger. Owner-only controls
+  create accounts, change Project roles, and remove members; non-Owners see the
+  same roster without mutation controls.
 - **配置与启停** persists repository, Worktree, argv, timeout, context, and
   Agent model configuration, then controls only Worker children owned by the
   current API when local runtime control is enabled.
@@ -77,6 +80,8 @@ invented Worker state when an API query is empty or fails. Browser identity is
 the authenticated PostgreSQL session, not a user-editable actor header. API
 keys and internal Agent credentials never enter Web state. Destructive or
 advancing actions must name the exact gate they affect and remain auditable.
+The launcher and navigation use human-readable Project names and roles; tenant,
+Project, and User ids are not presented as configuration inputs.
 
 ## Self-critique
 

@@ -56,6 +56,8 @@ async function setup(database) {
     "('room', 'ws', 'user', 'user'), ('room', 'ws', 'agent', 'planner'), " +
     "('room', 'ws', 'agent', 'builder'), ('other_room', 'ws', 'agent', 'other_agent');",
   )
+  await database.exec(await readFile(new URL('../migrations/0021_authentication.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
 }
 
 test('Project Runtime Config Repository returns defaults and persists safe launch inputs', async () => {

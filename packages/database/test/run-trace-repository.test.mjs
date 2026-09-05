@@ -56,7 +56,7 @@ test('listRecentRuns maps rows, normalizes timestamps, and enforces scope', asyn
   const sql = statements[0].statement
   assert.match(sql, /WHERE r\.workspace_id = \$1/)
   assert.match(sql, /JOIN missions m ON m\.id = r\.mission_id AND m\.workspace_id = r\.workspace_id AND m\.project_id = \$2/)
-  assert.match(sql, /JOIN users actor ON actor\.id = \$3 AND actor\.workspace_id = r\.workspace_id/)
+  assert.match(sql, /JOIN project_memberships actor ON actor\.user_id = \$3/)
   assert.match(sql, /ORDER BY r\.created_at DESC, r\.id DESC LIMIT \$4/)
 })
 
@@ -123,7 +123,7 @@ test('getRun returns redacted detail with stable serialization and scoped joins'
   assert.match(statements[1].statement, /ORDER BY e\.seq ASC/)
   assert.match(statements[2].statement, /ORDER BY c\.hop ASC, c\.started_at ASC, c\.id ASC/)
   assert.match(statements[3].statement, /JOIN missions m ON m\.id = r\.mission_id/)
-  assert.match(statements[3].statement, /JOIN users actor ON actor\.id = \$4/)
+  assert.match(statements[3].statement, /JOIN project_memberships actor ON actor\.user_id = \$4/)
   // Redaction contract: no model message bodies or raw tool payloads are selected.
   const allSql = statements.map(({ statement }) => statement).join('\n')
   assert.equal(allSql.includes('request_redacted'), false)

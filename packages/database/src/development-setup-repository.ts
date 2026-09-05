@@ -91,6 +91,11 @@ export class DevelopmentSetupRepository {
         'ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()',
         [input.projectId, input.workspaceId, input.projectName.trim()],
       )
+      await client.query(
+        'INSERT INTO project_memberships (workspace_id, project_id, user_id, role, added_by) ' +
+        "VALUES ($1, $2, $3, 'owner', $3) ON CONFLICT (project_id, user_id) DO NOTHING",
+        [input.workspaceId, input.projectId, input.userId],
+      )
 
       const agents = []
       for (const role of DEVELOPMENT_ROLES) {

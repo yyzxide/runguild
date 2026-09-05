@@ -29,14 +29,19 @@ GET  /api/v1/auth/session
 POST /api/v1/auth/logout
 ~~~
 
-Login accepts one Workspace id, User id, and password from an exact allowed
-Origin. Success returns only the User/role, allowed Projects, and expiry times;
+Login accepts a User id and password from an exact allowed Origin; the server
+supplies the configured Workspace tenant. Success returns only the User, the
+explicitly joined Projects and per-Project roles, and expiry times;
 the random session token is an HttpOnly SameSite Cookie and the random CSRF
 token is a separate SameSite Cookie. Unsafe authenticated requests must echo
 that CSRF value in `x-csrf-token`. The API compares the two tokens in fixed time
 and verifies the CSRF hash stored with the resolved session. Password change
 advances `credential_version`, invalidating every older session. Authentication
 errors are generic; a database-backed block returns 429 plus `Retry-After`.
+Every Project route resolves the current `project_memberships` role. Unsafe
+requests by a Viewer are rejected, and a non-member receives the same not-found
+boundary as a missing Project. Membership changes revoke the affected User's
+sessions so a stale role snapshot cannot authorize later requests.
 
 Agent HTTP or Artifact WebSocket requests use `Authorization: Bearer <internal
 token>` before the server considers `x-actor-kind: agent`, `x-actor-id`, and

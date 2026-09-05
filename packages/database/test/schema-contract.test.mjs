@@ -14,6 +14,7 @@ const conversationPlanningMigrationUrl = new URL('../migrations/0011_conversatio
 const workerInstancesMigrationUrl = new URL('../migrations/0012_worker_instances.sql', import.meta.url)
 const projectScopedAgentMigrationUrl = new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url)
 const authenticationMigrationUrl = new URL('../migrations/0021_authentication.sql', import.meta.url)
+const projectMembershipMigrationUrl = new URL('../migrations/0022_project_memberships.sql', import.meta.url)
 const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
@@ -192,6 +193,20 @@ test('Authentication schema stores only hashes, versions sessions, and keeps an 
   assert.match(sql, /CREATE TABLE IF NOT EXISTS auth_events/)
   assert.doesNotMatch(sql, /password\s+TEXT|session_token\s+TEXT|csrf_token\s+TEXT/i)
   assert.match(runner, /0021_authentication\.sql/)
+})
+
+test('Project membership schema scopes human access, preserves history, and protects role values', async () => {
+  const sql = await readFile(projectMembershipMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS project_memberships/)
+  assert.match(sql, /PRIMARY KEY \(project_id, user_id\)/)
+  assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\)/)
+  assert.match(sql, /FOREIGN KEY \(user_id, workspace_id\)/)
+  assert.match(sql, /role IN \('owner', 'operator', 'viewer'\)/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS project_membership_events/)
+  assert.match(sql, /member_added.*role_changed.*member_removed/s)
+  assert.match(runner, /0022_project_memberships\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

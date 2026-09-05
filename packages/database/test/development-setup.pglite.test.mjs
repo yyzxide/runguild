@@ -22,6 +22,8 @@ test('development bootstrap is idempotent and creates a complete local Agent tea
   try {
     await database.exec(await readFile(new URL('../migrations/0001_core.sql', import.meta.url), 'utf8'))
     await database.exec(await readFile(new URL('../migrations/0010_conversations.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../migrations/0021_authentication.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
     const repository = new DevelopmentSetupRepository(poolAdapter(database))
     const input = {
       workspaceId: 'demo_workspace', workspaceName: 'Agent Lab',
@@ -58,6 +60,8 @@ test('development bootstrap refuses to move an existing id across workspaces', a
   try {
     await database.exec(await readFile(new URL('../migrations/0001_core.sql', import.meta.url), 'utf8'))
     await database.exec(await readFile(new URL('../migrations/0010_conversations.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../migrations/0021_authentication.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
     await database.exec("INSERT INTO workspaces (id, name) VALUES ('other', 'Other'); INSERT INTO users (id, workspace_id, display_name) VALUES ('shared_user', 'other', 'User');")
     const repository = new DevelopmentSetupRepository(poolAdapter(database))
     await assert.rejects(repository.bootstrap({

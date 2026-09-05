@@ -481,7 +481,7 @@ export class SessionAuthentication {
         displayName: session.displayName,
         role: session.role,
       },
-      projects: await this.repository.listProjects(session.workspaceId),
+      projects: await this.repository.listProjects(session.workspaceId, session.userId),
       expiresAt: session.expiresAt.toISOString(),
       idleExpiresAt: session.idleExpiresAt.toISOString(),
     }

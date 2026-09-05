@@ -1,6 +1,7 @@
 import {
   AuthenticationRepository,
   MissionRepository,
+  ProjectMembershipRepository,
   ProjectOperatorRepository,
   ProjectRuntimeConfigRepository,
   ConversationRepository,
@@ -117,6 +118,7 @@ const localRuntimeControl = process.env.ENABLE_LOCAL_RUNTIME_CONTROL === 'true'
   : undefined
 const app = createApiApp({
   missions: new MissionRepository(pool),
+  projectMemberships: new ProjectMembershipRepository(pool),
   projectOperator: new ProjectOperatorRepository(pool),
   projectRuntimeConfigs: new ProjectRuntimeConfigRepository(pool),
   worktreeSetups: new WorktreeSetupRepository(pool),

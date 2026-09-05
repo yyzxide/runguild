@@ -34,6 +34,7 @@ test('Authentication Repository versions credentials, throttles login, and inval
       "INSERT INTO projects (id, workspace_id, name) VALUES " +
       "('project', 'ws', 'Project'), ('project_two', 'ws', 'Project Two');",
     )
+    await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
     const repository = new AuthenticationRepository(poolAdapter(database))
     const principalHash = digest('ws\0user')
     const sourceHash = digest('127.0.0.1')
@@ -81,7 +82,7 @@ test('Authentication Repository versions credentials, throttles login, and inval
     assert.equal(session.role, 'owner')
     assert.equal(await repository.loginBlockedForSeconds(loginKeyHash), 0)
     assert.equal((await repository.resolveSession(digest('session-token'), 120))?.id, session.id)
-    assert.deepEqual((await repository.listProjects('ws')).map((project) => project.id), [
+    assert.deepEqual((await repository.listProjects('ws', 'user')).map((project) => project.id), [
       'project',
       'project_two',
     ])

@@ -187,8 +187,11 @@ The control-plane foundation is executable:
 - production browser identity boundaries backed by PostgreSQL credentials and
   revocable sessions: scrypt password hashes, hashed session/CSRF tokens,
   absolute and idle expiry, credential-version invalidation, database-backed
-  login throttling, owner/operator/viewer roles, exact Workspace scope, and an
-  append-only authentication event ledger. The Web uses HttpOnly SameSite
+  login throttling, exact tenant scope, and an append-only authentication event
+  ledger. Explicit Project memberships give each user an owner/operator/viewer
+  role per user-facing workspace; session discovery returns only joined
+  Projects, and direct Project/resource routes re-check that membership. The Web
+  uses HttpOnly SameSite
   cookies plus Origin/CSRF checks; browser actor headers are ignored. Internal
   Agent HTTP/WebSocket access requires a separate environment-only Bearer
   token;
@@ -307,6 +310,11 @@ The Web opens on a workspace launcher. In user-facing language, a Project is a
 workspace containing one repository, Agent team, conversations, Missions,
 Artifacts, Runs, and Evaluations; the database-level Workspace remains the
 hidden tenant/security boundary. Entering a workspace opens its Team Room first.
+The **成员** page lists persisted human memberships. An Owner can create an
+account, assign an Owner/Operator/Viewer role, change that role, or remove the
+member. Membership changes are audited, synchronized to the Project Room, and
+revoke the affected user's active sessions so the next login receives the new
+scope. The final Owner cannot be downgraded or removed.
 Select durable
 messages for the Planner, approve the proposed DAG, and then inspect or switch
 Missions from the same page. An Agent's `active` status means its configuration
@@ -457,6 +465,10 @@ POST /api/v1/development/bootstrap                 # only when explicitly enable
 POST /api/v1/auth/login
 GET  /api/v1/auth/session
 POST /api/v1/auth/logout
+GET  /api/v1/workspaces/:workspaceId/projects/:projectId/members
+POST /api/v1/workspaces/:workspaceId/projects/:projectId/members
+PATCH /api/v1/workspaces/:workspaceId/projects/:projectId/members/:userId
+DELETE /api/v1/workspaces/:workspaceId/projects/:projectId/members/:userId
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/missions
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/operator-overview
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/runtime-config

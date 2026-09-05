@@ -199,7 +199,7 @@ const listSelect = `
   JOIN agents a ON a.id = r.agent_id AND a.workspace_id = r.workspace_id
   JOIN tasks t ON t.id = r.task_id AND t.mission_id = r.mission_id
   JOIN missions m ON m.id = r.mission_id AND m.workspace_id = r.workspace_id AND m.project_id = $2
-  JOIN users actor ON actor.id = $3 AND actor.workspace_id = r.workspace_id
+  JOIN project_memberships actor ON actor.user_id = $3 AND actor.workspace_id = r.workspace_id AND actor.project_id = m.project_id
   WHERE r.workspace_id = $1
 `
 
@@ -270,7 +270,7 @@ export class RunTraceRepository {
        JOIN agent_runs r ON r.id = e.run_id AND r.workspace_id = e.workspace_id
        JOIN tasks t ON t.id = r.task_id AND t.mission_id = r.mission_id
        JOIN missions m ON m.id = r.mission_id AND m.workspace_id = r.workspace_id AND m.project_id = $3
-       JOIN users actor ON actor.id = $4 AND actor.workspace_id = r.workspace_id
+       JOIN project_memberships actor ON actor.user_id = $4 AND actor.workspace_id = r.workspace_id AND actor.project_id = m.project_id
        WHERE e.run_id = $1 AND e.workspace_id = $2
        ORDER BY e.seq ASC`,
       [runId, scope.workspaceId, scope.projectId, scope.actorId],
@@ -317,7 +317,7 @@ export class RunTraceRepository {
        JOIN agent_runs r ON r.id = c.run_id AND r.workspace_id = c.workspace_id
        JOIN tasks t ON t.id = r.task_id AND t.mission_id = r.mission_id
        JOIN missions m ON m.id = r.mission_id AND m.workspace_id = r.workspace_id AND m.project_id = $3
-       JOIN users actor ON actor.id = $4 AND actor.workspace_id = r.workspace_id
+       JOIN project_memberships actor ON actor.user_id = $4 AND actor.workspace_id = r.workspace_id AND actor.project_id = m.project_id
        WHERE c.run_id = $1 AND c.workspace_id = $2
        ORDER BY c.hop ASC, c.started_at ASC, c.id ASC`,
       [runId, scope.workspaceId, scope.projectId, scope.actorId],
@@ -362,7 +362,7 @@ export class RunTraceRepository {
        JOIN agent_runs r ON r.id = x.run_id AND r.workspace_id = x.workspace_id
        JOIN tasks t ON t.id = r.task_id AND t.mission_id = r.mission_id
        JOIN missions m ON m.id = r.mission_id AND m.workspace_id = r.workspace_id AND m.project_id = $3
-       JOIN users actor ON actor.id = $4 AND actor.workspace_id = r.workspace_id
+       JOIN project_memberships actor ON actor.user_id = $4 AND actor.workspace_id = r.workspace_id AND actor.project_id = m.project_id
        WHERE x.run_id = $1 AND x.workspace_id = $2
        ORDER BY x.created_at ASC, x.id ASC`,
       [runId, scope.workspaceId, scope.projectId, scope.actorId],

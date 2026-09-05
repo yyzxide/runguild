@@ -282,10 +282,23 @@ separate readable CSRF Cookie. Unsafe REST requests require an exact configured
 Origin plus a header/Cookie/hashed-session CSRF match. Production Cookies use
 the `__Host-` prefix and `Secure`; production startup rejects an empty allowed
 Origin set. Workspace ids in REST/Artifact WebSocket paths must equal the
-session Workspace before repository authorization runs. `viewer` is globally
-read-only, while `operator` and `owner` may enter the existing domain gates.
-The Web cannot select or claim a User id: it receives the User and allowed
-Project list from `/auth/session`.
+session Workspace before repository authorization runs. This database
+Workspace is the hidden tenant boundary; a database Project is presented as a
+user-facing workspace. `project_memberships` stores the User's role for each
+Project, and `/auth/session` returns only joined Projects with their exact
+roles. Direct Project routes and Mission/Run/Artifact resource routes resolve
+the resource back to a Project and check that membership before entering the
+domain repository. A Project Viewer is read-only even when that User has a
+higher role in another Project.
+
+Member mutation is serialized by locking the Project row. This makes the
+last-Owner check safe against concurrent demotions/removals. Adding a human
+also joins every Project Room; removal clears that human from all Project
+conversations. Add, role-change, and removal events are append-only facts, and
+the affected User's sessions are revoked after every scope change so cached
+session roles cannot outlive the membership ledger. The Web cannot select or
+claim a User id: it receives its User and allowed Project list from
+`/auth/session`.
 
 The entry flow has two explicit deployment modes. `team` verifies a password
 inside the server-configured tenant; the browser never supplies a Workspace id.
@@ -295,7 +308,8 @@ and issues the same persisted Session as team mode. In the Web, database
 Projects are presented as user-facing workspaces; the database Workspace stays
 an internal tenant boundary. Authentication first opens the workspace launcher,
 and entering a workspace opens its Team Room rather than an infrastructure
-dashboard.
+dashboard. The Member surface is a projection of `project_memberships`, not a
+client-only contact list.
 
 Agent transport identity never reuses the browser session. An Agent must first
 prove an unpredictable Bearer token kept only in the API/Worker environment;

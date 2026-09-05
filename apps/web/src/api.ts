@@ -118,9 +118,20 @@ export interface AuthenticationSession {
     readonly displayName: string
     readonly role: 'owner' | 'operator' | 'viewer'
   }
-  readonly projects: readonly { readonly id: string; readonly name: string }[]
+  readonly projects: readonly {
+    readonly id: string
+    readonly name: string
+    readonly role: 'owner' | 'operator' | 'viewer'
+  }[]
   readonly expiresAt: string
   readonly idleExpiresAt: string
+}
+
+export interface ProjectMember {
+  readonly userId: string
+  readonly displayName: string
+  readonly role: 'owner' | 'operator' | 'viewer'
+  readonly joinedAt: string
 }
 
 export interface AuthenticationMode {
@@ -563,6 +574,42 @@ export const missionApi = {
       headers: { 'content-type': 'application/json' },
       body: '{}',
     })
+  },
+
+  async listProjectMembers(identity: TestIdentity): Promise<readonly ProjectMember[]> {
+    const result = await request<{ readonly members: readonly ProjectMember[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/members`,
+    )
+    return result.members
+  },
+
+  async addProjectMember(identity: TestIdentity, input: {
+    readonly userId: string
+    readonly displayName: string
+    readonly role: 'owner' | 'operator' | 'viewer'
+    readonly password: string
+  }): Promise<readonly ProjectMember[]> {
+    const result = await request<{ readonly members: readonly ProjectMember[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/members`,
+      { method: 'POST', headers: actorHeaders(identity.userId), body: JSON.stringify(input) },
+    )
+    return result.members
+  },
+
+  async updateProjectMember(identity: TestIdentity, userId: string, role: 'owner' | 'operator' | 'viewer'): Promise<readonly ProjectMember[]> {
+    const result = await request<{ readonly members: readonly ProjectMember[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'PATCH', headers: actorHeaders(identity.userId), body: JSON.stringify({ role }) },
+    )
+    return result.members
+  },
+
+  async removeProjectMember(identity: TestIdentity, userId: string): Promise<readonly ProjectMember[]> {
+    const result = await request<{ readonly members: readonly ProjectMember[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE', headers: actorHeaders(identity.userId) },
+    )
+    return result.members
   },
 
   async logout(): Promise<void> {

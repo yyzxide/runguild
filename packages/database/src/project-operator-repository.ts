@@ -77,7 +77,8 @@ export class ProjectOperatorRepository {
         'SELECT project.id, project.workspace_id, project.name, project.repository_url, ' +
         'project.repository_path, project.default_branch, room.id AS conversation_id ' +
         'FROM projects project ' +
-        'JOIN users actor ON actor.id = $3 AND actor.workspace_id = project.workspace_id ' +
+        'JOIN project_memberships actor ON actor.user_id = $3 ' +
+        'AND actor.workspace_id = project.workspace_id AND actor.project_id = project.id ' +
         'LEFT JOIN LATERAL (' +
         'SELECT conversation.id FROM conversations conversation ' +
         'WHERE conversation.workspace_id = project.workspace_id ' +

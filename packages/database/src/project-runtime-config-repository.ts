@@ -146,7 +146,8 @@ export class ProjectRuntimeConfigRepository {
         'config.worktree_setup_timeout_ms, config.test_commands, ' +
         'config.agent_context_input_tokens, config.agent_max_test_timeout_ms, room.id AS conversation_id ' +
         'FROM projects project ' +
-        'JOIN users actor ON actor.id = $3 AND actor.workspace_id = project.workspace_id ' +
+        'JOIN project_memberships actor ON actor.user_id = $3 ' +
+        'AND actor.workspace_id = project.workspace_id AND actor.project_id = project.id ' +
         'LEFT JOIN project_runtime_configs config ON config.project_id = project.id ' +
         'AND config.workspace_id = project.workspace_id ' +
         'LEFT JOIN LATERAL (SELECT conversation.id FROM conversations conversation ' +
@@ -208,7 +209,8 @@ export class ProjectRuntimeConfigRepository {
     await withTransaction(this.pool, async (client) => {
       const project = await client.query<{ readonly id: string }>(
         'SELECT project.id FROM projects project ' +
-        'JOIN users actor ON actor.id = $3 AND actor.workspace_id = project.workspace_id ' +
+        'JOIN project_memberships actor ON actor.user_id = $3 ' +
+        'AND actor.workspace_id = project.workspace_id AND actor.project_id = project.id ' +
         'WHERE project.workspace_id = $1 AND project.id = $2 FOR UPDATE OF project',
         [input.workspaceId, input.projectId, input.userId],
       )

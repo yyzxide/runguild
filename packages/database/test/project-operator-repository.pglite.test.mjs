@@ -76,6 +76,8 @@ async function setup(database) {
     "(id, kind, workspace_id, project_id, agent_id, hostname, process_id, heartbeat_interval_seconds, heartbeat_timeout_seconds, expires_at) VALUES " +
     "('worker_sibling_integration', 'integration', 'ws', 'sibling_project', NULL, 'local', 13, 5, 15, NOW() + INTERVAL '15 seconds');",
   )
+  await database.exec(await readFile(new URL('../migrations/0021_authentication.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
 }
 
 test('Project Operator Repository returns the real project team and recent Mission state', async () => {
