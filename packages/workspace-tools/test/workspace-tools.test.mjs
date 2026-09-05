@@ -219,6 +219,42 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
   }
 })
 
+test('workspace patch safely creates nested files beneath missing directories', async () => {
+  const setup = await fixture()
+  try {
+    const patch = setup.handlers.get('file.patch')
+    const unifiedDiff = [
+      'diff --git a/src/core/types.ts b/src/core/types.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/src/core/types.ts',
+      '@@ -0,0 +1,1 @@',
+      '+export const direction = "north"',
+      '',
+    ].join('\n')
+    await patch.execute(
+      { path: 'src/core/types.ts', unifiedDiff },
+      { request: request('file.patch', { path: 'src/core/types.ts', unifiedDiff }, 'call_nested') },
+    )
+    assert.equal(
+      await readFile(join(setup.root, 'src/core/types.ts'), 'utf8'),
+      'export const direction = "north"\n',
+    )
+
+    await symlink('/tmp', join(setup.root, 'linked'))
+    const escapingDiff = unifiedDiff.replaceAll('src/core/types.ts', 'linked/core/types.ts')
+    await assert.rejects(
+      patch.execute(
+        { path: 'linked/core/types.ts', unifiedDiff: escapingDiff },
+        { request: request('file.patch', {}, 'call_nested_escape') },
+      ),
+      /outside the workspace/,
+    )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
 test('test tool executes only an exact allowlisted argv and records test evidence', async () => {
   const setup = await fixture()
   try {

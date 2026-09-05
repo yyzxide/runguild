@@ -211,8 +211,26 @@ class WorkspaceBoundary {
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
       if (code !== 'ENOENT') throw error
-      const parent = await realpath(dirname(candidate))
-      if (!this.contains(parent)) throw new Error('Patch parent resolves outside the workspace: ' + path)
+      let ancestor = dirname(candidate)
+      while (true) {
+        try {
+          const canonical = await realpath(ancestor)
+          if (!this.contains(canonical)) {
+            throw new Error('Patch ancestor resolves outside the workspace: ' + path)
+          }
+          break
+        } catch (ancestorError) {
+          const ancestorCode = ancestorError && typeof ancestorError === 'object' && 'code' in ancestorError
+            ? ancestorError.code
+            : undefined
+          if (ancestorCode !== 'ENOENT') throw ancestorError
+          const parent = dirname(ancestor)
+          if (parent === ancestor || !this.contains(parent)) {
+            throw new Error('Patch ancestor escapes the assigned workspace: ' + path)
+          }
+          ancestor = parent
+        }
+      }
     }
     return path
   }
