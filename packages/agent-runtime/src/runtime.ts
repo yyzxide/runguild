@@ -339,6 +339,7 @@ export class AgentRuntime {
       const request: ModelRequest = {
         messages: builtContext.messages,
         tools: definitions,
+        toolChoice: 'required',
         context: {
           snapshotId: builtContext.snapshot.id,
           contentHash: builtContext.snapshot.contentHash,
