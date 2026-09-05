@@ -49,6 +49,8 @@ async function setup(database) {
     "('task_recovery', 'mission_tree', 'Two', 'running'), " +
     "('task_scope', 'mission_tree', 'Three', 'running'), " +
     "('task_conflict', 'mission_tree', 'Conflict', 'reviewing');" +
+    "UPDATE tasks SET review_required = FALSE WHERE id = 'task_tree';" +
+    "UPDATE tasks SET review_required = TRUE WHERE id = 'task_conflict';" +
     "INSERT INTO agent_runs " +
     "(id, workspace_id, mission_id, task_id, agent_id, attempt, status) VALUES " +
     "('run_conflict', 'ws_tree', 'mission_tree', 'task_conflict', 'builder_tree', 1, 'succeeded');" +
@@ -202,6 +204,27 @@ test('Integration discovery never returns a reviewed Worktree from another Proje
     assert.deepEqual(await repository.listApprovedPendingIntegration({
       workspaceId: 'ws_tree', projectId: 'project_other', limit: 10,
     }), [])
+  } finally {
+    await database.close()
+  }
+})
+
+test('Integration discovery admits committed Worktrees that do not require review', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new TaskWorktreeRepository(poolAdapter(database))
+    const reserved = await repository.reserve(reservation('task_tree'))
+    await repository.markReady({
+      taskId: 'task_tree', provisionToken: reserved.provisionToken, headCommit: 'a'.repeat(40),
+    })
+    await repository.recordCommit({ taskId: 'task_tree', headCommit: 'b'.repeat(40) })
+    await database.exec("UPDATE tasks SET status = 'reviewing' WHERE id = 'task_tree'")
+
+    const pending = await repository.listApprovedPendingIntegration({
+      workspaceId: 'ws_tree', projectId: 'project_tree', limit: 10,
+    })
+    assert.deepEqual(pending.map((item) => item.taskId), ['task_tree'])
   } finally {
     await database.close()
   }

@@ -311,12 +311,14 @@ export class TaskWorktreeRepository {
     }
     const result = await this.pool.query<WorktreeRow>(
       'SELECT ' + WORKTREE_COLUMNS.split(', ').map((column) => 'w.' + column).join(', ') + ' ' +
-      'FROM task_worktrees w JOIN task_submissions s ON s.task_id = w.task_id ' +
-      'JOIN reviews r ON r.submission_id = s.id JOIN tasks t ON t.id = w.task_id ' +
-      "WHERE w.status IN ('committed', 'integrating') AND s.status = 'approved' " +
-      "AND r.status = 'approved' AND t.status = 'reviewing' " +
+      'FROM task_worktrees w JOIN tasks t ON t.id = w.task_id ' +
+      "WHERE w.status IN ('committed', 'integrating') AND t.status = 'reviewing' " +
+      'AND (NOT t.review_required OR EXISTS (' +
+      '  SELECT 1 FROM task_submissions s JOIN reviews r ON r.submission_id = s.id ' +
+      "  WHERE s.task_id = w.task_id AND s.status = 'approved' AND r.status = 'approved'" +
+      ')) ' +
       'AND w.workspace_id = $1 AND w.project_id = $2 ' +
-      'ORDER BY s.updated_at, w.task_id LIMIT $3',
+      'ORDER BY w.updated_at, w.task_id LIMIT $3',
       [input.workspaceId, input.projectId, input.limit],
     )
     return result.rows.map(asWorktree)
