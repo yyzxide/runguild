@@ -719,7 +719,7 @@ function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDel
 
 const deliveryLabels = {
   steered: '已唤醒当前 Run',
-  context_pending: '等待下次 Run',
+  context_pending: '已保存 · 等待 Agent Run',
   context_loaded: '已进入 Run 上下文',
 } as const
 
@@ -942,10 +942,11 @@ function TeamRoomView({
               <div key={member.kind + member.id}>
                 <span className={`room-avatar room-avatar--${member.kind}`}>{member.kind === 'agent' ? <Bot size={14} /> : '你'}</span>
                 <p><strong>{member.name}</strong><small>{member.kind === 'agent' ? roleLabels[member.role ?? 'custom'] : '人工操作者'}</small></p>
-                <i className={member.status === 'disabled' ? 'is-offline' : ''} title={member.status === 'disabled' ? '已禁用' : '可参与'} />
+                <i className={member.status === 'disabled' ? 'is-offline' : ''} title={member.status === 'disabled' ? '已禁用' : member.kind === 'agent' ? 'Agent 已启用，不代表 Worker 在线' : '可参与'} />
               </div>
             ))}
           </div>
+          <p className="room-member-legend"><i />绿点只表示成员已启用；Agent Worker 是否在线请到工作台查看。</p>
         </aside>
 
         <section className="room-thread">
@@ -976,14 +977,14 @@ function TeamRoomView({
           </div>
           <div className="room-composer">
             {replyTo ? <div className="reply-banner"><span>正在回复 <strong>{replyTo.authorName}</strong> · {replyTo.body.slice(0, 72)}</span><button onClick={() => setReplyTo(null)}>取消</button></div> : null}
-            <div className="recipient-picker"><span><AtSign size={13} />选择需要行动的 Agent</span><div>{agents.map((agent) => <button key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div>
+            <div className="recipient-picker"><span><AtSign size={13} />选择消息要路由给的 Agent</span><div>{agents.map((agent) => <button key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div>
             <div className="composer-field"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder="例如：@规划 Agent 请结合当前实现重新检查任务边界，并在协作室说明是否需要调整计划。" /><button aria-label="发送消息" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={18} />}</button></div>
             <div className="composer-scope"><span className={mission ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : '尚无 Mission：先讨论，再勾选消息交给 Planner'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
           </div>
         </section>
 
         <aside className="routing-rail">
-          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>RunGuild 不把“已发送”当成“Agent 已看到”。这里显示每位 Agent 的真实路由结果。</p></div>
+          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>发送消息不会直接调用模型。有运行中的 Mission 时才会唤醒 Agent；否则先保存，等待下次 Run 加载。</p></div>
           <section className="planning-launcher">
             <span className="micro-label">从会话到 Mission</span>
             <h3>交给规划 Agent</h3>
@@ -993,7 +994,7 @@ function TeamRoomView({
             {planningRequest ? <div className={`planning-progress planning-progress--${planningRequest.status}`}><span>{['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningStatusLabels[planningRequest.status]}</strong><small>第 {planningRequest.attempt}/{planningRequest.maxAttempts} 次尝试</small>{planningRequest.status === 'queued' ? <p className="planning-worker-hint">若长时间停留，请在运行设置中确认规划 Agent 已启动。</p> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('start')}>{planningRequest.status === 'approved' ? '查看 Mission' : '查看并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
           </section>
           <ol className="routing-steps"><li className="is-complete"><span>1</span><div><strong>持久化消息</strong><small>先写入 Conversation 账本</small></div></li><li className={mission ? 'is-complete' : ''}><span>2</span><div><strong>绑定执行上下文</strong><small>{mission ? mission.title : '需要先创建或恢复 Mission'}</small></div></li><li className={selectedAgents.length ? 'is-active' : ''}><span>3</span><div><strong>路由 @Agent</strong><small>运行中则 steer；空闲则下次加载</small></div></li></ol>
-          <div className="latest-delivery"><span className="micro-label">最近一次真实投递</span>{latestRoutedMessage ? <><strong>{latestRoutedMessage.body.slice(0, 80)}</strong>{latestRoutedMessage.deliveries.map((delivery) => <div key={delivery.agentId}><span className={`delivery-signal delivery-signal--${delivery.status}`} /><p><strong>{activeConversation?.members.find((member) => member.id === delivery.agentId)?.name ?? 'Agent'}</strong><small>{deliveryLabels[delivery.status]}</small></p><code>{delivery.runId ? '已关联运行' : '等待任务运行'}</code></div>)}</> : <p className="routing-placeholder">发送第一条 @Agent 消息后，这里会显示实际投递状态。</p>}</div>
+          <div className="latest-delivery"><span className="micro-label">最近一次真实投递</span>{latestRoutedMessage ? <><strong>{latestRoutedMessage.body.slice(0, 80)}</strong>{latestRoutedMessage.deliveries.map((delivery) => <div key={delivery.agentId}><span className={`delivery-signal delivery-signal--${delivery.status}`} /><p><strong>{activeConversation?.members.find((member) => member.id === delivery.agentId)?.name ?? 'Agent'}</strong><small>{deliveryLabels[delivery.status]}</small></p><code>{delivery.runId ? '已关联运行' : '当前无 Run，不会立即回复'}</code></div>)}</> : <p className="routing-placeholder">发送第一条 @Agent 消息后，这里会显示实际投递状态。</p>}</div>
         </aside>
       </div>
     </>
