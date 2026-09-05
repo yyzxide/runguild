@@ -340,6 +340,7 @@ export class AgentRuntime {
         messages: builtContext.messages,
         tools: definitions,
         toolChoice: 'required',
+        reasoningEffort: 'none',
         context: {
           snapshotId: builtContext.snapshot.id,
           contentHash: builtContext.snapshot.contentHash,

@@ -156,6 +156,7 @@ test('model silence is nudged and only explicit verified completion succeeds', a
   assert.equal(persistence.contextSnapshots.length, 2)
   assert.equal(setup.model.requests.every((request) => request.context.contentHash), true)
   assert.equal(setup.model.requests.every((request) => request.toolChoice === 'required'), true)
+  assert.equal(setup.model.requests.every((request) => request.reasoningEffort === 'none'), true)
 })
 
 test('completion gate rejection returns evidence feedback to the next model hop', async () => {
