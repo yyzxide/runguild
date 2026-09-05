@@ -21,7 +21,7 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 事务中执行。已应用文件被修改时会因 checksum 不一致而拒绝启动。不要通过
 删除 Migration 记录来强制重跑，也不要在有真实数据的数据库上手工回退结构。
 
-## 0001–0022 清单
+## 0001–0023 清单
 
 | 编号 | 文件 | 主要作用 |
 |---|---|---|
@@ -47,6 +47,7 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 | 0020 | `0020_project_scoped_agent_workers.sql` | 把 Agent Worker 绑定到精确 Workspace/Project，禁止共享身份跨项目领取 Run。 |
 | 0021 | `0021_authentication.sql` | 增加用户角色、密码凭据、可撤销 Session、CSRF、登录节流和认证审计事件。 |
 | 0022 | `0022_project_memberships.sql` | 增加 Project 级人类成员与 Owner/Operator/Viewer 角色、成员变更审计，并把已有租户用户回填到原先可访问的 Project。 |
+| 0023 | `0023_project_lifecycle.sql` | 增加 Project 可恢复归档状态、归档操作者、活动 Project 索引，以及重命名/归档/恢复审计账本。 |
 
 ## 为什么不能跳过 Migration
 

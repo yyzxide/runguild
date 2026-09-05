@@ -21,6 +21,7 @@ async function setup(database) {
   for (const migration of [
     '0001_core.sql',
     '0010_conversations.sql',
+    '0011_conversation_planning.sql',
     '0021_authentication.sql',
   ]) {
     await database.exec(await readFile(new URL('../migrations/' + migration, import.meta.url), 'utf8'))
@@ -36,6 +37,7 @@ async function setup(database) {
     "VALUES ('project_room', 'ws', 'user', 'owner');",
   )
   await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0023_project_lifecycle.sql', import.meta.url), 'utf8'))
 }
 
 test('Project Membership Repository makes access explicit and keeps team rooms in sync', async () => {
@@ -56,6 +58,12 @@ test('Project Membership Repository makes access explicit and keeps team rooms i
       ['alice', 'operator'],
     ])
     assert.equal(await memberships.getRole('ws', 'project', 'alice'), 'operator')
+    assert.deepEqual(await memberships.getAccess('ws', 'project', 'alice'), {
+      role: 'operator', archivedAt: null,
+    })
+    assert.deepEqual(await memberships.getResourceAccess('ws', 'alice', 'conversation', 'project_room'), {
+      role: 'operator', archivedAt: null,
+    })
     assert.equal(await memberships.getRole('ws', 'sibling', 'alice'), null)
     assert.deepEqual((await authentication.listProjects('ws', 'alice')).map(({ id, role }) => [id, role]), [
       ['project', 'operator'],
@@ -107,6 +115,69 @@ test('Project Membership Repository makes access explicit and keeps team rooms i
       (await database.query('SELECT kind FROM project_membership_events ORDER BY id')).rows.map(({ kind }) => kind),
       ['member_added', 'role_changed', 'member_removed'],
     )
+  } finally {
+    await database.close()
+  }
+})
+
+test('Project Membership Repository resolves indirect resources to one Project lifecycle boundary', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    await database.exec(
+      "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
+      "('builder', 'ws', 'Builder', 'builder', 'test', 'test'), " +
+      "('reviewer', 'ws', 'Reviewer', 'reviewer', 'test', 'test'), " +
+      "('planner', 'ws', 'Planner', 'planner', 'test', 'test');" +
+      "INSERT INTO conversation_members (conversation_id, workspace_id, participant_kind, participant_id) " +
+      "VALUES ('project_room', 'ws', 'agent', 'builder'), ('project_room', 'ws', 'agent', 'planner');" +
+      "INSERT INTO messages (id, workspace_id, conversation_id, author_kind, author_id, body) " +
+      "VALUES ('source_message', 'ws', 'project_room', 'user', 'owner', 'Plan this work');" +
+      "INSERT INTO missions (id, workspace_id, project_id, conversation_id, title, goal, status, created_by, source_message_ids) VALUES " +
+      "('mission', 'ws', 'project', 'project_room', 'Mission', 'Goal', 'running', 'owner', ARRAY[]::text[]), " +
+      "('planning_mission', 'ws', 'project', 'project_room', 'Planning', 'Goal', 'planning', 'owner', ARRAY['source_message']);" +
+      "INSERT INTO tasks (id, mission_id, title, status) VALUES ('task', 'mission', 'Task', 'running');" +
+      "INSERT INTO agent_runs (id, workspace_id, mission_id, task_id, agent_id, attempt, status) " +
+      "VALUES ('run', 'ws', 'mission', 'task', 'builder', 1, 'running');" +
+      "INSERT INTO artifacts (id, workspace_id, project_id, mission_id, title, created_by) " +
+      "VALUES ('artifact', 'ws', 'project', 'mission', 'Artifact', 'owner');" +
+      "INSERT INTO artifact_versions " +
+      "(id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash, created_by_run_id) " +
+      "VALUES ('version', 'artifact', 1, '{}'::jsonb, decode('00', 'hex'), repeat('a', 64), repeat('b', 64), 'run');" +
+      "INSERT INTO task_submissions " +
+      "(id, workspace_id, mission_id, task_id, run_id, artifact_version_id, submitted_by_agent_id, evidence_bundle_hash) " +
+      "VALUES ('submission', 'ws', 'mission', 'task', 'run', 'version', 'builder', repeat('c', 64));" +
+      "INSERT INTO reviews " +
+      "(id, workspace_id, mission_id, task_id, submission_id, reviewer_agent_id, status) " +
+      "VALUES ('review', 'ws', 'mission', 'task', 'submission', 'reviewer', 'requested');" +
+      "INSERT INTO approvals " +
+      "(id, workspace_id, mission_id, subject_type, subject_id, kind, requested_by, reason) " +
+      "VALUES ('approval', 'ws', 'mission', 'mission', 'mission', 'plan', 'owner', 'Test');" +
+      "INSERT INTO conversation_planning_requests " +
+      "(id, workspace_id, project_id, conversation_id, mission_id, planner_agent_id, source_message_ids, request_hash, created_by) " +
+      "VALUES ('planning_request', 'ws', 'project', 'project_room', 'planning_mission', 'planner', ARRAY['source_message'], repeat('d', 64), 'owner')",
+    )
+    const memberships = new ProjectMembershipRepository(poolAdapter(database))
+    for (const [kind, id] of [
+      ['mission', 'mission'],
+      ['run', 'run'],
+      ['artifact', 'artifact'],
+      ['artifact_version', 'version'],
+      ['conversation', 'project_room'],
+      ['planning_request', 'planning_request'],
+      ['approval', 'approval'],
+      ['agent', 'builder'],
+      ['review', 'review'],
+      ['submission', 'submission'],
+    ]) {
+      assert.deepEqual(await memberships.getResourceAccess('ws', 'owner', kind, id), {
+        role: 'owner', archivedAt: null,
+      })
+    }
+    await database.exec(
+      "UPDATE projects SET archived_at = NOW(), archived_by = 'owner' WHERE id = 'project'",
+    )
+    assert.ok((await memberships.getResourceAccess('ws', 'owner', 'approval', 'approval')).archivedAt)
   } finally {
     await database.close()
   }

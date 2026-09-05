@@ -5,7 +5,12 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { PGlite } from '@electric-sql/pglite'
-import { AuthenticationRepository, ProjectMembershipRepository, ProjectProvisioningRepository } from '@runguild/database'
+import {
+  AuthenticationRepository,
+  ProjectLifecycleRepository,
+  ProjectMembershipRepository,
+  ProjectProvisioningRepository,
+} from '@runguild/database'
 
 import { createApiApp } from '../dist/app.js'
 import { SessionAuthentication, hashPassword, verifyPassword } from '../dist/authentication.js'
@@ -30,8 +35,12 @@ async function withDatabase(operation) {
   try {
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0001_core.sql', import.meta.url), 'utf8'))
     await database.exec('ALTER TABLE projects ADD COLUMN repository_path TEXT;')
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0009_evaluation.sql', import.meta.url), 'utf8'))
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0010_conversations.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0013_project_runtime_config.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0019_project_scoped_integration_workers.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0020_project_scoped_agent_workers.sql', import.meta.url), 'utf8'))
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0021_authentication.sql', import.meta.url), 'utf8'))
     await database.exec(
       "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace'), ('other', 'Other');" +
@@ -40,7 +49,9 @@ async function withDatabase(operation) {
       "INSERT INTO projects (id, workspace_id, name) VALUES ('project', 'ws', 'Project');",
     )
     await database.exec(await readFile(new URL('../../../packages/database/migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../../../packages/database/migrations/0023_project_lifecycle.sql', import.meta.url), 'utf8'))
     const repository = new AuthenticationRepository(poolAdapter(database))
+    const projectLifecycle = new ProjectLifecycleRepository(poolAdapter(database))
     const projectMemberships = new ProjectMembershipRepository(poolAdapter(database))
     const projectProvisioning = new ProjectProvisioningRepository(poolAdapter(database))
     for (const [userId, role] of [['owner', 'owner'], ['viewer', 'viewer']]) {
@@ -50,7 +61,7 @@ async function withDatabase(operation) {
         principalHash: digest('ws\0' + userId), sourceHash: digest('test-setup'),
       })
     }
-    await operation({ database, repository, projectMemberships, projectProvisioning })
+    await operation({ database, repository, projectMemberships, projectProvisioning, projectLifecycle })
   } finally {
     await database.close()
   }
@@ -82,11 +93,12 @@ async function withServer(app, operation) {
   }
 }
 
-function apiDependencies(authentication, overviewCalls, projectMemberships, projectProvisioning) {
+function apiDependencies(authentication, overviewCalls, projectMemberships, projectProvisioning, projectLifecycle) {
   return {
     authentication,
     ...(projectMemberships ? { projectMemberships } : {}),
     ...(projectProvisioning ? { projectProvisioning } : {}),
+    ...(projectLifecycle ? { projectLifecycle } : {}),
     missions: {}, conversations: {}, conversationPlanning: {}, runControls: {}, taskControls: {},
     toolApprovals: {}, artifacts: {}, reviews: {}, reviewerExecutions: {}, skills: {}, evaluations: {},
     projectRuntimeConfigs: {}, runTraces: {},
@@ -145,13 +157,13 @@ test('password hashing and session authentication keep browser and Agent trust p
 })
 
 test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and project-role boundaries', async () => {
-  await withDatabase(async ({ database, repository, projectMemberships, projectProvisioning }) => {
+  await withDatabase(async ({ database, repository, projectMemberships, projectProvisioning, projectLifecycle }) => {
     const authentication = new SessionAuthentication(repository, {
       secureCookies: false,
       allowedOrigins: ['http://127.0.0.1:4173'],
     })
     const overviewCalls = []
-    const app = createApiApp(apiDependencies(authentication, overviewCalls, projectMemberships, projectProvisioning), {
+    const app = createApiApp(apiDependencies(authentication, overviewCalls, projectMemberships, projectProvisioning, projectLifecycle), {
       authenticationMode: 'team',
       defaultWorkspaceId: 'ws',
     })
@@ -214,6 +226,46 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
       const refreshedSession = await fetch(baseUrl + '/api/v1/auth/session', { headers: { cookie: cookies.header } })
       assert.equal((await refreshedSession.json()).projects.some(({ id, role }) => id === createdProject.id && role === 'owner'), true)
 
+      const lifecyclePath = baseUrl + '/api/v1/workspaces/ws/projects/' + createdProject.id + '/lifecycle'
+      const renamedProject = await fetch(lifecyclePath, {
+        method: 'PATCH',
+        headers: { cookie: cookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': cookies.csrf, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'rename', name: 'Renamed from Web' }),
+      })
+      assert.equal(renamedProject.status, 200)
+      assert.equal((await renamedProject.json()).project.name, 'Renamed from Web')
+      const archivedProject = await fetch(lifecyclePath, {
+        method: 'PATCH',
+        headers: { cookie: cookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': cookies.csrf, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'archive' }),
+      })
+      assert.equal(archivedProject.status, 200)
+      assert.ok((await archivedProject.json()).project.archivedAt)
+      const archivedMutation = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/' + createdProject.id + '/members', {
+        method: 'POST',
+        headers: { cookie: cookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': cookies.csrf, 'content-type': 'application/json' },
+        body: JSON.stringify({ userId: 'archived-user', displayName: 'Archived', role: 'viewer', password: 'correct horse battery staple archived' }),
+      })
+      assert.equal(archivedMutation.status, 409)
+      assert.equal((await archivedMutation.json()).error.code, 'project_archived')
+      const archivedConversationMutation = await fetch(
+        baseUrl + '/api/v1/workspaces/ws/conversations/' + createdProject.conversationId + '/messages',
+        {
+          method: 'POST',
+          headers: { cookie: cookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': cookies.csrf, 'content-type': 'application/json' },
+          body: JSON.stringify({ body: 'Archived write must not reach the repository.', mentions: [], entityRefs: {} }),
+        },
+      )
+      assert.equal(archivedConversationMutation.status, 409)
+      assert.equal((await archivedConversationMutation.json()).error.code, 'project_archived')
+      const restoredProject = await fetch(lifecyclePath, {
+        method: 'PATCH',
+        headers: { cookie: cookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': cookies.csrf, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'restore' }),
+      })
+      assert.equal(restoredProject.status, 200)
+      assert.equal((await restoredProject.json()).project.archivedAt, null)
+
       await database.exec("INSERT INTO projects (id, workspace_id, name) VALUES ('private_project', 'ws', 'Private')")
       const privateProject = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/private_project/operator-overview', {
         headers: { cookie: cookies.header },
@@ -253,7 +305,7 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
 })
 
 test('local mode creates the configured loopback owner session without exposing a password login', async () => {
-  await withDatabase(async ({ database, repository, projectMemberships, projectProvisioning }) => {
+  await withDatabase(async ({ database, repository, projectMemberships, projectProvisioning, projectLifecycle }) => {
     await database.exec(
       "INSERT INTO users (id, workspace_id, display_name, role) VALUES ('local-user', 'ws', 'Local User', 'owner');" +
       "INSERT INTO project_memberships (workspace_id, project_id, user_id, role) " +
@@ -271,7 +323,7 @@ test('local mode creates the configured loopback owner session without exposing 
       request: request({ 'x-forwarded-for': '127.0.0.1' }),
     }), (error) => error.code === 'local_authentication_forbidden')
 
-    const app = createApiApp(apiDependencies(authentication, [], projectMemberships, projectProvisioning), {
+    const app = createApiApp(apiDependencies(authentication, [], projectMemberships, projectProvisioning, projectLifecycle), {
       authenticationMode: 'local',
       defaultWorkspaceId: 'ws',
       localUserId: 'local-user',

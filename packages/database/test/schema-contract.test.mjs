@@ -15,6 +15,7 @@ const workerInstancesMigrationUrl = new URL('../migrations/0012_worker_instances
 const projectScopedAgentMigrationUrl = new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url)
 const authenticationMigrationUrl = new URL('../migrations/0021_authentication.sql', import.meta.url)
 const projectMembershipMigrationUrl = new URL('../migrations/0022_project_memberships.sql', import.meta.url)
+const projectLifecycleMigrationUrl = new URL('../migrations/0023_project_lifecycle.sql', import.meta.url)
 const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
@@ -207,6 +208,17 @@ test('Project membership schema scopes human access, preserves history, and prot
   assert.match(sql, /CREATE TABLE IF NOT EXISTS project_membership_events/)
   assert.match(sql, /member_added.*role_changed.*member_removed/s)
   assert.match(runner, /0022_project_memberships\.sql/)
+})
+
+test('Project lifecycle schema preserves reversible archive state and an audit ledger', async () => {
+  const sql = await readFile(projectLifecycleMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(sql, /archived_at\s+TIMESTAMPTZ/)
+  assert.match(sql, /archived_by\s+TEXT/)
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS project_lifecycle_events/)
+  assert.match(sql, /renamed.*archived.*restored/s)
+  assert.match(runner, /0023_project_lifecycle\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

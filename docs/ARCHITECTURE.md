@@ -321,6 +321,16 @@ rejected both by the HTTP role gate and the Repository. A derived-id conflict
 rolls back every earlier insert; the launcher refreshes `/auth/session` only
 after commit and therefore cannot display a partially created workspace.
 
+Project lifecycle is a separate, Owner-only state machine. Rename, archive, and
+restore commit with an append-only `project_lifecycle_events` fact. Archive is
+accepted only after the Project is quiescent: no non-terminal Mission, no
+queued/running Evaluation Experiment, and no unexpired Agent or Integration
+Worker. The archived timestamp then becomes a fence at several boundaries: the
+HTTP Project/resource membership middleware rejects unsafe methods, Worker
+registration rejects the Project, and Task claiming joins only active Projects.
+Restore removes the fence but deliberately does not start any process. Historical
+rows are never deleted by lifecycle commands.
+
 Agent transport identity never reuses the browser session. An Agent must first
 prove an unpredictable Bearer token kept only in the API/Worker environment;
 only then are its Actor/Run/Task/Tool/intent headers accepted and checked by

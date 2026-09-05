@@ -33,6 +33,7 @@ async function setup(database) {
     "('creator', 'ws', 'Creator', 'operator'), ('viewer', 'ws', 'Viewer', 'viewer');",
   )
   await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0023_project_lifecycle.sql', import.meta.url), 'utf8'))
 }
 
 test('Project Provisioning creates one complete user-facing workspace atomically', async () => {

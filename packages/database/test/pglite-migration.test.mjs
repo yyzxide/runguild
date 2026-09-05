@@ -27,6 +27,7 @@ const migrationUrls = [
   new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url),
   new URL('../migrations/0021_authentication.sql', import.meta.url),
   new URL('../migrations/0022_project_memberships.sql', import.meta.url),
+  new URL('../migrations/0023_project_lifecycle.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {
@@ -86,6 +87,7 @@ test('core migration executes on an in-process PostgreSQL engine', async () => {
       'auth_events',
       'project_memberships',
       'project_membership_events',
+      'project_lifecycle_events',
     ]) {
       assert.equal(tables.has(required), true, 'missing table ' + required)
     }

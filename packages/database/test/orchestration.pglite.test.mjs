@@ -22,6 +22,8 @@ const migrationUrls = [
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
   new URL('../migrations/0010_conversations.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
+  new URL('../migrations/0021_authentication.sql', import.meta.url),
+  new URL('../migrations/0023_project_lifecycle.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {

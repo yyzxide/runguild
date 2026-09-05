@@ -27,8 +27,11 @@ async function setup(database) {
   await database.exec(await readFile(new URL('../migrations/0012_worker_instances.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0019_project_scoped_integration_workers.sql', import.meta.url), 'utf8'))
   await database.exec(await readFile(new URL('../migrations/0020_project_scoped_agent_workers.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0021_authentication.sql', import.meta.url), 'utf8'))
+  await database.exec(await readFile(new URL('../migrations/0023_project_lifecycle.sql', import.meta.url), 'utf8'))
   await database.exec(
     "INSERT INTO workspaces (id, name) VALUES ('ws', 'Workspace');" +
+    "INSERT INTO users (id, workspace_id, display_name) VALUES ('owner', 'ws', 'Owner');" +
     "INSERT INTO projects (id, workspace_id, name) VALUES " +
     "('project', 'ws', 'Project'), ('sibling', 'ws', 'Sibling');" +
     "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
@@ -178,6 +181,30 @@ test('Worker Instance Repository isolates repository-bound Integration processes
     assert.equal(await repository.hasActive('integration', undefined, {
       workspaceId: 'ws', projectId: 'sibling',
     }), true)
+  } finally {
+    await database.close()
+  }
+})
+
+test('Worker Instance Repository refuses new project-bound processes after archive', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    await database.exec(
+      "UPDATE projects SET archived_at = NOW(), archived_by = 'owner' WHERE id = 'project'",
+    )
+    const repository = new WorkerInstanceRepository(poolAdapter(database))
+    await assert.rejects(
+      repository.register({ id: 'archived_agent', ...registration }),
+      /archived/,
+    )
+    await assert.rejects(
+      repository.register({
+        id: 'archived_integration', kind: 'integration', workspaceId: 'ws', projectId: 'project',
+        hostname: 'one', processId: 2, heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 15,
+      }),
+      /archived/,
+    )
   } finally {
     await database.close()
   }

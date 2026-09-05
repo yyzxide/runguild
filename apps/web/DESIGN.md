@@ -55,6 +55,9 @@ advance that Task.
 - **工作区启动页** lists only persisted memberships and offers authenticated
   Owner/Operator provisioning. The form accepts product inputs, while tenant,
   actor, Project, Agent, and Conversation ids remain server-owned.
+- Project cards expose rename/archive/restore only to their Owner. Archived
+  cards remain visible as preserved history, cannot be entered, and explain
+  the quiescent-execution requirement before confirmation.
 - **协作室** displays durable messages, explicit recipients, selected-message
   planning, and Planner progress.
 - **Mission** projects the real Task DAG, gates, Runs, Evidence, Review,

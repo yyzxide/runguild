@@ -101,6 +101,11 @@ Expected flow:
   membership audit fact, Project Room, default runtime configuration, and one
   Planner/Researcher/Builder/Reviewer team. Any failed insert rolls back the
   whole workspace.
+- Only a Project Owner can rename, archive, or restore it. Archive is a
+  reversible control-plane fence, not deletion: it requires no unfinished
+  Mission, queued/running Evaluation, or live project-bound Worker; it keeps
+  historical reads available while blocking Project mutations, new Worker
+  registration, and Task claims until restore. Every change is audited.
 - Owner and Operator membership roles may use mutating operator commands;
   Viewer is read-only. Only an Owner can manage Project members, and every
   Project must retain at least one Owner. Domain-specific approval/reviewer

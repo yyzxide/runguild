@@ -35,6 +35,7 @@ test('Authentication Repository versions credentials, throttles login, and inval
       "('project', 'ws', 'Project'), ('project_two', 'ws', 'Project Two');",
     )
     await database.exec(await readFile(new URL('../migrations/0022_project_memberships.sql', import.meta.url), 'utf8'))
+    await database.exec(await readFile(new URL('../migrations/0023_project_lifecycle.sql', import.meta.url), 'utf8'))
     const repository = new AuthenticationRepository(poolAdapter(database))
     const principalHash = digest('ws\0user')
     const sourceHash = digest('127.0.0.1')

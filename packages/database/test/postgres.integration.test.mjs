@@ -7,6 +7,7 @@ import {
   InboxDedupeConflictError,
   InboxRepository,
   OutboxRepository,
+  ProjectLifecycleRepository,
   ProjectProvisioningRepository,
   TaskRepository,
   runMigrations,
@@ -210,6 +211,20 @@ test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) =>
       assert.deepEqual(counts.rows[0], {
         memberships: 1, agents: 4, room_members: 5, runtime_configs: 1,
       })
+      const lifecycle = new ProjectLifecycleRepository(pool)
+      const renamed = await lifecycle.update({
+        workspaceId: 'ws_test', projectId: project.id, actorId: 'creator_test',
+        change: { action: 'rename', name: 'Renamed Provisioned' },
+      })
+      assert.equal(renamed.name, 'Renamed Provisioned')
+      assert.ok((await lifecycle.update({
+        workspaceId: 'ws_test', projectId: project.id, actorId: 'creator_test',
+        change: { action: 'archive' },
+      })).archivedAt)
+      assert.equal((await lifecycle.update({
+        workspaceId: 'ws_test', projectId: project.id, actorId: 'creator_test',
+        change: { action: 'restore' },
+      })).archivedAt, null)
     })
 
     await t.test('completing a reviewed task unlocks its dependent', async () => {

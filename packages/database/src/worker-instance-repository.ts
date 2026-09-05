@@ -116,6 +116,13 @@ export class WorkerInstanceRepository {
             'one Agent identity cannot belong to multiple Projects; create a dedicated Agent for each Project',
           )
         }
+        const project = await client.query<{ readonly archived_at: Date | null }>(
+          'SELECT archived_at FROM projects WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
+          [input.projectId, input.workspaceId],
+        )
+        if (!project.rows[0] || project.rows[0].archived_at) {
+          throw new AgentProjectScopeError(input.agentId, 'the requested Project is archived')
+        }
         workspaceId = input.workspaceId
         projectId = input.projectId
 
@@ -131,11 +138,14 @@ export class WorkerInstanceRepository {
         )
         if (active.rows[0]) throw new WorkerAlreadyActiveError(input.agentId)
       } else if (input.kind === 'integration' && input.workspaceId && input.projectId) {
-        const project = await client.query<{ readonly workspace_id: string }>(
-          'SELECT workspace_id FROM projects WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
+        const project = await client.query<{ readonly workspace_id: string; readonly archived_at: Date | null }>(
+          'SELECT workspace_id, archived_at FROM projects WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
           [input.projectId, input.workspaceId],
         )
         if (!project.rows[0]) throw new Error('Integration Worker registration references an unknown Project')
+        if (project.rows[0].archived_at) {
+          throw new Error('Integration Worker registration references an archived Project')
+        }
         workspaceId = input.workspaceId
         projectId = input.projectId
       }

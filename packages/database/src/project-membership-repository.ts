@@ -11,6 +11,23 @@ export interface ProjectMember {
   readonly joinedAt: string
 }
 
+export interface ProjectAccess {
+  readonly role: UserRole
+  readonly archivedAt: string | null
+}
+
+export type ProjectResourceKind =
+  | 'mission'
+  | 'run'
+  | 'artifact'
+  | 'artifact_version'
+  | 'conversation'
+  | 'planning_request'
+  | 'approval'
+  | 'agent'
+  | 'review'
+  | 'submission'
+
 export class ProjectMembershipError extends Error {
   constructor(readonly code: string, message: string, readonly status = 422) {
     super(message)
@@ -95,20 +112,28 @@ async function refreshTenantRole(client: PoolClient, workspaceId: WorkspaceId, u
 export class ProjectMembershipRepository {
   constructor(private readonly pool: Pool) {}
 
-  async getRole(workspaceId: WorkspaceId, projectId: ProjectId, userId: UserId): Promise<UserRole | null> {
-    const result = await this.pool.query<{ readonly role: UserRole }>(
-      'SELECT role FROM project_memberships WHERE workspace_id = $1 AND project_id = $2 AND user_id = $3',
+  async getAccess(workspaceId: WorkspaceId, projectId: ProjectId, userId: UserId): Promise<ProjectAccess | null> {
+    const result = await this.pool.query<{ readonly role: UserRole; readonly archived_at: Date | null }>(
+      'SELECT membership.role, project.archived_at FROM project_memberships membership ' +
+      'JOIN projects project ON project.workspace_id = membership.workspace_id ' +
+      'AND project.id = membership.project_id ' +
+      'WHERE membership.workspace_id = $1 AND membership.project_id = $2 AND membership.user_id = $3',
       [workspaceId, projectId, userId],
     )
-    return result.rows[0]?.role ?? null
+    const row = result.rows[0]
+    return row ? { role: row.role, archivedAt: row.archived_at?.toISOString() ?? null } : null
   }
 
-  async getResourceRole(
+  async getRole(workspaceId: WorkspaceId, projectId: ProjectId, userId: UserId): Promise<UserRole | null> {
+    return (await this.getAccess(workspaceId, projectId, userId))?.role ?? null
+  }
+
+  async getResourceAccess(
     workspaceId: WorkspaceId,
     userId: UserId,
-    resource: 'mission' | 'run' | 'artifact' | 'artifact_version',
+    resource: ProjectResourceKind,
     resourceId: string,
-  ): Promise<UserRole | null> {
+  ): Promise<ProjectAccess | null> {
     const resourceJoin = {
       mission: 'JOIN missions resource ON resource.project_id = membership.project_id AND resource.workspace_id = membership.workspace_id AND resource.id = $3',
       run: 'JOIN agent_runs run ON run.workspace_id = membership.workspace_id AND run.id = $3 ' +
@@ -116,13 +141,43 @@ export class ProjectMembershipRepository {
       artifact: 'JOIN artifacts resource ON resource.project_id = membership.project_id AND resource.workspace_id = membership.workspace_id AND resource.id = $3',
       artifact_version: 'JOIN artifact_versions version ON version.id = $3 ' +
         'JOIN artifacts resource ON resource.id = version.artifact_id AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
+      conversation: 'JOIN conversations resource ON resource.id = $3 ' +
+        'AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
+      planning_request: 'JOIN conversation_planning_requests resource ON resource.id = $3 ' +
+        'AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
+      approval: 'JOIN approvals approval ON approval.id = $3 AND approval.workspace_id = membership.workspace_id ' +
+        'JOIN missions resource ON resource.id = approval.mission_id ' +
+        'AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
+      agent: 'JOIN conversation_members agent_member ON agent_member.participant_id = $3 ' +
+        "AND agent_member.workspace_id = membership.workspace_id AND agent_member.participant_kind = 'agent' " +
+        'JOIN conversations resource ON resource.id = agent_member.conversation_id ' +
+        'AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
+      review: 'JOIN reviews review ON review.id = $3 AND review.workspace_id = membership.workspace_id ' +
+        'JOIN missions resource ON resource.id = review.mission_id ' +
+        'AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
+      submission: 'JOIN task_submissions submission ON submission.id = $3 ' +
+        'AND submission.workspace_id = membership.workspace_id ' +
+        'JOIN missions resource ON resource.id = submission.mission_id ' +
+        'AND resource.workspace_id = membership.workspace_id AND resource.project_id = membership.project_id',
     }[resource]
-    const result = await this.pool.query<{ readonly role: UserRole }>(
-      'SELECT membership.role FROM project_memberships membership ' + resourceJoin + ' ' +
+    const result = await this.pool.query<{ readonly role: UserRole; readonly archived_at: Date | null }>(
+      'SELECT membership.role, project.archived_at FROM project_memberships membership ' + resourceJoin + ' ' +
+      'JOIN projects project ON project.workspace_id = membership.workspace_id ' +
+      'AND project.id = membership.project_id ' +
       'WHERE membership.workspace_id = $1 AND membership.user_id = $2',
       [workspaceId, userId, resourceId],
     )
-    return result.rows[0]?.role ?? null
+    const row = result.rows[0]
+    return row ? { role: row.role, archivedAt: row.archived_at?.toISOString() ?? null } : null
+  }
+
+  async getResourceRole(
+    workspaceId: WorkspaceId,
+    userId: UserId,
+    resource: ProjectResourceKind,
+    resourceId: string,
+  ): Promise<UserRole | null> {
+    return (await this.getResourceAccess(workspaceId, userId, resource, resourceId))?.role ?? null
   }
 
   async listMembers(workspaceId: WorkspaceId, projectId: ProjectId, actorId: UserId): Promise<readonly ProjectMember[]> {

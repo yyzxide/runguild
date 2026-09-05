@@ -235,8 +235,11 @@ export class EvaluationRepository {
     const experimentId = input.id ?? ('evaluation_experiment_' + randomUUID()) as EvaluationExperimentId
     await withTransaction(this.pool, async (client) => {
       const version = await client.query(
-        'SELECT 1 FROM evaluation_scenario_versions ' +
-        'WHERE id = $1 AND workspace_id = $2 AND project_id = $3',
+        'SELECT 1 FROM evaluation_scenario_versions version ' +
+        'JOIN projects project ON project.id = version.project_id ' +
+        'AND project.workspace_id = version.workspace_id AND project.archived_at IS NULL ' +
+        'WHERE version.id = $1 AND version.workspace_id = $2 AND version.project_id = $3 ' +
+        'FOR SHARE OF project',
         [input.scenarioVersionId, input.workspaceId, input.projectId],
       )
       if (!version.rows[0]) throw new Error('Evaluation Scenario Version not found in scope')

@@ -189,6 +189,11 @@ The control-plane foundation is executable:
   branch; one PostgreSQL transaction creates the Project, creator Owner
   membership and audit fact, Project Room, default runtime configuration, and
   Planner/Researcher/Builder/Reviewer team using server-generated ids;
+- reversible workspace lifecycle controls: an Owner can rename, archive, and
+  restore a Project from the launcher; archive requires a quiescent Project,
+  preserves every historical record, is audited, blocks project mutations and
+  new project-bound Worker registration, and removes archived Tasks from the
+  claim path;
 - production browser identity boundaries backed by PostgreSQL credentials and
   revocable sessions: scrypt password hashes, hashed session/CSRF tokens,
   absolute and idle expiry, credential-version invalidation, database-backed
@@ -319,6 +324,10 @@ An Owner or Operator can use the **创建工作区** card; the browser never cho
 the tenant, creator identity, Project id, Conversation id, or Agent ids. A
 successful creation refreshes the Session projection and opens the new Team
 Room immediately.
+An Owner can also rename or archive a workspace from its launcher card.
+Archiving is reversible and never deletes history, but it is accepted only
+after unfinished Missions, queued/running Evaluations, and live Agent or
+Integration Workers are gone. Archived cards cannot be entered until restored.
 The **成员** page lists persisted human memberships. An Owner can create an
 account, assign an Owner/Operator/Viewer role, change that role, or remove the
 member. Membership changes are audited, synchronized to the Project Room, and
@@ -475,6 +484,7 @@ POST /api/v1/auth/login
 GET  /api/v1/auth/session
 POST /api/v1/auth/logout
 POST /api/v1/workspaces/:workspaceId/projects
+PATCH /api/v1/workspaces/:workspaceId/projects/:projectId/lifecycle
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/members
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/members
 PATCH /api/v1/workspaces/:workspaceId/projects/:projectId/members/:userId

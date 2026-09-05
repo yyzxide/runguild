@@ -48,6 +48,14 @@ not a generic Agent command. Its Workspace path must match the Session; the
 payload carries only the Project name, optional API-host repository path, and
 default branch. Resource ids and the creator identity are server-generated.
 
+`PATCH /api/v1/workspaces/:workspaceId/projects/:projectId/lifecycle` accepts
+exactly one Owner command: `{ "action": "rename", "name": "..." }`,
+`{ "action": "archive" }`, or `{ "action": "restore" }`. Archive returns
+`409` while Project execution is not quiescent. Once archived, unsafe requests
+through Project, Mission, Run, Artifact, Conversation, Approval, Review,
+Submission, Planning Request, and project Agent paths return `project_archived`;
+the lifecycle route remains available so the Owner can restore it.
+
 Agent HTTP or Artifact WebSocket requests use `Authorization: Bearer <internal
 token>` before the server considers `x-actor-kind: agent`, `x-actor-id`, and
 the required Run/Task/Tool/intent origin headers. The Bearer token exists only

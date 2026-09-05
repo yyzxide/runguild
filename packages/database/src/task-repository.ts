@@ -225,6 +225,8 @@ export class TaskRepository {
         'SELECT m.project_id, t.attempt_count, d.id AS dispatch_id ' +
         'FROM tasks t ' +
         'JOIN missions m ON m.id = t.mission_id ' +
+        'JOIN projects p ON p.id = m.project_id AND p.workspace_id = m.workspace_id ' +
+        'AND p.archived_at IS NULL ' +
         'JOIN agents a ON a.id = $4 AND a.workspace_id = m.workspace_id ' +
         'JOIN task_dispatches d ON d.task_id = t.id AND d.agent_id = a.id ' +
         "AND d.dispatch_token = $6 AND d.status = 'pending' AND d.expires_at > NOW() " +
@@ -238,7 +240,7 @@ export class TaskRepository {
         '  JOIN tasks parent ON parent.id = d.depends_on_task_id ' +
         '  WHERE d.task_id = t.id AND d.required AND parent.status <> $5' +
         ') ' +
-        'FOR UPDATE OF t, d',
+        'FOR UPDATE OF t, d FOR SHARE OF p',
         [
           input.taskId,
           input.missionId,

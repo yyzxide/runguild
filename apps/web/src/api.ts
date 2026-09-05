@@ -122,6 +122,7 @@ export interface AuthenticationSession {
     readonly id: string
     readonly name: string
     readonly role: 'owner' | 'operator' | 'viewer'
+    readonly archivedAt: string | null
   }[]
   readonly expiresAt: string
   readonly idleExpiresAt: string
@@ -144,6 +145,13 @@ export interface CreatedProject {
     readonly role: 'planner' | 'researcher' | 'builder' | 'reviewer'
     readonly name: string
   }[]
+}
+
+export interface ProjectLifecycleState {
+  readonly id: string
+  readonly name: string
+  readonly role: 'owner'
+  readonly archivedAt: string | null
 }
 
 export interface AuthenticationMode {
@@ -596,6 +604,20 @@ export const missionApi = {
     const result = await request<{ readonly project: CreatedProject }>(
       `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/projects`,
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) },
+    )
+    return result.project
+  },
+
+  async updateProjectLifecycle(
+    workspaceId: string,
+    projectId: string,
+    change: { readonly action: 'rename'; readonly name: string }
+      | { readonly action: 'archive' }
+      | { readonly action: 'restore' },
+  ): Promise<ProjectLifecycleState> {
+    const result = await request<{ readonly project: ProjectLifecycleState }>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}/lifecycle`,
+      { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(change) },
     )
     return result.project
   },

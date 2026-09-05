@@ -44,6 +44,7 @@ import {
   ConversationPlanningError,
   ConversationNotFoundError,
   ConversationScopeError,
+  ProjectLifecycleError,
   ProjectMembershipError,
   ProjectProvisioningError,
   type ConversationRepository,
@@ -51,6 +52,8 @@ import {
   type MissionRepository,
   type DevelopmentSetupRepository,
   type ProjectMembershipRepository,
+  type ProjectLifecycleRepository,
+  type ProjectResourceKind,
   type ProjectProvisioningRepository,
   type ProjectOperatorRepository,
   type ProjectRuntimeConfigRepository,
@@ -87,8 +90,9 @@ type MissionService = Pick<
 type DevelopmentSetupService = Pick<DevelopmentSetupRepository, 'bootstrap'>
 type ProjectMembershipService = Pick<
   ProjectMembershipRepository,
-  'getRole' | 'getResourceRole' | 'listMembers' | 'addMember' | 'updateRole' | 'removeMember'
+  'getAccess' | 'getResourceAccess' | 'listMembers' | 'addMember' | 'updateRole' | 'removeMember'
 >
+type ProjectLifecycleService = Pick<ProjectLifecycleRepository, 'update'>
 type ProjectProvisioningService = Pick<ProjectProvisioningRepository, 'create'>
 type ProjectOperatorService = Pick<ProjectOperatorRepository, 'getOverview'>
 type ProjectRuntimeConfigService = Pick<ProjectRuntimeConfigRepository, 'get' | 'update'>
@@ -121,6 +125,7 @@ type ArtifactService = Pick<
 export interface ApiDependencies {
   readonly missions: MissionService
   readonly projectMemberships?: ProjectMembershipService
+  readonly projectLifecycle?: ProjectLifecycleService
   readonly projectProvisioning?: ProjectProvisioningService
   readonly projectOperator: ProjectOperatorService
   readonly projectRuntimeConfigs: ProjectRuntimeConfigService
@@ -179,6 +184,11 @@ const addProjectMemberSchema = z.object({
   password: z.string().min(12).max(1_024),
 })
 const updateProjectMemberSchema = z.object({ role: userRoleSchema })
+const projectLifecycleSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('rename'), name: z.string().trim().min(1).max(200) }),
+  z.object({ action: z.literal('archive') }),
+  z.object({ action: z.literal('restore') }),
+])
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(200),
   repositoryPath: z.string().trim().max(4_096).optional(),
@@ -629,7 +639,10 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
   })
 
   const requireProjectMembership = (
-    resolveRole: (req: Request, authentication: Extract<RequestAuthentication, { readonly mode: 'session' }>) => Promise<'owner' | 'operator' | 'viewer' | null>,
+    resolveAccess: (req: Request, authentication: Extract<RequestAuthentication, { readonly mode: 'session' }>) => Promise<{
+      readonly role: 'owner' | 'operator' | 'viewer'
+      readonly archivedAt: string | null
+    } | null>,
   ) => (req: Request, res: Response, next: NextFunction) => {
     void (async () => {
       const authentication = requestAuthentication(res)
@@ -637,29 +650,34 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
         next()
         return
       }
-      const role = await resolveRole(req, authentication)
-      if (!role) {
+      const access = await resolveAccess(req, authentication)
+      if (!access) {
         res.status(404).json({ error: { code: 'project_not_found_or_forbidden' } })
         return
       }
-      if (!isSafeMethod(req.method) && role === 'viewer') {
+      if (!isSafeMethod(req.method) && access.role === 'viewer') {
         res.status(403).json({ error: { code: 'read_only_role', message: '当前账号在这个工作区只有只读权限' } })
         return
       }
-      res.locals.projectRole = role
+      if (!isSafeMethod(req.method) && access.archivedAt && req.path !== '/lifecycle') {
+        res.status(409).json({ error: { code: 'project_archived', message: '工作区已归档，请先恢复后再执行写操作' } })
+        return
+      }
+      res.locals.projectRole = access.role
+      res.locals.projectArchivedAt = access.archivedAt
       next()
     })().catch(next)
   }
 
   if (dependencies.projectMemberships) {
     app.use('/api/v1/workspaces/:workspaceId/projects/:projectId', requireProjectMembership((req, authentication) =>
-      dependencies.projectMemberships!.getRole(
+      dependencies.projectMemberships!.getAccess(
         idSchema.parse(req.params.workspaceId) as WorkspaceId,
         idSchema.parse(req.params.projectId) as ProjectId,
         authentication.session.userId,
       )))
-    const resourceMembership = (resource: 'mission' | 'run' | 'artifact' | 'artifact_version', parameter: string) =>
-      requireProjectMembership((req, authentication) => dependencies.projectMemberships!.getResourceRole(
+    const resourceMembership = (resource: ProjectResourceKind, parameter: string) =>
+      requireProjectMembership((req, authentication) => dependencies.projectMemberships!.getResourceAccess(
         idSchema.parse(req.params.workspaceId) as WorkspaceId,
         authentication.session.userId,
         resource,
@@ -669,6 +687,12 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
     app.use('/api/v1/workspaces/:workspaceId/runs/:runId', resourceMembership('run', 'runId'))
     app.use('/api/v1/workspaces/:workspaceId/artifacts/:artifactId', resourceMembership('artifact', 'artifactId'))
     app.use('/api/v1/workspaces/:workspaceId/artifact-versions/:versionId', resourceMembership('artifact_version', 'versionId'))
+    app.use('/api/v1/workspaces/:workspaceId/conversations/:conversationId', resourceMembership('conversation', 'conversationId'))
+    app.use('/api/v1/workspaces/:workspaceId/conversation-planning-requests/:requestId', resourceMembership('planning_request', 'requestId'))
+    app.use('/api/v1/workspaces/:workspaceId/tool-approvals/:approvalId', resourceMembership('approval', 'approvalId'))
+    app.use('/api/v1/workspaces/:workspaceId/agents/:agentId', resourceMembership('agent', 'agentId'))
+    app.use('/api/v1/workspaces/:workspaceId/reviews/:reviewId', resourceMembership('review', 'reviewId'))
+    app.use('/api/v1/workspaces/:workspaceId/submissions/:submissionId', resourceMembership('submission', 'submissionId'))
   }
 
   app.get('/api/v1/auth/session', route(async (_req, res) => {
@@ -715,6 +739,26 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       modelName: defaultModelName,
     })
     res.status(201).json({ project })
+  }))
+
+  app.patch('/api/v1/workspaces/:workspaceId/projects/:projectId/lifecycle', route(async (req, res) => {
+    const authentication = requestAuthentication(res)
+    if (!authentication || authentication.mode !== 'session' || !dependencies.projectLifecycle) {
+      res.status(404).json({ error: { code: 'project_lifecycle_unavailable' } })
+      return
+    }
+    const body = projectLifecycleSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const project = await dependencies.projectLifecycle.update({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      projectId: idSchema.parse(req.params.projectId) as ProjectId,
+      actorId: authentication.session.userId,
+      change: body.data,
+    })
+    res.json({ project })
   }))
 
   app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/members', route(async (req, res) => {
@@ -1901,6 +1945,10 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       return
     }
     if (error instanceof ProjectMembershipError) {
+      res.status(error.status).json({ error: { code: error.code, message: error.message } })
+      return
+    }
+    if (error instanceof ProjectLifecycleError) {
       res.status(error.status).json({ error: { code: error.code, message: error.message } })
       return
     }

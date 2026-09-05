@@ -9,6 +9,7 @@ import { ConversationPlanningRepository } from '../dist/index.js'
 const migrations = [
   '0001_core.sql', '0002_orchestration.sql', '0003_runtime.sql',
   '0010_conversations.sql', '0011_conversation_planning.sql',
+  '0021_authentication.sql', '0023_project_lifecycle.sql',
 ]
 
 function poolAdapter(database) {

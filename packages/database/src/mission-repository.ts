@@ -159,6 +159,12 @@ export class MissionRepository {
     const missionId = input.missionId ?? ('mission_' + randomUUID()) as MissionId
 
     await withTransaction(this.pool, async (client) => {
+      const project = await client.query(
+        'SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 ' +
+        'AND archived_at IS NULL FOR SHARE',
+        [input.projectId, input.workspaceId],
+      )
+      if (!project.rows[0]) throw new Error('Project was not found or is archived')
       await client.query(
         'INSERT INTO missions ' +
         '(id, workspace_id, project_id, conversation_id, title, goal, constraints, acceptance_criteria, status, created_by) ' +

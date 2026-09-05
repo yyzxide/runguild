@@ -223,9 +223,11 @@ export class ConversationPlanningRepository {
 
       const conversation = await client.query<{ project_id: string; title: string }>(
         'SELECT conversation.project_id, conversation.title FROM conversations conversation ' +
+        'JOIN projects project ON project.id = conversation.project_id ' +
+        'AND project.workspace_id = conversation.workspace_id AND project.archived_at IS NULL ' +
         'JOIN conversation_members member ON member.conversation_id = conversation.id ' +
         "AND member.participant_kind = 'user' AND member.participant_id = $3 " +
-        'WHERE conversation.id = $1 AND conversation.workspace_id = $2',
+        'WHERE conversation.id = $1 AND conversation.workspace_id = $2 FOR SHARE OF project',
         [input.conversationId, input.workspaceId, input.createdBy],
       )
       const conversationRow = conversation.rows[0]
