@@ -52,6 +52,9 @@ advance that Task.
 
 - **工作台** derives the next action from API health, authentication, Project
   configuration, Mission state, and persisted Worker heartbeats.
+- **工作区启动页** lists only persisted memberships and offers authenticated
+  Owner/Operator provisioning. The form accepts product inputs, while tenant,
+  actor, Project, Agent, and Conversation ids remain server-owned.
 - **协作室** displays durable messages, explicit recipients, selected-message
   planning, and Planner progress.
 - **Mission** projects the real Task DAG, gates, Runs, Evidence, Review,

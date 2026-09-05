@@ -96,6 +96,11 @@ Expected flow:
 - The workspace launcher lists only Projects with an explicit membership for
   the signed-in User. Project and resource routes reject a non-member even when
   the Project belongs to the same database Workspace.
+- An Owner or Operator can create a user-facing workspace without supplying
+  internal ids. One transaction creates the Project, creator Owner membership,
+  membership audit fact, Project Room, default runtime configuration, and one
+  Planner/Researcher/Builder/Reviewer team. Any failed insert rolls back the
+  whole workspace.
 - Owner and Operator membership roles may use mutating operator commands;
   Viewer is read-only. Only an Owner can manage Project members, and every
   Project must retain at least one Owner. Domain-specific approval/reviewer

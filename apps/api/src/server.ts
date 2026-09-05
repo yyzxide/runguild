@@ -2,6 +2,7 @@ import {
   AuthenticationRepository,
   MissionRepository,
   ProjectMembershipRepository,
+  ProjectProvisioningRepository,
   ProjectOperatorRepository,
   ProjectRuntimeConfigRepository,
   ConversationRepository,
@@ -119,6 +120,7 @@ const localRuntimeControl = process.env.ENABLE_LOCAL_RUNTIME_CONTROL === 'true'
 const app = createApiApp({
   missions: new MissionRepository(pool),
   projectMemberships: new ProjectMembershipRepository(pool),
+  projectProvisioning: new ProjectProvisioningRepository(pool),
   projectOperator: new ProjectOperatorRepository(pool),
   projectRuntimeConfigs: new ProjectRuntimeConfigRepository(pool),
   worktreeSetups: new WorktreeSetupRepository(pool),
@@ -143,6 +145,8 @@ const app = createApiApp({
   authenticationMode,
   defaultWorkspaceId,
   ...(authenticationMode === 'local' ? { localUserId } : {}),
+  defaultModelProvider: process.env.MODEL_PROVIDER?.trim() || 'openai',
+  defaultModelName: process.env.MODEL_NAME?.trim() || 'gpt-5.2',
 })
 const server = app.listen(port, host, () => {
   process.stdout.write(`API listening on http://${host}:${port} (${authenticationMode} authentication)\n`)

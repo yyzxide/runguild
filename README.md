@@ -184,6 +184,11 @@ The control-plane foundation is executable:
   the real Project repository/branch, configured Agent models, project-scoped
   active Runs, and recent Mission register, and supports switching a Mission
   directly from the Web;
+- authenticated workspace provisioning from the launcher: the browser submits
+  only a human-readable name, optional API-host repository path, and default
+  branch; one PostgreSQL transaction creates the Project, creator Owner
+  membership and audit fact, Project Room, default runtime configuration, and
+  Planner/Researcher/Builder/Reviewer team using server-generated ids;
 - production browser identity boundaries backed by PostgreSQL credentials and
   revocable sessions: scrypt password hashes, hashed session/CSRF tokens,
   absolute and idle expiry, credential-version invalidation, database-backed
@@ -310,6 +315,10 @@ The Web opens on a workspace launcher. In user-facing language, a Project is a
 workspace containing one repository, Agent team, conversations, Missions,
 Artifacts, Runs, and Evaluations; the database-level Workspace remains the
 hidden tenant/security boundary. Entering a workspace opens its Team Room first.
+An Owner or Operator can use the **创建工作区** card; the browser never chooses
+the tenant, creator identity, Project id, Conversation id, or Agent ids. A
+successful creation refreshes the Session projection and opens the new Team
+Room immediately.
 The **成员** page lists persisted human memberships. An Owner can create an
 account, assign an Owner/Operator/Viewer role, change that role, or remove the
 member. Membership changes are audited, synchronized to the Project Room, and
@@ -465,6 +474,7 @@ POST /api/v1/development/bootstrap                 # only when explicitly enable
 POST /api/v1/auth/login
 GET  /api/v1/auth/session
 POST /api/v1/auth/logout
+POST /api/v1/workspaces/:workspaceId/projects
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/members
 POST /api/v1/workspaces/:workspaceId/projects/:projectId/members
 PATCH /api/v1/workspaces/:workspaceId/projects/:projectId/members/:userId

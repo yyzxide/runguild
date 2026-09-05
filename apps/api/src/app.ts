@@ -45,11 +45,13 @@ import {
   ConversationNotFoundError,
   ConversationScopeError,
   ProjectMembershipError,
+  ProjectProvisioningError,
   type ConversationRepository,
   type ConversationPlanningRepository,
   type MissionRepository,
   type DevelopmentSetupRepository,
   type ProjectMembershipRepository,
+  type ProjectProvisioningRepository,
   type ProjectOperatorRepository,
   type ProjectRuntimeConfigRepository,
   type EvaluationExperimentSnapshot,
@@ -87,6 +89,7 @@ type ProjectMembershipService = Pick<
   ProjectMembershipRepository,
   'getRole' | 'getResourceRole' | 'listMembers' | 'addMember' | 'updateRole' | 'removeMember'
 >
+type ProjectProvisioningService = Pick<ProjectProvisioningRepository, 'create'>
 type ProjectOperatorService = Pick<ProjectOperatorRepository, 'getOverview'>
 type ProjectRuntimeConfigService = Pick<ProjectRuntimeConfigRepository, 'get' | 'update'>
 type WorktreeSetupService = Pick<WorktreeSetupRepository, 'listRecentForProject'>
@@ -118,6 +121,7 @@ type ArtifactService = Pick<
 export interface ApiDependencies {
   readonly missions: MissionService
   readonly projectMemberships?: ProjectMembershipService
+  readonly projectProvisioning?: ProjectProvisioningService
   readonly projectOperator: ProjectOperatorService
   readonly projectRuntimeConfigs: ProjectRuntimeConfigService
   readonly worktreeSetups?: WorktreeSetupService
@@ -143,6 +147,8 @@ export interface CreateApiAppOptions {
   readonly authenticationMode?: 'local' | 'team'
   readonly defaultWorkspaceId?: string
   readonly localUserId?: string
+  readonly defaultModelProvider?: string
+  readonly defaultModelName?: string
 }
 
 const idSchema = z.string().min(1).max(200)
@@ -173,6 +179,11 @@ const addProjectMemberSchema = z.object({
   password: z.string().min(12).max(1_024),
 })
 const updateProjectMemberSchema = z.object({ role: userRoleSchema })
+const createProjectSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  repositoryPath: z.string().trim().max(4_096).optional(),
+  defaultBranch: z.string().trim().min(1).max(200).default('main'),
+})
 
 const criterionSchema = z.object({
   key: z.string().min(1).max(64),
@@ -482,6 +493,10 @@ function invalidBody(res: Response, error: z.ZodError): void {
 export function createApiApp(dependencies: ApiDependencies, options: CreateApiAppOptions = {}) {
   const app = express()
   const authenticationMode = options.authenticationMode ?? 'team'
+  const defaultModelProvider = options.defaultModelProvider?.trim()
+    || process.env.MODEL_PROVIDER?.trim() || 'openai'
+  const defaultModelName = options.defaultModelName?.trim()
+    || process.env.MODEL_NAME?.trim() || 'gpt-5.2'
   app.disable('x-powered-by')
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -510,8 +525,8 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       }
       const result = await dependencies.developmentSetup?.bootstrap({
         ...body.data,
-        modelProvider: process.env.MODEL_PROVIDER?.trim() || 'openai',
-        modelName: process.env.MODEL_NAME?.trim() || 'gpt-5.2',
+        modelProvider: defaultModelProvider,
+        modelName: defaultModelName,
       })
       res.json(result)
     }))
@@ -676,6 +691,30 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
     dependencies.authentication.clearSessionCookies(res)
     res.setHeader('Cache-Control', 'no-store')
     res.status(204).end()
+  }))
+
+  app.post('/api/v1/workspaces/:workspaceId/projects', route(async (req, res) => {
+    const authentication = requestAuthentication(res)
+    if (!authentication || authentication.mode !== 'session' || !dependencies.projectProvisioning) {
+      res.status(404).json({ error: { code: 'project_provisioning_unavailable' } })
+      return
+    }
+    const body = createProjectSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const project = await dependencies.projectProvisioning.create({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      actorId: authentication.session.userId,
+      projectId: (`project_${randomUUID()}`) as ProjectId,
+      name: body.data.name,
+      ...(body.data.repositoryPath ? { repositoryPath: body.data.repositoryPath } : {}),
+      defaultBranch: body.data.defaultBranch,
+      modelProvider: defaultModelProvider,
+      modelName: defaultModelName,
+    })
+    res.status(201).json({ project })
   }))
 
   app.get('/api/v1/workspaces/:workspaceId/projects/:projectId/members', route(async (req, res) => {
@@ -1862,6 +1901,10 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       return
     }
     if (error instanceof ProjectMembershipError) {
+      res.status(error.status).json({ error: { code: error.code, message: error.message } })
+      return
+    }
+    if (error instanceof ProjectProvisioningError) {
       res.status(error.status).json({ error: { code: error.code, message: error.message } })
       return
     }

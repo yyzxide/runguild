@@ -311,6 +311,16 @@ and entering a workspace opens its Team Room rather than an infrastructure
 dashboard. The Member surface is a projection of `project_memberships`, not a
 client-only contact list.
 
+Workspace creation is a server-owned provisioning transaction. The authenticated
+route accepts a display name, optional repository path on the API host, and a
+default Git branch. It generates the Project id and every derived Agent and
+Conversation id, then atomically inserts the Project, creator Owner membership
+and audit event, default Project Runtime Configuration, four role-specific
+Agents, one Project Room, and all five initial room memberships. A Viewer is
+rejected both by the HTTP role gate and the Repository. A derived-id conflict
+rolls back every earlier insert; the launcher refreshes `/auth/session` only
+after commit and therefore cannot display a partially created workspace.
+
 Agent transport identity never reuses the browser session. An Agent must first
 prove an unpredictable Bearer token kept only in the API/Worker environment;
 only then are its Actor/Run/Task/Tool/intent headers accepted and checked by

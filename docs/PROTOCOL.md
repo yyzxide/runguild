@@ -43,6 +43,11 @@ requests by a Viewer are rejected, and a non-member receives the same not-found
 boundary as a missing Project. Membership changes revoke the affected User's
 sessions so a stale role snapshot cannot authorize later requests.
 
+`POST /api/v1/workspaces/:workspaceId/projects` is a browser-Session command,
+not a generic Agent command. Its Workspace path must match the Session; the
+payload carries only the Project name, optional API-host repository path, and
+default branch. Resource ids and the creator identity are server-generated.
+
 Agent HTTP or Artifact WebSocket requests use `Authorization: Bearer <internal
 token>` before the server considers `x-actor-kind: agent`, `x-actor-id`, and
 the required Run/Task/Tool/intent origin headers. The Bearer token exists only

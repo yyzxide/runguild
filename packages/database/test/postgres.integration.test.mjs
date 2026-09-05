@@ -7,6 +7,7 @@ import {
   InboxDedupeConflictError,
   InboxRepository,
   OutboxRepository,
+  ProjectProvisioningRepository,
   TaskRepository,
   runMigrations,
 } from '../dist/index.js'
@@ -184,6 +185,31 @@ test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) =>
       assert.ok(event)
       assert.equal(await outbox.markPublished(event.id, event.claimToken), true)
       assert.equal(await outbox.markPublished(event.id, event.claimToken), false)
+    })
+
+    await t.test('workspace provisioning commits one complete Project and Agent team', async () => {
+      await resetDatabase(pool)
+      await pool.query("INSERT INTO workspaces (id, name) VALUES ('ws_test', 'Test')")
+      await pool.query(
+        "INSERT INTO users (id, workspace_id, display_name, role) " +
+        "VALUES ('creator_test', 'ws_test', 'Creator', 'operator')",
+      )
+      const project = await new ProjectProvisioningRepository(pool).create({
+        workspaceId: 'ws_test', actorId: 'creator_test', projectId: 'project_provision_test',
+        name: 'Provisioned', repositoryPath: '/workspace/provisioned', defaultBranch: 'main',
+        modelProvider: 'test', modelName: 'test-model',
+      })
+      assert.equal(project.role, 'owner')
+      const counts = await pool.query(
+        "SELECT " +
+        "(SELECT COUNT(*)::int FROM project_memberships WHERE project_id = 'project_provision_test') AS memberships, " +
+        "(SELECT COUNT(*)::int FROM agents WHERE id LIKE 'project_provision_test:agent:%') AS agents, " +
+        "(SELECT COUNT(*)::int FROM conversation_members WHERE conversation_id = 'project_provision_test:conversation:team') AS room_members, " +
+        "(SELECT COUNT(*)::int FROM project_runtime_configs WHERE project_id = 'project_provision_test') AS runtime_configs",
+      )
+      assert.deepEqual(counts.rows[0], {
+        memberships: 1, agents: 4, room_members: 5, runtime_configs: 1,
+      })
     })
 
     await t.test('completing a reviewed task unlocks its dependent', async () => {

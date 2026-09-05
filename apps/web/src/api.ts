@@ -134,6 +134,18 @@ export interface ProjectMember {
   readonly joinedAt: string
 }
 
+export interface CreatedProject {
+  readonly id: string
+  readonly name: string
+  readonly role: 'owner'
+  readonly conversationId: string
+  readonly agents: readonly {
+    readonly id: string
+    readonly role: 'planner' | 'researcher' | 'builder' | 'reviewer'
+    readonly name: string
+  }[]
+}
+
 export interface AuthenticationMode {
   readonly mode: 'local' | 'team'
 }
@@ -574,6 +586,18 @@ export const missionApi = {
       headers: { 'content-type': 'application/json' },
       body: '{}',
     })
+  },
+
+  async createProject(workspaceId: string, input: {
+    readonly name: string
+    readonly repositoryPath?: string
+    readonly defaultBranch: string
+  }): Promise<CreatedProject> {
+    const result = await request<{ readonly project: CreatedProject }>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/projects`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) },
+    )
+    return result.project
   },
 
   async listProjectMembers(identity: TestIdentity): Promise<readonly ProjectMember[]> {

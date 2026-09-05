@@ -184,6 +184,23 @@ npm run auth:set-password -- \
 可继续使用 `127.0.0.1`；只有从另一台设备访问时才需要单独配置监听地址、Web
 可访问地址、精确 Origin 和 HTTPS Cookie。
 
+### 3.7 创建第二个工作区
+
+回到工作区列表，点击“建立新的 Agent 团队”。表单只要求：
+
+1. 工作区名称；
+2. API 所在机器上的代码仓库绝对路径，可留空稍后配置；
+3. 默认 Git 分支，默认是 `main`。
+
+创建成功后会直接进入新的团队协作室。后端会在同一个 PostgreSQL 事务中创建
+Project、创建者 Owner 成员关系、默认运行配置、Planner/Researcher/Builder/
+Reviewer 和协作室；任何一步失败都会整体回滚。浏览器不会提交租户 ID、用户
+ID、Project ID、Agent ID 或 Conversation ID。
+
+若创建时留空仓库路径，进入工作台后打开“配置与启停”，再补充仓库路径、
+Worktree 根目录、准备命令和测试白名单。创建工作区不会自动启动 Worker，也
+不会扫描或修改填写的仓库。
+
 ## 4. 第一次进入 Web 后的项目配置
 
 打开工作台的“配置与启停”，逐项保存：

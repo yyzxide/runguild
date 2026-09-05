@@ -1067,14 +1067,38 @@ function WorkspaceLauncher({
   session,
   authenticationMode,
   onOpen,
+  onCreate,
   onLogout,
 }: {
   readonly session: AuthenticationSession
   readonly authenticationMode: 'local' | 'team'
   readonly onOpen: (projectId: string) => void
+  readonly onCreate: (input: { readonly name: string; readonly repositoryPath?: string; readonly defaultBranch: string }) => Promise<void>
   readonly onLogout: () => void
 }) {
   const recentProjectId = window.localStorage.getItem('runguild:last-project')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [repositoryPath, setRepositoryPath] = useState('')
+  const [defaultBranch, setDefaultBranch] = useState('main')
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const canCreate = session.user.role !== 'viewer'
+  const create = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setCreating(true)
+    setCreateError(null)
+    try {
+      await onCreate({
+        name: name.trim(),
+        ...(repositoryPath.trim() ? { repositoryPath: repositoryPath.trim() } : {}),
+        defaultBranch: defaultBranch.trim(),
+      })
+    } catch (caught) {
+      setCreateError(caught instanceof Error ? caught.message : '工作区创建失败')
+      setCreating(false)
+    }
+  }
   return (
     <main className="workspace-launcher">
       <header className="workspace-launcher__bar">
@@ -1084,6 +1108,7 @@ function WorkspaceLauncher({
       <section className="workspace-launcher__content">
         <div className="workspace-launcher__heading"><span className="micro-label">你的工作区</span><h1>选择一个 Agent 团队开始工作</h1><p>每个工作区拥有独立的代码仓库、Agent 团队、协作会话、Mission、产物与运行记录。</p></div>
         <div className="workspace-grid">
+          {canCreate ? <button className="workspace-card workspace-card--create" onClick={() => setCreateOpen(true)}><span className="workspace-card__mark"><Plus size={23} /></span><span className="workspace-card__copy"><span>创建工作区</span><strong>建立新的 Agent 团队</strong><small><Users size={13} />你将成为 Owner，可继续添加成员</small></span><ArrowRight size={18} /></button> : null}
           {session.projects.map((project, index) => (
             <button className="workspace-card" key={project.id} onClick={() => onOpen(project.id)}>
               <span className={`workspace-card__mark workspace-card__mark--${index % 4}`}><FolderGit2 size={23} /></span>
@@ -1094,6 +1119,7 @@ function WorkspaceLauncher({
         </div>
         <aside className="workspace-launcher__note"><ShieldCheck size={16} /><span><strong>身份边界仍然存在</strong><small>界面不展示租户与资源 ID；API 仍通过 Session、工作区范围和 CSRF 校验每次操作。</small></span></aside>
       </section>
+      {createOpen ? <div className="workspace-create-backdrop" role="presentation" onMouseDown={() => { if (!creating) setCreateOpen(false) }}><form className="workspace-create-dialog" onSubmit={(event) => void create(event)} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="micro-label">Project Provisioning</span><h2>创建 Agent 工作区</h2><p>一次事务建立工作区、Owner、团队协作室和四个默认 Agent。</p></div><button type="button" aria-label="关闭" disabled={creating} onClick={() => setCreateOpen(false)}><X size={18} /></button></header><div className="workspace-create-fields"><label><span>工作区名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：支付系统重构" required maxLength={200} /></label><label><span>代码仓库绝对路径（可稍后配置）</span><input value={repositoryPath} onChange={(event) => setRepositoryPath(event.target.value)} placeholder="/home/sid/project" maxLength={4096} /></label><label><span>默认分支</span><input value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} placeholder="main" required maxLength={200} /></label></div><section className="workspace-create-team"><span><Bot size={16} />自动创建团队</span><div>{['规划 Planner', '研究 Researcher', '构建 Builder', '审查 Reviewer'].map((role) => <code key={role}>{role}</code>)}</div></section>{createError ? <div className="auth-error" role="alert"><CircleAlert size={16} /><span>{createError}</span></div> : null}<footer><p>仓库路径属于 API 所在机器，不会由浏览器访问。创建完成后将直接进入团队协作室。</p><button className="primary-action" disabled={creating || !name.trim() || !defaultBranch.trim()}>{creating ? <LoaderCircle className="is-spinning" size={16} /> : <Plus size={16} />}创建并进入</button></footer></form></div> : null}
     </main>
   )
 }
@@ -1185,6 +1211,16 @@ export function App() {
     clearProjectState()
     window.localStorage.setItem('runguild:last-project', projectId)
     setIdentity({ workspaceId: authentication.user.workspaceId, projectId, userId: authentication.user.id })
+    navigate('team')
+  }
+  const createProject = async (input: { readonly name: string; readonly repositoryPath?: string; readonly defaultBranch: string }) => {
+    if (!authentication) return
+    const created = await missionApi.createProject(authentication.user.workspaceId, input)
+    const session = await missionApi.session()
+    clearProjectState()
+    setAuthentication(session)
+    window.localStorage.setItem('runguild:last-project', created.id)
+    setIdentity({ workspaceId: session.user.workspaceId, projectId: created.id, userId: session.user.id })
     navigate('team')
   }
 
@@ -1324,7 +1360,7 @@ export function App() {
   if (authentication === undefined || authenticationMode === undefined) return <AuthenticationChecking connection={connection} error={authenticationError} />
   if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />
   if (!authentication.projects.length) return <NoProjectAccess session={authentication} authenticationMode={authenticationMode} onLogout={logout} />
-  if (!identity.projectId) return <WorkspaceLauncher session={authentication} authenticationMode={authenticationMode} onOpen={changeProject} onLogout={logout} />
+  if (!identity.projectId) return <WorkspaceLauncher session={authentication} authenticationMode={authenticationMode} onOpen={changeProject} onCreate={createProject} onLogout={logout} />
 
   return <div className="app-shell"><AppNavigation view={view} session={authentication} authenticationMode={authenticationMode} onNavigate={navigate} onLeaveWorkspace={() => changeProject('')} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
 }
