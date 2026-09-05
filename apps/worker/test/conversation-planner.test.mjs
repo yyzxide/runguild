@@ -40,12 +40,12 @@ function work(storedPlan) {
   }
 }
 
-test('Planner tool schema derives evidence kinds from the protocol source of truth', () => {
-  const definition = missionPlanToolDefinition(['planner', 'builder'])
+test('Planner tool schema exposes only executable roles and Agent-producible evidence', () => {
+  const definition = missionPlanToolDefinition(['planner', 'builder', 'reviewer'])
   const evidenceKinds = definition.inputSchema
     .properties.tasks.items.properties.acceptanceCriteria.items.properties.evidenceKinds.items.enum
-  assert.deepEqual(evidenceKinds, EVIDENCE_KINDS)
-  assert.deepEqual(definition.inputSchema.properties.tasks.items.properties.role.enum, ['planner', 'builder'])
+  assert.deepEqual(evidenceKinds, EVIDENCE_KINDS.filter((kind) => kind !== 'human_attestation'))
+  assert.deepEqual(definition.inputSchema.properties.tasks.items.properties.role.enum, ['builder'])
 })
 
 test('Conversation Planner converts one durable model tool call into a human-approval proposal', async () => {
@@ -155,7 +155,53 @@ test('Conversation Planner rejects a role that no active project Agent can execu
     schemaVersion: 1, type: 'conversation.plan_requested', requestId: 'planning',
     conversationId: 'conversation', missionId: 'mission',
   }, 'planner')
-  assert.match(failure, /unavailable project Agent roles: custom/)
+  assert.match(failure, /unavailable task-execution Agent roles: custom/)
+  assert.equal(proposals, 0)
+})
+
+test('Conversation Planner rejects human-only evidence even if a model bypasses the tool schema', async () => {
+  let failure = ''
+  let proposals = 0
+  const humanOnlyPlan = {
+    ...plan,
+    tasks: [{
+      ...plan.tasks[0],
+      acceptanceCriteria: [{
+        key: 'approval', description: 'A human approves the design.', required: true,
+        evidenceKinds: ['human_attestation'],
+      }],
+    }],
+  }
+  const planner = new ConversationPlanner({
+    planning: {
+      async claim() { return { kind: 'work', work: work() } },
+      async completeModel() { throw new Error('invalid plan must not be persisted') },
+      async markAwaitingApproval() { throw new Error('invalid plan must not await approval') },
+      async fail(input) { failure = input.message; return { retryable: false, request: {} } },
+    },
+    missions: {
+      async proposePlan() { proposals += 1; return { proposed: true, version: 1, hash: 'hash', reused: false } },
+    },
+    conversations: { async postMessage() { return { reused: false, message: { id: 'message' } } } },
+    modelFor() {
+      return {
+        provider: 'test', model: 'planner-model',
+        async complete() {
+          return {
+            content: '', finishReason: 'tool_calls',
+            toolCalls: [{ id: 'call', action: 'mission.propose_plan', input: humanOnlyPlan }],
+            usage: { inputTokens: 10, outputTokens: 10 },
+          }
+        },
+      }
+    },
+  })
+
+  await planner.process({
+    schemaVersion: 1, type: 'conversation.plan_requested', requestId: 'planning',
+    conversationId: 'conversation', missionId: 'mission',
+  }, 'planner')
+  assert.match(failure, /human_attestation/)
   assert.equal(proposals, 0)
 })
 
@@ -163,8 +209,9 @@ test('Planner prompt pins source message ids and requires a minimal executable D
   const messages = planningMessages(work())
   assert.match(messages[0].content, /mission\.propose_plan exactly once/)
   assert.match(messages[0].content, /reviewRequired=true/)
-  assert.match(messages[0].content, /Do not create a reviewer-role DAG Task/)
-  assert.match(messages[0].content, /active project Agent roles: planner, builder/)
+  assert.match(messages[0].content, /Never create DAG Tasks assigned to planner or reviewer/)
+  assert.match(messages[0].content, /Never require human_attestation/)
+  assert.match(messages[0].content, /active task-execution Agent roles: builder/)
   assert.match(messages[1].content, /\[message\] Developer/)
   assert.match(messages[1].content, /Avoid ceremonial Tasks/)
 })

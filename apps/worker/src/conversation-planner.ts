@@ -17,11 +17,23 @@ import {
   type ModelToolDefinition,
 } from '@runguild/protocol'
 
-export function missionPlanToolDefinition(availableRoles: readonly AgentRole[]): ModelToolDefinition {
-  const roles = [...new Set(availableRoles)]
-  if (roles.length === 0 || roles.some((role) => !AGENT_ROLES.includes(role))) {
-    throw new Error('Planner requires at least one valid active Agent role')
+const NON_EXECUTION_ROLES = new Set<AgentRole>(['planner', 'reviewer'])
+const PLANNER_EVIDENCE_KINDS = EVIDENCE_KINDS.filter((kind) => kind !== 'human_attestation')
+
+function taskExecutionRoles(availableRoles: readonly AgentRole[]): readonly AgentRole[] {
+  const uniqueRoles = [...new Set(availableRoles)]
+  if (uniqueRoles.length === 0 || uniqueRoles.some((role) => !AGENT_ROLES.includes(role))) {
+    throw new Error('Planner requires valid active Agent roles')
   }
+  const roles = uniqueRoles.filter((role) => !NON_EXECUTION_ROLES.has(role))
+  if (roles.length === 0) {
+    throw new Error('Planner requires at least one active task-execution Agent role')
+  }
+  return roles
+}
+
+export function missionPlanToolDefinition(availableRoles: readonly AgentRole[]): ModelToolDefinition {
+  const roles = taskExecutionRoles(availableRoles)
   return {
     action: 'mission.propose_plan',
     description: 'Return the executable Mission plan as a validated dependency graph for human approval.',
@@ -61,7 +73,7 @@ export function missionPlanToolDefinition(availableRoles: readonly AgentRole[]):
                     evidenceKinds: {
                       type: 'array',
                       maxItems: 20,
-                      items: { enum: EVIDENCE_KINDS },
+                      items: { enum: PLANNER_EVIDENCE_KINDS },
                     },
                   },
                   additionalProperties: false,
@@ -105,6 +117,7 @@ export function planningMessages(input: {
   }[]
   readonly availableRoles: readonly AgentRole[]
 }): readonly ModelMessage[] {
+  const roles = taskExecutionRoles(input.availableRoles)
   return [
     {
       role: 'system',
@@ -113,8 +126,10 @@ export function planningMessages(input: {
         'Turn the selected conversation into a small but complete executable DAG, not a prose-only answer.',
         'Every Task must have one specialist role, explicit dependencies, and evidence-based acceptance criteria.',
         'Use researcher only when uncertainty requires investigation and builder for implementation.',
-        'Only assign these active project Agent roles: ' + input.availableRoles.join(', ') + '.',
-        'Represent independent approval of a producing Task with reviewRequired=true. Do not create a reviewer-role DAG Task solely to approve its dependency; Submission review is a separate gate.',
+        'Only assign these active task-execution Agent roles: ' + roles.join(', ') + '.',
+        'Planner and reviewer are control-plane roles. Never create DAG Tasks assigned to planner or reviewer.',
+        'Represent independent approval of a producing Task with reviewRequired=true; Submission review is a separate gate.',
+        'Acceptance evidence must be producible by an Agent tool. Never require human_attestation; human approval is handled by the plan and final-delivery gates.',
         'Do not claim work is complete. Call mission.propose_plan exactly once with the proposed graph.',
       ].join('\n'),
     },
@@ -149,11 +164,21 @@ function planFromResponse(
   if (!validation.valid) {
     throw new Error('Planner returned an invalid DAG: ' + validation.errors.map((error) => error.path + ' ' + error.message).join('; '))
   }
+  const roles = taskExecutionRoles(availableRoles)
   const unavailable = [...new Set(plan.tasks
     .map((task) => task.role)
-    .filter((role) => !availableRoles.includes(role)))]
+    .filter((role) => !roles.includes(role)))]
   if (unavailable.length > 0) {
-    throw new Error('Planner assigned unavailable project Agent roles: ' + unavailable.join(', '))
+    throw new Error('Planner assigned unavailable task-execution Agent roles: ' + unavailable.join(', '))
+  }
+  const humanAttestationPath = plan.tasks.flatMap((task, taskIndex) => task.acceptanceCriteria
+    .map((criterion, criterionIndex) => ({ criterion, taskIndex, criterionIndex })))
+    .find(({ criterion }) => criterion.evidenceKinds.includes('human_attestation'))
+  if (humanAttestationPath) {
+    throw new Error(
+      'Planner assigned human_attestation to tasks[' + humanAttestationPath.taskIndex + ']'
+      + '.acceptanceCriteria[' + humanAttestationPath.criterionIndex + ']; generated DAG Tasks must use Agent-producible evidence',
+    )
   }
   return plan
 }
