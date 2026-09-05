@@ -73,7 +73,7 @@ test('Project Provisioning creates one complete user-facing workspace atomically
       "WHERE project_id = 'project_created'",
     )
     assert.deepEqual(runtime.rows[0], {
-      worktree_root: null,
+      worktree_root: '/workspace/.runguild-worktrees/project_created',
       test_commands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
     })
     assert.equal((await database.query(

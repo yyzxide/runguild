@@ -742,14 +742,22 @@ function TeamRoomView({
   identity,
   setup,
   mission,
+  runtime,
+  overview,
   onNavigate,
   onMissionReady,
+  onOpenRuntime,
+  onEnsurePlanner,
 }: {
   readonly identity: TestIdentity
   readonly setup: DevelopmentSetup | null
   readonly mission: MissionSnapshot | null
+  readonly runtime: ProjectRuntimeConfigurationResponse | null
+  readonly overview: ProjectOperatorOverview | null
   readonly onNavigate: (view: View) => void
   readonly onMissionReady: (mission: MissionSnapshot) => void
+  readonly onOpenRuntime: () => void
+  readonly onEnsurePlanner: (agentId: string) => Promise<void>
 }) {
   const [conversations, setConversations] = useState<readonly ConversationSnapshot[]>([])
   const [conversationId, setConversationId] = useState(setup?.conversationId ?? '')
@@ -764,6 +772,8 @@ function TeamRoomView({
   const [sending, setSending] = useState(false)
   const [planningBusy, setPlanningBusy] = useState(false)
   const [roomError, setRoomError] = useState<string | null>(null)
+  const [plannerStartAttempted, setPlannerStartAttempted] = useState('')
+  const [plannerStartError, setPlannerStartError] = useState<string | null>(null)
   const activeConversation = conversations.find((conversation) => conversation.id === conversationId)
   const agents = useMemo(
     () => activeConversation?.members.filter((member) => member.kind === 'agent') ?? [],
@@ -773,6 +783,18 @@ function TeamRoomView({
   const planner = agents.find((agent) => agent.role === 'planner')
   const planningRequestId = planningRequest?.id
   const planningRequestStatus = planningRequest?.status
+  const planningActive = planningRequest !== null
+    && ['queued', 'running', 'model_complete', 'awaiting_approval'].includes(planningRequest.status)
+  const plannerWorker = runtime?.control.workers.find((worker) =>
+    worker.kind === 'agent' && worker.agentId === planner?.id)
+  const plannerOnline = overview?.agents.find((agent) => agent.id === planner?.id)?.worker?.state === 'online'
+  const planningBlocked = planningRequestStatus === 'queued'
+    && runtime !== null
+    && !plannerOnline
+    && (runtime.control.enabled ? plannerWorker === undefined || !plannerWorker.ready : true)
+  const planningBlockReason = runtime?.control.enabled
+    ? plannerWorker?.missing.join('、') || '规划 Agent Worker 不可用'
+    : '规划 Agent Worker 未在线，当前部署不允许从 Web 启动'
 
   useEffect(() => {
     if (!setup) return
@@ -810,6 +832,8 @@ function TeamRoomView({
     setSelectedMessageIds([])
     setPlanningTitle('')
     setPlanningRequest(null)
+    setPlannerStartAttempted('')
+    setPlannerStartError(null)
     if (!conversationId) return
     let stopped = false
     const storageKey = 'runguild:last-planning:' + conversationId
@@ -860,26 +884,46 @@ function TeamRoomView({
   const toggleAgent = (agentId: string) => setSelectedAgents((current) =>
     current.includes(agentId) ? current.filter((id) => id !== agentId) : [...current, agentId])
   const togglePlanningMessage = (message: ConversationMessage) => {
+    if (planningActive) return
     setSelectedMessageIds((current) => current.includes(message.id)
       ? current.filter((id) => id !== message.id)
       : [...current, message.id])
     setPlanningTitle((current) => current || message.body.trim().slice(0, 42) || '从协作消息生成 Mission')
+  }
+  const persistPlanningRequest = async (sourceMessageIds: readonly string[], title: string) => {
+    if (!conversationId || !planner) throw new Error('当前工作区缺少规划 Agent')
+    const request = await missionApi.createPlanningRequest({
+      identity,
+      conversationId,
+      sourceMessageIds,
+      title,
+      plannerAgentId: planner.id,
+    })
+    setPlanningRequest(request)
+    setPlannerStartError(null)
+    window.localStorage.setItem('runguild:last-planning:' + conversationId, request.id)
+    setSelectedMessageIds([])
+    return request
+  }
+  const wakePlanner = async (request: ConversationPlanningRequest) => {
+    if (!planner || request.status !== 'queued') return
+    setPlannerStartAttempted(request.id)
+    setPlannerStartError(null)
+    try {
+      await onEnsurePlanner(planner.id)
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : '规划 Agent 启动失败'
+      setPlannerStartError(message)
+      onOpenRuntime()
+    }
   }
   const createPlanningRequest = async () => {
     if (!conversationId || selectedMessageIds.length === 0 || !planningTitle.trim() || planningBusy) return
     setPlanningBusy(true)
     setRoomError(null)
     try {
-      const request = await missionApi.createPlanningRequest({
-        identity,
-        conversationId,
-        sourceMessageIds: selectedMessageIds,
-        title: planningTitle.trim(),
-        ...(planner ? { plannerAgentId: planner.id } : {}),
-      })
-      setPlanningRequest(request)
-      window.localStorage.setItem('runguild:last-planning:' + conversationId, request.id)
-      setSelectedMessageIds([])
+      const request = await persistPlanningRequest(selectedMessageIds, planningTitle.trim())
+      await wakePlanner(request)
     } catch (caught) {
       setRoomError(caught instanceof Error ? caught.message : '创建规划请求失败')
     } finally {
@@ -891,23 +935,37 @@ function TeamRoomView({
     setSending(true)
     setRoomError(null)
     try {
+      const body = draft.trim()
       const message = await missionApi.postMessage({
         identity,
         conversationId,
-        body: draft,
+        body,
         mentions: selectedAgents,
-        ...(mission ? { missionId: mission.id } : {}),
+        ...(mission?.id || planningRequest?.missionId ? { missionId: mission?.id ?? planningRequest!.missionId } : {}),
         ...(replyTo ? { replyToMessageId: replyTo.id } : {}),
       })
       setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message])
       setDraft('')
       setReplyTo(null)
+      if (!mission && !planningActive) {
+        const request = await persistPlanningRequest([message.id], body.slice(0, 80))
+        await wakePlanner(request)
+      }
     } catch (caught) {
-      setRoomError(caught instanceof Error ? caught.message : '消息发送失败')
+      setRoomError(caught instanceof Error ? caught.message : '消息或任务提交失败')
     } finally {
       setSending(false)
     }
   }
+
+  useEffect(() => {
+    if (!planningRequest || planningRequest.status !== 'queued' || !planner || plannerOnline
+        || runtime?.control.enabled !== true || !plannerWorker?.ready
+        || plannerStartAttempted === planningRequest.id) return
+    void wakePlanner(planningRequest)
+  // wakePlanner intentionally follows the latest runtime readiness snapshot.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningRequest, planner, plannerOnline, plannerStartAttempted, plannerWorker?.ready, runtime?.control.enabled])
 
   if (!setup) {
     return (
@@ -922,7 +980,7 @@ function TeamRoomView({
   return (
     <>
       <section className="page-heading room-heading">
-        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>团队协作室</span></div><h1>和 Agent 团队一起工作</h1><p>描述目标、约束和已有线索；选择关键消息交给 Planner 生成任务 DAG，运行中也可以随时 @Agent 调整方向。</p></div>
+        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>团队协作室</span></div><h1>和 Agent 团队一起工作</h1><p>直接在对话框描述任务；首条任务会自动创建 Mission、唤醒 Planner 并生成任务 DAG。</p></div>
         <div className="page-actions"><StatusPill tone="live"><span className="pulse-dot" />5 秒同步</StatusPill><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
       </section>
       {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p></div></div> : null}
@@ -950,15 +1008,15 @@ function TeamRoomView({
         </aside>
 
         <section className="room-thread">
-          <header className="room-thread__header"><div><span className="micro-label">有序持久化消息</span><h2>{activeConversation?.title ?? '正在加载协作室'}</h2></div><div className="thread-selection"><code>{selectedMessageIds.length ? `已选 ${selectedMessageIds.length} 条` : `${messages.length} 条事实`}</code>{selectedMessageIds.length ? <button onClick={() => setSelectedMessageIds([])}>清除</button> : null}</div></header>
+          <header className="room-thread__header"><div><span className="micro-label">有序持久化消息</span><h2>{activeConversation?.title ?? '正在加载协作室'}</h2></div><div className="thread-selection"><code>{selectedMessageIds.length ? `已选 ${selectedMessageIds.length} 条历史材料` : `${messages.length} 条事实`}</code>{selectedMessageIds.length ? <button onClick={() => setSelectedMessageIds([])}>清除</button> : null}</div></header>
           <div className="message-stream" aria-live="polite">
             {loading && messages.length === 0 ? <div className="room-empty"><LoaderCircle className="is-spinning" size={22} /><strong>正在读取协作记录</strong></div> : null}
-            {!loading && messages.length === 0 ? <div className="room-empty"><MessageCircle size={25} /><strong>从一条明确的协调请求开始</strong><span>选择要行动的 Agent，绑定当前 Mission，然后发送。</span></div> : null}
+            {!loading && messages.length === 0 ? <div className="room-empty"><MessageCircle size={25} /><strong>直接描述你希望团队完成的任务</strong><span>发送后系统会自动创建 Mission 并交给规划 Agent，无需再勾选消息。</span></div> : null}
             {messages.map((message) => {
               const authorAgent = message.author.kind === 'agent'
               return (
                 <article className={`room-message${message.author.id === identity.userId ? ' is-mine' : ''}`} key={message.id}>
-                  <button className={`message-select${selectedMessageIds.includes(message.id) ? ' is-selected' : ''}`} aria-label={selectedMessageIds.includes(message.id) ? '取消选择这条消息' : '选择这条消息用于生成 Mission'} onClick={() => togglePlanningMessage(message)}>{selectedMessageIds.includes(message.id) ? <Check size={12} /> : null}</button>
+                  <button className={`message-select${selectedMessageIds.includes(message.id) ? ' is-selected' : ''}`} aria-label={selectedMessageIds.includes(message.id) ? '取消选择这条历史消息' : '选择这条历史消息用于重新规划'} title={planningActive ? '当前已有进行中的规划' : '可选：用这条历史消息创建新任务'} disabled={planningActive} onClick={() => togglePlanningMessage(message)}>{selectedMessageIds.includes(message.id) ? <Check size={12} /> : null}</button>
                   <span className={`room-avatar room-avatar--${authorAgent ? 'agent' : 'user'}`}>{authorAgent ? <Bot size={15} /> : '你'}</span>
                   <div className="room-message__main">
                     <div className="room-message__meta"><strong>{message.authorName}</strong><span>{authorAgent ? 'Agent' : message.author.kind === 'system' ? '系统' : '人工'}</span><time>{messageTime(message.createdAt)}</time><code>#{message.sequence}</code></div>
@@ -978,22 +1036,21 @@ function TeamRoomView({
           <div className="room-composer">
             {replyTo ? <div className="reply-banner"><span>正在回复 <strong>{replyTo.authorName}</strong> · {replyTo.body.slice(0, 72)}</span><button onClick={() => setReplyTo(null)}>取消</button></div> : null}
             <div className="recipient-picker"><span><AtSign size={13} />选择消息要路由给的 Agent</span><div>{agents.map((agent) => <button key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div>
-            <div className="composer-field"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder="例如：@规划 Agent 请结合当前实现重新检查任务边界，并在协作室说明是否需要调整计划。" /><button aria-label="发送消息" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={18} />}</button></div>
-            <div className="composer-scope"><span className={mission ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : '尚无 Mission：先讨论，再勾选消息交给 Planner'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
+            <div className="composer-field"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '继续补充约束，或 @Agent 调整当前任务方向。' : '例如：帮我完成一个复杂的贪吃蛇游戏。发送后会自动开始规划。'} /><button aria-label={mission ? '发送到当前 Mission' : planningActive ? '补充规划上下文' : '发送并启动规划'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{mission ? '发送' : planningActive ? '补充上下文' : '发送并规划'}</span></button></div>
+            <div className="composer-scope"><span className={mission || planningActive ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : planningActive ? '已有任务正在规划；新消息作为补充上下文' : '任务模式：发送后自动创建 Mission 并唤醒 Planner'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
           </div>
         </section>
 
         <aside className="routing-rail">
-          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>发送消息不会直接调用模型。有运行中的 Mission 时才会唤醒 Agent；否则先保存，等待下次 Run 加载。</p></div>
+          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>尚无 Mission 时，发送操作会自动创建规划请求并唤醒 Planner；运行中的新消息则直接路由到当前任务。</p></div>
           <section className="planning-launcher">
-            <span className="micro-label">从会话到 Mission</span>
-            <h3>交给规划 Agent</h3>
-            <p>{selectedMessageIds.length ? `已固定选择 ${selectedMessageIds.length} 条消息，Planner 将只以这些事实作为任务来源。` : '在左侧勾选一条或多条关键消息，Planner 会生成可审查的任务 DAG。'}</p>
-            <label><span>Mission 标题</span><input value={planningTitle} onChange={(event) => setPlanningTitle(event.target.value)} placeholder="例如：完成项目级角色系统" /></label>
-            <button className="planning-action" disabled={!planner || selectedMessageIds.length === 0 || !planningTitle.trim() || planningBusy} onClick={() => void createPlanningRequest()}>{planningBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Network size={15} />}{planner ? '生成任务计划' : '缺少 Planner Agent'}</button>
-            {planningRequest ? <div className={`planning-progress planning-progress--${planningRequest.status}`}><span>{['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningStatusLabels[planningRequest.status]}</strong><small>第 {planningRequest.attempt}/{planningRequest.maxAttempts} 次尝试</small>{planningRequest.status === 'queued' ? <p className="planning-worker-hint">若长时间停留，请在运行设置中确认规划 Agent 已启动。</p> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('start')}>{planningRequest.status === 'approved' ? '查看 Mission' : '查看并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
+            <span className="micro-label">发送即规划</span>
+            <h3>{planningRequest ? '任务已接收' : '直接描述任务'}</h3>
+            <p>{planningRequest ? '系统正在跟踪这次规划的真实状态。' : '从对话框发送首条任务后，系统会自动生成 Mission，不需要再勾选或点击创建。'}</p>
+            {!planningActive && selectedMessageIds.length ? <div className="planning-history-form"><span>从 {selectedMessageIds.length} 条历史消息重新规划</span><label><span>Mission 标题</span><input value={planningTitle} onChange={(event) => setPlanningTitle(event.target.value)} placeholder="例如：完成项目级角色系统" /></label><button className="planning-action" disabled={!planner || !planningTitle.trim() || planningBusy} onClick={() => void createPlanningRequest()}>{planningBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Network size={15} />}用所选历史创建任务</button></div> : null}
+            {planningRequest ? <div className={`planning-progress planning-progress--${planningBlocked ? 'blocked' : planningRequest.status}`}><span>{planningBlocked ? <CircleAlert size={14} /> : ['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningBlocked ? '执行环境未就绪，规划尚未开始' : planningStatusLabels[planningRequest.status]}</strong><small>{planningBlocked ? `原因：${planningBlockReason}` : `第 ${planningRequest.attempt}/${planningRequest.maxAttempts} 次尝试`}</small>{planningRequest.status === 'queued' && !planningBlocked ? <p className="planning-worker-hint">{plannerStartAttempted === planningRequest.id ? '正在自动唤醒 Planner；心跳上线后会立即领取任务。' : '请求已安全保存，正在检查 Planner 运行状态。'}</p> : null}{planningBlocked ? <p className="planning-worker-hint">请求已保存；补齐配置后将自动继续，无需重新发送。</p> : null}{plannerStartError ? <em>{plannerStartError}</em> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningBlocked || plannerStartError ? <button onClick={onOpenRuntime}><Settings size={13} />配置后自动继续</button> : planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('start')}>{planningRequest.status === 'approved' ? '查看 Mission' : '查看并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
           </section>
-          <ol className="routing-steps"><li className="is-complete"><span>1</span><div><strong>持久化消息</strong><small>先写入 Conversation 账本</small></div></li><li className={mission ? 'is-complete' : ''}><span>2</span><div><strong>绑定执行上下文</strong><small>{mission ? mission.title : '需要先创建或恢复 Mission'}</small></div></li><li className={selectedAgents.length ? 'is-active' : ''}><span>3</span><div><strong>路由 @Agent</strong><small>运行中则 steer；空闲则下次加载</small></div></li></ol>
+          <ol className="routing-steps"><li className="is-complete"><span>1</span><div><strong>持久化消息</strong><small>发送即写入 Conversation 账本</small></div></li><li className={mission || planningRequest ? 'is-complete' : ''}><span>2</span><div><strong>自动创建 Mission</strong><small>{mission ? mission.title : planningRequest ? '已由这条消息创建' : '等待首条任务消息'}</small></div></li><li className={planningRequest || mission ? 'is-active' : ''}><span>3</span><div><strong>唤醒 Planner</strong><small>{planningBlocked ? '缺少执行环境配置' : '就绪后自动领取规划'}</small></div></li></ol>
           <div className="latest-delivery"><span className="micro-label">最近一次真实投递</span>{latestRoutedMessage ? <><strong>{latestRoutedMessage.body.slice(0, 80)}</strong>{latestRoutedMessage.deliveries.map((delivery) => <div key={delivery.agentId}><span className={`delivery-signal delivery-signal--${delivery.status}`} /><p><strong>{activeConversation?.members.find((member) => member.id === delivery.agentId)?.name ?? 'Agent'}</strong><small>{deliveryLabels[delivery.status]}</small></p><code>{delivery.runId ? '已关联运行' : '当前无 Run，不会立即回复'}</code></div>)}</> : <p className="routing-placeholder">发送第一条 @Agent 消息后，这里会显示实际投递状态。</p>}</div>
         </aside>
       </div>
@@ -1109,7 +1166,7 @@ function WorkspaceLauncher({
     try {
       await onCreate({
         name: name.trim(),
-        ...(repositoryPath.trim() ? { repositoryPath: repositoryPath.trim() } : {}),
+        repositoryPath: repositoryPath.trim(),
         defaultBranch: defaultBranch.trim(),
       })
     } catch (caught) {
@@ -1170,7 +1227,7 @@ function WorkspaceLauncher({
         </div>
         <aside className="workspace-launcher__note"><ShieldCheck size={16} /><span><strong>身份边界仍然存在</strong><small>界面不展示租户与资源 ID；API 仍通过 Session、工作区范围和 CSRF 校验每次操作。</small></span></aside>
       </section>
-      {createOpen ? <div className="workspace-create-backdrop" role="presentation" onMouseDown={() => { if (!creating) setCreateOpen(false) }}><form className="workspace-create-dialog" onSubmit={(event) => void create(event)} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="micro-label">Project Provisioning</span><h2>创建 Agent 工作区</h2><p>一次事务建立工作区、Owner、团队协作室和四个默认 Agent。</p></div><button type="button" aria-label="关闭" disabled={creating} onClick={() => setCreateOpen(false)}><X size={18} /></button></header><div className="workspace-create-fields"><label><span>工作区名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：支付系统重构" required maxLength={200} /></label><label><span>代码仓库绝对路径（可稍后配置）</span><input value={repositoryPath} onChange={(event) => setRepositoryPath(event.target.value)} placeholder="/home/sid/project" maxLength={4096} /></label><label><span>默认分支</span><input value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} placeholder="main" required maxLength={200} /></label></div><section className="workspace-create-team"><span><Bot size={16} />自动创建团队</span><div>{['规划 Planner', '研究 Researcher', '构建 Builder', '审查 Reviewer'].map((role) => <code key={role}>{role}</code>)}</div></section>{createError ? <div className="auth-error" role="alert"><CircleAlert size={16} /><span>{createError}</span></div> : null}<footer><p>仓库路径属于 API 所在机器，不会由浏览器访问。创建完成后将直接进入团队协作室。</p><button className="primary-action" disabled={creating || !name.trim() || !defaultBranch.trim()}>{creating ? <LoaderCircle className="is-spinning" size={16} /> : <Plus size={16} />}创建并进入</button></footer></form></div> : null}
+      {createOpen ? <div className="workspace-create-backdrop" role="presentation" onMouseDown={() => { if (!creating) setCreateOpen(false) }}><form className="workspace-create-dialog" onSubmit={(event) => void create(event)} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="micro-label">Project Provisioning</span><h2>创建 Agent 工作区</h2><p>一次事务建立工作区、Owner、团队协作室和四个默认 Agent。</p></div><button type="button" aria-label="关闭" disabled={creating} onClick={() => setCreateOpen(false)}><X size={18} /></button></header><div className="workspace-create-fields"><label><span>工作区名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：支付系统重构" required maxLength={200} /></label><label><span>代码仓库绝对路径（执行必填）</span><input value={repositoryPath} onChange={(event) => setRepositoryPath(event.target.value)} placeholder="/home/sid/project" required maxLength={4096} /></label><label><span>默认分支</span><input value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} placeholder="main" required maxLength={200} /></label></div><section className="workspace-create-team"><span><Bot size={16} />自动创建团队</span><div>{['规划 Planner', '研究 Researcher', '构建 Builder', '审查 Reviewer'].map((role) => <code key={role}>{role}</code>)}</div></section>{createError ? <div className="auth-error" role="alert"><CircleAlert size={16} /><span>{createError}</span></div> : null}<footer><p>必须填写 API 所在机器上已存在的 Git 仓库；RunGuild 会在同级 <code>.runguild-worktrees</code> 目录中自动建立隔离工作区。</p><button className="primary-action" disabled={creating || !name.trim() || !repositoryPath.trim() || !defaultBranch.trim()}>{creating ? <LoaderCircle className="is-spinning" size={16} /> : <Plus size={16} />}创建并进入</button></footer></form></div> : null}
       {lifecycle ? <div className="workspace-create-backdrop" role="presentation" onMouseDown={() => { if (!lifecycleBusy) setLifecycle(null) }}><form className="workspace-create-dialog workspace-lifecycle-dialog" onSubmit={(event) => void updateLifecycle(event)} onMouseDown={(event) => event.stopPropagation()}><header><div><span className="micro-label">Project Lifecycle</span><h2>{lifecycleTitle}</h2><p>{lifecycle.project.name}</p></div><button type="button" aria-label="关闭" disabled={lifecycleBusy} onClick={() => setLifecycle(null)}><X size={18} /></button></header>{lifecycle.action === 'rename' ? <div className="workspace-create-fields"><label><span>新的工作区名称</span><input autoFocus value={lifecycleName} onChange={(event) => setLifecycleName(event.target.value)} required maxLength={200} /></label></div> : <section className={`workspace-lifecycle-warning workspace-lifecycle-warning--${lifecycle.action}`}><span>{lifecycle.action === 'archive' ? <Archive size={20} /> : <ArchiveRestore size={20} />}</span><div><strong>{lifecycle.action === 'archive' ? '归档不会删除任何历史数据' : '恢复后可以重新执行写操作'}</strong><p>{lifecycle.action === 'archive' ? '只有在没有未结束 Mission、活动评测和项目 Worker 时才能归档。归档后工作区不可进入，全部记录仍保存在数据库中。' : '工作区将重新出现在可进入列表中；Worker 不会自动启动，需要你按需启动。'}</p></div></section>}{lifecycleError ? <div className="auth-error" role="alert"><CircleAlert size={16} /><span>{lifecycleError}</span></div> : null}<footer><p>该操作仅允许工作区 Owner 执行，并会写入生命周期审计记录。</p><button className={lifecycle.action === 'archive' ? 'danger-action' : 'primary-action'} disabled={lifecycleBusy || (lifecycle.action === 'rename' && !lifecycleName.trim())}>{lifecycleBusy ? <LoaderCircle className="is-spinning" size={16} /> : lifecycle.action === 'archive' ? <Archive size={16} /> : lifecycle.action === 'restore' ? <ArchiveRestore size={16} /> : <Pencil size={15} />}{lifecycle.action === 'rename' ? '保存名称' : lifecycle.action === 'archive' ? '确认归档' : '恢复工作区'}</button></footer></form></div> : null}
     </main>
   )
@@ -1371,7 +1428,7 @@ export function App() {
   useEffect(() => { if (connection !== 'online' || !authentication || !missionId || mission) return; void missionApi.getMission(identity, missionId).then((snapshot) => { window.localStorage.setItem('runguild:last-mission', missionId); window.localStorage.removeItem('mission-control:last-mission'); setMission(snapshot) }).catch(() => { window.localStorage.removeItem('runguild:last-mission'); window.localStorage.removeItem('mission-control:last-mission') }) }, [authentication, connection, identity, mission, missionId])
   useEffect(() => { const keydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setCommandOpen((open) => !open) } if (event.key === 'Escape') { setCommandOpen(false); setRuntimePanelOpen(false) } }; window.addEventListener('keydown', keydown); return () => window.removeEventListener('keydown', keydown) }, [])
 
-  const openRuntimePanel = () => {
+  const openRuntimePanel = useCallback(() => {
     setRuntimePanelOpen(true)
     setRuntimeError(null)
     if (!runtimeConfiguration) {
@@ -1380,7 +1437,7 @@ export function App() {
         .catch((caught: unknown) => setRuntimeError(caught instanceof Error ? caught.message : '运行配置读取失败'))
         .finally(() => setRuntimeBusy(null))
     }
-  }
+  }, [runtimeConfiguration, syncRuntimeConfiguration])
   const saveRuntimeConfiguration = (configuration: UpdateProjectRuntimeConfiguration) => {
     setRuntimeBusy('save-runtime')
     setRuntimeError(null)
@@ -1398,6 +1455,33 @@ export function App() {
       .catch((caught: unknown) => setRuntimeError(caught instanceof Error ? caught.message : 'Worker 操作失败'))
       .finally(() => setRuntimeBusy(null))
   }
+  const ensurePlannerWorker = useCallback(async (agentId: string) => {
+    const nextRuntime = await syncRuntimeConfiguration()
+    const capability = nextRuntime.control.workers.find((worker) =>
+      worker.kind === 'agent' && worker.agentId === agentId)
+    if (!nextRuntime.control.enabled) {
+      const nextOverview = await syncOverview()
+      if (nextOverview.agents.find((agent) => agent.id === agentId)?.worker?.state === 'online') return
+      throw new Error('规划 Agent Worker 未在线，请由部署环境启动该进程')
+    }
+    if (!capability) throw new Error('当前项目没有可启动的规划 Agent Worker')
+    if (!capability.ready) {
+      throw new Error('执行环境未配置：缺少' + capability.missing.join('、'))
+    }
+    const key = 'worker:agent:' + agentId
+    setRuntimeBusy(key)
+    setRuntimeError(null)
+    try {
+      await missionApi.controlLocalWorker(identity, 'start', { kind: 'agent', agentId })
+      await Promise.all([syncRuntimeConfiguration(), syncOverview()])
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : '规划 Agent Worker 启动失败'
+      setRuntimeError(message)
+      throw new Error(message)
+    } finally {
+      setRuntimeBusy(null)
+    }
+  }, [identity, syncOverview, syncRuntimeConfiguration])
 
   const startProps = {
     connection, setup, overview, mission, identity, busy, error, onCheck: checkConnection,
@@ -1413,14 +1497,14 @@ export function App() {
   const content = useMemo(() => {
     if (view === 'start') return <StartView {...startProps} />
     if (view === 'evaluation') return <EvaluationView identity={identity} />
-    if (view === 'team') return <TeamRoomView identity={identity} setup={setup} mission={mission} onNavigate={navigate} onMissionReady={acceptMissionFromPlanning} />
+    if (view === 'team') return <TeamRoomView identity={identity} setup={setup} mission={mission} runtime={runtimeConfiguration} overview={overview} onNavigate={navigate} onMissionReady={acceptMissionFromPlanning} onOpenRuntime={openRuntimePanel} onEnsurePlanner={ensurePlannerWorker} />
     if (view === 'members') return <MembersView identity={identity} currentUserId={authentication?.user.id ?? identity.userId} currentRole={authentication?.projects.find((project) => project.id === identity.projectId)?.role ?? 'viewer'} />
     if (view === 'artifacts') return <ArtifactView identity={identity} missionId={mission?.id} />
     if (view === 'trace') return <TraceView identity={identity} />
     return <MissionView mission={mission} busy={busy} error={error} onNavigate={navigate} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
   // State is intentionally listed explicitly so API progress is reflected immediately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, connection, setup, overview, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview])
+  }, [view, connection, setup, overview, runtimeConfiguration, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview, openRuntimePanel, ensurePlannerWorker])
 
   if (authentication === undefined || authenticationMode === undefined) return <AuthenticationChecking connection={connection} error={authenticationError} />
   if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />

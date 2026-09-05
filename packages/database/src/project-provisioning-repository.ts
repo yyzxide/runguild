@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import type { AgentRole, ProjectId, UserId, WorkspaceId } from '@runguild/protocol'
 import type { Pool } from 'pg'
@@ -86,6 +86,9 @@ export class ProjectProvisioningRepository {
     const name = validateName(input.name, 'project_name_invalid', '工作区名称')
     const defaultBranch = validateBranch(input.defaultBranch)
     const repositoryPath = validateRepositoryPath(input.repositoryPath)
+    const worktreeRoot = repositoryPath === null
+      ? null
+      : join(dirname(repositoryPath), '.runguild-worktrees', input.projectId)
     const modelProvider = validateName(input.modelProvider, 'model_provider_invalid', '模型提供商')
     const modelName = validateName(input.modelName, 'model_name_invalid', '模型名称')
 
@@ -126,8 +129,8 @@ export class ProjectProvisioningRepository {
         [input.workspaceId, input.actorId],
       )
       await client.query(
-        'INSERT INTO project_runtime_configs (project_id, workspace_id) VALUES ($1, $2)',
-        [input.projectId, input.workspaceId],
+        'INSERT INTO project_runtime_configs (project_id, workspace_id, worktree_root) VALUES ($1, $2, $3)',
+        [input.projectId, input.workspaceId, worktreeRoot],
       )
 
       const agents = []
