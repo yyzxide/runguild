@@ -152,11 +152,34 @@ test('durable evidence is deduplicated and gates Task completion and dependency 
   }
 })
 
-test('review-required Task enters reviewing while its producing Run may finish', async () => {
+test('review-required Task enters reviewing only after its producing Run submits an Artifact Version', async () => {
   const database = new PGlite()
   try {
     await setup(database)
     const verifier = new DatabaseCompletionVerifier(poolAdapter(database))
+    const missingSubmission = await verifier.verify({
+      run: runContext('task_review', 'run_review', 1),
+      summary: 'Ready for independent review.',
+      evidence: [],
+    })
+    assert.deepEqual(missingSubmission, {
+      accepted: false,
+      reason: 'Independent review requires an active Artifact Submission created by this Run.',
+    })
+    assert.equal((await database.query("SELECT status FROM tasks WHERE id = 'task_review'")).rows[0].status, 'running')
+
+    await database.exec(
+      "INSERT INTO artifacts (id, workspace_id, project_id, mission_id, title, created_by) " +
+      "VALUES ('artifact_review', 'ws_gate', 'project_gate', 'mission_gate', 'Review Artifact', 'agent_gate');" +
+      "INSERT INTO artifact_versions " +
+      "(id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash, " +
+      "created_by_run_id, created_by_kind, created_by_id) VALUES " +
+      "('version_review', 'artifact_review', 1, '{}'::jsonb, decode('', 'hex'), 'content_review', " +
+      "'state_review', 'run_review', 'agent', 'agent_gate');" +
+      "INSERT INTO task_submissions " +
+      "(id, workspace_id, mission_id, task_id, run_id, artifact_version_id, submitted_by_agent_id, evidence_bundle_hash) VALUES " +
+      "('submission_review', 'ws_gate', 'mission_gate', 'task_review', 'run_review', 'version_review', 'agent_gate', 'bundle_review');",
+    )
     const decision = await verifier.verify({
       run: runContext('task_review', 'run_review', 1),
       summary: 'Ready for independent review.',

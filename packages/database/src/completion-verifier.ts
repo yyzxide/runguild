@@ -63,6 +63,22 @@ export class DatabaseCompletionVerifier {
         return { accepted: false, reason: 'Required durable evidence is missing.' }
       }
 
+      if (row.review_required) {
+        const submission = await client.query<{ present: boolean }>(
+          'SELECT EXISTS (' +
+          '  SELECT 1 FROM task_submissions ' +
+          "  WHERE task_id = $1 AND run_id = $2 AND status IN ('submitted', 'in_review', 'approved')" +
+          ') AS present',
+          [input.run.taskId, input.run.runId],
+        )
+        if (!submission.rows[0]?.present) {
+          return {
+            accepted: false,
+            reason: 'Independent review requires an active Artifact Submission created by this Run.',
+          }
+        }
+      }
+
       if (row.status === 'running') {
         await client.query(
           "UPDATE tasks SET status = 'reviewing', updated_at = NOW() WHERE id = $1 AND status = 'running'",
