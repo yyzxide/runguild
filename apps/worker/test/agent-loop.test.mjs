@@ -355,7 +355,7 @@ test('execution prompt injects the exact frozen Skill Version below the runtime 
   assert.match(messages[2].content, /Assigned task: Implement/)
 })
 
-test('Reviewer inbox stays unacknowledged while the producing Task has not entered reviewing', async () => {
+test('Reviewer inbox advances after a not-ready Review is durably deferred for recovery', async () => {
   let acknowledgements = 0
   let reviewCalls = 0
   const processor = new AgentInboxProcessor({
@@ -398,7 +398,7 @@ test('Reviewer inbox stays unacknowledged while the producing Task has not enter
     contexts: { async load() { throw new Error('not expected') } },
     async createRuntime() { throw new Error('not expected') },
     reviewer: {
-      async process() { reviewCalls += 1; return 'deferred' },
+      async process() { reviewCalls += 1; return 'processed' },
     },
   }, {
     inboxLimit: 10,
@@ -406,7 +406,7 @@ test('Reviewer inbox stays unacknowledged while the producing Task has not enter
     leaseSeconds: 60,
   })
 
-  assert.deepEqual(await processor.tick(), { inboxProcessed: 0, runsExecuted: 0 })
+  assert.deepEqual(await processor.tick(), { inboxProcessed: 1, runsExecuted: 0 })
   assert.equal(reviewCalls, 1)
-  assert.equal(acknowledgements, 0)
+  assert.equal(acknowledgements, 1)
 })

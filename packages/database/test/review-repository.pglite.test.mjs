@@ -151,6 +151,43 @@ test('project-bound Reviewer assignment recovers a submitted Evaluation Mission 
   }
 })
 
+test('scheduler redelivers an acknowledged Review only after its Task becomes reviewable', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    await database.exec(
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) " +
+      "VALUES ('conversation_ready', 'ws_review', 'project_review', 'project_room', 'Project room');" +
+      "INSERT INTO conversation_members (workspace_id, conversation_id, participant_kind, participant_id) VALUES " +
+      "('ws_review', 'conversation_ready', 'agent', 'agent_reviewer');",
+    )
+    const repository = new ReviewRepository(poolAdapter(database))
+    const submission = await submit(repository)
+    assert.equal(submission.status, 'in_review')
+    const original = await database.query(
+      "SELECT r.id AS review_id, i.seq FROM reviews r JOIN inbox_messages i " +
+      "ON i.dedupe_key = 'artifact-review:' || r.id WHERE r.submission_id = 'submission_review'",
+    )
+    const reviewId = original.rows[0].review_id
+    await database.query(
+      'INSERT INTO inbox_cursors (agent_id, last_seq) VALUES ($1, $2)',
+      ['agent_reviewer', original.rows[0].seq],
+    )
+    await database.exec("UPDATE tasks SET status = 'waiting_human' WHERE id = 'task_review'")
+    assert.deepEqual(await repository.recoverPendingReviewAssignments(10), [])
+
+    await database.exec("UPDATE tasks SET status = 'reviewing' WHERE id = 'task_review'")
+    assert.deepEqual(await repository.recoverPendingReviewAssignments(10), [reviewId])
+    assert.equal((await database.query(
+      "SELECT COUNT(*)::int AS count FROM inbox_messages WHERE dedupe_key = 'artifact-review-ready:' || $1",
+      [reviewId],
+    )).rows[0].count, 1)
+    assert.deepEqual(await repository.recoverPendingReviewAssignments(10), [])
+  } finally {
+    await database.close()
+  }
+})
+
 test('human approval of exact-version evidence completes the review-gated Task', async () => {
   const database = new PGlite()
   try {
@@ -359,7 +396,10 @@ test('evidence-only retry freezes exact commit and clean tested-HEAD evidence fr
       artifactVersionId: 'version_review',
       note: 'Evidence-only retry for the unchanged exact commit.',
     })
-    assert.equal(submission.status, 'in_review')
+    assert.equal(submission.status, 'submitted')
+    assert.equal((await database.query(
+      "SELECT COUNT(*)::int AS count FROM reviews WHERE submission_id = 'submission_retry'",
+    )).rows[0].count, 0)
     const frozen = await database.query(
       'SELECT evidence_id FROM task_submission_evidence WHERE submission_id = $1 ORDER BY evidence_id',
       [submission.id],
@@ -371,6 +411,11 @@ test('evidence-only retry freezes exact commit and clean tested-HEAD evidence fr
     ])
 
     await database.exec("UPDATE tasks SET status = 'reviewing' WHERE id = 'task_review'")
+    const recovered = await repository.recoverPendingReviewAssignments(10)
+    assert.equal(recovered.length, 1)
+    assert.equal((await database.query(
+      "SELECT status FROM task_submissions WHERE id = 'submission_retry'",
+    )).rows[0].status, 'in_review')
     const queued = await database.query(
       "SELECT id FROM reviews WHERE submission_id = 'submission_retry'",
     )
@@ -527,7 +572,7 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
   }
 })
 
-test('Mission-room Reviewer receives durable work, defers until Task review, and resumes a stored model decision', async () => {
+test('Mission-room Reviewer receives durable work after Task review and resumes a stored model decision', async () => {
   const database = new PGlite()
   try {
     await setup(database)
@@ -545,7 +590,12 @@ test('Mission-room Reviewer receives durable work, defers until Task review, and
     )
 
     const submission = await submit(reviews)
-    assert.equal(submission.status, 'in_review')
+    assert.equal(submission.status, 'submitted')
+    assert.equal((await database.query(
+      "SELECT COUNT(*)::int AS count FROM reviews WHERE submission_id = 'submission_review'",
+    )).rows[0].count, 0)
+    await database.exec("UPDATE tasks SET status = 'reviewing' WHERE id = 'task_review'")
+    assert.equal((await reviews.recoverPendingReviewAssignments(10)).length, 1)
     const queued = await database.query(
       "SELECT review.id, review.status, execution.status AS execution_status, inbox.kind, " +
       "outbox.payload->>'type' AS wake_type " +
@@ -560,15 +610,6 @@ test('Mission-room Reviewer receives durable work, defers until Task review, and
     assert.equal(queued.rows[0].kind, 'artifact.review_requested')
     assert.equal(queued.rows[0].wake_type, 'agent.wake')
     const reviewId = queued.rows[0].id
-
-    const deferred = await executions.claim({
-      reviewId,
-      reviewerAgentId: 'agent_reviewer',
-      leaseSeconds: 60,
-    })
-    assert.deepEqual(deferred, { kind: 'not_ready', taskStatus: 'running' })
-
-    await database.exec("UPDATE tasks SET status = 'reviewing' WHERE id = 'task_review'")
     const first = await executions.claim({
       reviewId,
       reviewerAgentId: 'agent_reviewer',

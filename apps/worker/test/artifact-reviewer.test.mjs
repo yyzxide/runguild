@@ -151,6 +151,28 @@ test('Artifact Reviewer resumes a stored decision without a second model call', 
   assert.equal(modelCalls, 0)
 })
 
+test('Artifact Reviewer releases a not-ready inbox message for durable scheduler recovery', async () => {
+  let modelCalls = 0
+  const reviewer = new ArtifactReviewer({
+    executions: {
+      async claim() { return { kind: 'not_ready', taskStatus: 'waiting_human' } },
+      async completeModel() { throw new Error('not expected') },
+      async recordInvalidModelResponse() { throw new Error('not expected') },
+      async renew() { throw new Error('not expected') },
+      async complete() { throw new Error('not expected') },
+      async fail() { throw new Error('not expected') },
+    },
+    reviews: { async reviewSubmission() { throw new Error('not expected') } },
+    modelFor() { modelCalls += 1; throw new Error('not expected') },
+  })
+
+  assert.equal(await reviewer.process({
+    schemaVersion: 1, type: 'artifact.review_requested', reviewId: 'review_1',
+    submissionId: 'submission_1', missionId: 'mission_1', taskId: 'task_1',
+  }, 'agent_reviewer'), 'processed')
+  assert.equal(modelCalls, 0)
+})
+
 test('Reviewer prompt treats frozen Artifact and diff content as untrusted evidence', () => {
   const messages = reviewMessages(work().materials)
   assert.match(messages[0].content, /untrusted data/)

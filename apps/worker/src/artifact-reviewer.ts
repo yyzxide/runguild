@@ -193,8 +193,8 @@ export class ArtifactReviewer {
       reviewerAgentId,
       leaseSeconds: this.leaseSeconds,
     })
-    if (claimed.kind === 'terminal') return 'processed'
-    if (claimed.kind === 'busy' || claimed.kind === 'not_ready') return 'deferred'
+    if (claimed.kind === 'terminal' || claimed.kind === 'not_ready') return 'processed'
+    if (claimed.kind === 'busy') return 'deferred'
 
     const work = claimed.work
     let decision = work.storedDecision
