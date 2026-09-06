@@ -295,12 +295,13 @@ async function createRuntime(
                   },
                   {
                     remainingHops: 6,
-                    blockedActions: ['repo.search', 'file.read', 'file.patch'],
+                    blockedActions: ['repo.search', 'file.read'],
                     instruction:
-                      'This is the dedicated delivery reserve; implementation is frozen. Use the remaining calls in order for ' +
-                      'one exact allowlisted verification, repo.commit, artifact.edit with append_content, ' +
-                      'artifact.create_version, artifact.submit_for_review, and run.set_status. Skip artifact.read and optional checks. ' +
-                      'If verification fails, report failed with the exact blocker so a durable retry can resume the Worktree.',
+                      'This is the dedicated delivery reserve. Run one exact allowlisted verification now. If it passes, make no ' +
+                      'optional changes and use the remaining calls for repo.commit, artifact.edit with append_content, ' +
+                      'artifact.create_version, artifact.submit_for_review, and run.set_status. If verification fails and its output ' +
+                      'identifies an exact acceptance-critical fix, file.patch remains available for that bounded fix and one rerun. ' +
+                      'Otherwise report failed with the exact blocker; never submit a failure Artifact.',
                   },
                 ],
               }
