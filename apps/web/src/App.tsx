@@ -25,6 +25,7 @@ import {
   Pencil,
   Play,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   Settings,
@@ -683,16 +684,18 @@ function TaskInspector({ task }: { readonly task: MissionTask }) {
   )
 }
 
-function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDelivery }: {
+function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDelivery, onRequestDeliveryChanges }: {
   readonly mission: MissionSnapshot | null
   readonly busy: string | null
   readonly error: string | null
   readonly onNavigate: (view: View) => void
   readonly onRefresh: () => void
   readonly onApproveDelivery: () => void
+  readonly onRequestDeliveryChanges: (reason: string) => void
 }) {
   const tasks = useMemo(() => mission ? mapMissionTasks(mission) : [], [mission])
   const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? '')
+  const [deliveryFeedback, setDeliveryFeedback] = useState('')
   useEffect(() => { if (!tasks.some((task) => task.id === selectedTaskId)) setSelectedTaskId(tasks[0]?.id ?? '') }, [selectedTaskId, tasks])
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
   if (!mission) return <section className="product-empty-state"><span><Network size={26} /></span><div><span className="micro-label">尚无 Mission</span><h1>先从一次真实任务讨论开始</h1><p>进入协作室描述目标并选择关键消息。Planner 提交计划、你批准之后，任务 DAG 才会出现在这里。</p></div><button className="primary-action" onClick={() => onNavigate('team')}>进入协作室<ArrowRight size={15} /></button></section>
@@ -710,7 +713,10 @@ function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDel
           {mission.finalDelivery ? <p>Artifact Version <code>v{mission.finalDelivery.version}</code> · SHA-256 <code>{mission.finalDelivery.contentHash.slice(0, 16)}…</code></p> : <p>Mission 已进入审查态，但数据库中没有属于该 Mission 的 Artifact Version。请先排查产物冻结链路。</p>}
           {error && busy === null ? <em>{error}</em> : null}
         </div>
-        {mission.status === 'reviewing' && mission.finalDelivery ? <button className="primary-action" onClick={onApproveDelivery} disabled={Boolean(busy)}>{busy === 'approve-delivery' ? <LoaderCircle className="is-spinning" size={15} /> : <ShieldCheck size={15} />}批准此版本并完成 Mission</button> : null}
+        {mission.status === 'reviewing' && mission.finalDelivery ? <form className="final-delivery-actions" onSubmit={(event) => { event.preventDefault(); if (deliveryFeedback.trim()) onRequestDeliveryChanges(deliveryFeedback.trim()) }}>
+          <textarea value={deliveryFeedback} onChange={(event) => setDeliveryFeedback(event.target.value)} placeholder="发现问题时填写具体修改要求，系统会追加一个修复任务" maxLength={20_000} />
+          <div><button className="secondary-action" type="submit" disabled={Boolean(busy) || !deliveryFeedback.trim()}>{busy === 'request-delivery-changes' ? <LoaderCircle className="is-spinning" size={15} /> : <RotateCcw size={15} />}退回并创建修复任务</button><button className="primary-action" type="button" onClick={onApproveDelivery} disabled={Boolean(busy)}>{busy === 'approve-delivery' ? <LoaderCircle className="is-spinning" size={15} /> : <ShieldCheck size={15} />}批准此版本并完成 Mission</button></div>
+        </form> : null}
       </section> : null}
       <div className="mission-workspace"><section className="topology-panel"><div className="panel-heading panel-heading--topology"><div><span className="micro-label">已批准计划 · 版本 {mission.planVersion}</span><h2>任务依赖拓扑</h2></div><span className="topology-summary">点击节点查看任务详情</span></div><MissionGraph tasks={tasks} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} /></section><EvidenceSpine facts={liveFacts} selectedTask={selectedTask} /><TaskInspector task={selectedTask} /></div>
     </>
@@ -1501,7 +1507,7 @@ export function App() {
     if (view === 'members') return <MembersView identity={identity} currentUserId={authentication?.user.id ?? identity.userId} currentRole={authentication?.projects.find((project) => project.id === identity.projectId)?.role ?? 'viewer'} />
     if (view === 'artifacts') return <ArtifactView identity={identity} missionId={mission?.id} />
     if (view === 'trace') return <TraceView identity={identity} />
-    return <MissionView mission={mission} busy={busy} error={error} onNavigate={navigate} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
+    return <MissionView mission={mission} busy={busy} error={error} onNavigate={navigate} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} onRequestDeliveryChanges={(reason) => void run('request-delivery-changes', async () => { if (!mission?.finalDelivery) return; await missionApi.requestDeliveryChanges(identity, mission.id, mission.finalDelivery.artifactVersionId, reason); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
   // State is intentionally listed explicitly so API progress is reflected immediately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, connection, setup, overview, runtimeConfiguration, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview, openRuntimePanel, ensurePlannerWorker])

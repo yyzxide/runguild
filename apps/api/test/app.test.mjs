@@ -38,6 +38,10 @@ function fakeMissions() {
         calls.push(['approve-delivery', input])
         return { approved: true, artifactVersionId: input.expectedArtifactVersionId, reused: false }
       },
+      async requestDeliveryChanges(input) {
+        calls.push(['request-delivery-changes', input])
+        return { requested: true, taskId: 'task_delivery_fix', artifactVersionId: input.expectedArtifactVersionId }
+      },
       async getMission(workspaceId, missionId) {
         calls.push(['get', { workspaceId, missionId }])
         return {
@@ -860,6 +864,25 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal(deliveryApproved.status, 200)
     assert.equal((await deliveryApproved.json()).artifactVersionId, 'version_delivery')
 
+    const agentDeliveryChanges = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/mission_created/delivery/request-changes', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-actor-id': 'reviewer_api',
+        'x-actor-kind': 'agent',
+      },
+      body: JSON.stringify({ expectedArtifactVersionId: 'version_delivery', reason: 'Fix the smoke command.' }),
+    })
+    assert.equal(agentDeliveryChanges.status, 403)
+
+    const deliveryChanges = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/mission_created/delivery/request-changes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api' },
+      body: JSON.stringify({ expectedArtifactVersionId: 'version_delivery', reason: 'Fix the smoke command.' }),
+    })
+    assert.equal(deliveryChanges.status, 201)
+    assert.equal((await deliveryChanges.json()).taskId, 'task_delivery_fix')
+
     const mission = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/mission_created', {
       headers: { 'x-actor-id': 'user_api' },
     })
@@ -1199,7 +1222,9 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal((await submission.json()).submission.id, 'submission_api')
   })
 
-  assert.deepEqual(fake.calls.map(([kind]) => kind), ['create', 'plan', 'approve', 'approve-delivery', 'get'])
+  assert.deepEqual(fake.calls.map(([kind]) => kind), [
+    'create', 'plan', 'approve', 'approve-delivery', 'request-delivery-changes', 'get',
+  ])
   assert.equal(fake.calls[1][1].actor.kind, 'agent')
   assert.deepEqual(runtime.calls.map(([kind]) => kind), ['control', 'tool_approval'])
   assert.equal(reviewerExecutions.calls[0].reviewId, 'review_api')

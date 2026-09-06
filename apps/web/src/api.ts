@@ -861,6 +861,22 @@ export const missionApi = {
     )
   },
 
+  requestDeliveryChanges(
+    identity: TestIdentity,
+    missionId: string,
+    expectedArtifactVersionId: string,
+    reason: string,
+  ): Promise<{ readonly taskId: string }> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/missions/${encodeURIComponent(missionId)}/delivery/request-changes`,
+      {
+        method: 'POST',
+        headers: actorHeaders(identity.userId),
+        body: JSON.stringify({ expectedArtifactVersionId, reason }),
+      },
+    )
+  },
+
   getMission(identity: TestIdentity, missionId: string): Promise<MissionSnapshot> {
     return request(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/missions/${encodeURIComponent(missionId)}`,

@@ -84,7 +84,7 @@ import type { LocalRuntimeControl, LocalWorkerCommand } from './local-worker-sup
 
 type MissionService = Pick<
   MissionRepository,
-  'createMission' | 'proposePlan' | 'approvePlan' | 'approveDelivery' | 'getMission'
+  'createMission' | 'proposePlan' | 'approvePlan' | 'approveDelivery' | 'requestDeliveryChanges' | 'getMission'
 >
 
 type DevelopmentSetupService = Pick<DevelopmentSetupRepository, 'bootstrap'>
@@ -270,6 +270,11 @@ const approveSchema = z.object({
 
 const approveMissionDeliverySchema = z.object({
   expectedArtifactVersionId: idSchema,
+})
+
+const requestMissionDeliveryChangesSchema = z.object({
+  expectedArtifactVersionId: idSchema,
+  reason: z.string().trim().min(1).max(20_000),
 })
 
 const controlSchema = z.discriminatedUnion('kind', [
@@ -1268,6 +1273,34 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       return
     }
     res.json(result)
+  }))
+
+  app.post('/api/v1/workspaces/:workspaceId/missions/:missionId/delivery/request-changes', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_approval_required' } })
+      return
+    }
+    const body = requestMissionDeliveryChangesSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const result = await dependencies.missions.requestDeliveryChanges({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      missionId: idSchema.parse(req.params.missionId) as MissionId,
+      expectedArtifactVersionId: body.data.expectedArtifactVersionId as ArtifactVersionId,
+      requestedBy: actorRef.id,
+      reason: body.data.reason,
+      correlationId: correlationId(req),
+    })
+    if (!result.requested) {
+      const status = result.reason === 'requester_not_member' ? 403 : 409
+      res.status(status).json({ error: { code: 'mission_delivery_change_rejected', reason: result.reason } })
+      return
+    }
+    res.status(201).json(result)
   }))
 
   app.get('/api/v1/workspaces/:workspaceId/missions/:missionId', route(async (req, res) => {

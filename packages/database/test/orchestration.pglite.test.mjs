@@ -334,3 +334,61 @@ test('final human approval binds the exact Artifact Version before completing a 
     await database.close()
   }
 })
+
+test('final delivery rejection appends an auditable repair Task and resumes the Mission', async () => {
+  const database = new PGlite()
+  try {
+    await applyMigrations(database)
+    await database.exec(
+      "INSERT INTO workspaces (id, name) VALUES ('ws_changes', 'Changes');" +
+      "INSERT INTO projects (id, workspace_id, name) VALUES ('project_changes', 'ws_changes', 'Project');" +
+      "INSERT INTO users (id, workspace_id, display_name) VALUES ('user_changes', 'ws_changes', 'Operator');" +
+      "INSERT INTO missions (id, workspace_id, project_id, title, goal, status, created_by) " +
+      "VALUES ('mission_changes', 'ws_changes', 'project_changes', 'Fix delivery', 'Ship verified output', " +
+      "'reviewing', 'user_changes');" +
+      "INSERT INTO tasks (id, mission_id, title, status, position, review_required) " +
+      "VALUES ('task_original', 'mission_changes', 'Original work', 'completed', 0, FALSE);" +
+      "INSERT INTO artifacts (id, workspace_id, project_id, mission_id, title, kind, created_by) " +
+      "VALUES ('artifact_changes', 'ws_changes', 'project_changes', 'mission_changes', 'Delivery', " +
+      "'mission_deliverable', 'user_changes');" +
+      "INSERT INTO artifact_versions " +
+      "(id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash, created_by_kind, created_by_id) " +
+      "VALUES ('version_changes', 'artifact_changes', 1, '{}'::jsonb, decode('00', 'hex'), " +
+      "'content-changes', 'state-changes', 'user', 'user_changes');",
+    )
+    const missions = new MissionRepository(poolAdapter(database))
+    assert.deepEqual(await missions.requestDeliveryChanges({
+      workspaceId: 'ws_changes', missionId: 'mission_changes',
+      expectedArtifactVersionId: 'version_stale', requestedBy: 'user_changes',
+      reason: 'Add the missing README and make npm start executable.',
+      correlationId: 'changes_stale',
+    }), { requested: false, reason: 'version_conflict' })
+
+    const requested = await missions.requestDeliveryChanges({
+      workspaceId: 'ws_changes', missionId: 'mission_changes',
+      expectedArtifactVersionId: 'version_changes', requestedBy: 'user_changes',
+      reason: 'Add the missing README and make npm start executable.',
+      correlationId: 'changes_request',
+    })
+    assert.equal(requested.requested, true)
+    const stored = await database.query(
+      "SELECT m.status AS mission_status, t.status AS task_status, t.required_role, t.review_required, " +
+      "(SELECT COUNT(*)::int FROM task_dependencies d WHERE d.task_id = t.id) AS dependency_count, " +
+      "(SELECT COUNT(*)::int FROM task_acceptance_criteria c WHERE c.task_id = t.id) AS criterion_count, " +
+      "(SELECT status FROM approvals a WHERE a.mission_id = m.id AND a.kind = 'mission_delivery') AS approval_status " +
+      "FROM missions m JOIN tasks t ON t.mission_id = m.id AND t.id = $1 WHERE m.id = 'mission_changes'",
+      [requested.taskId],
+    )
+    assert.deepEqual(stored.rows[0], {
+      mission_status: 'running',
+      task_status: 'ready',
+      required_role: 'builder',
+      review_required: true,
+      dependency_count: 1,
+      criterion_count: 2,
+      approval_status: 'rejected',
+    })
+  } finally {
+    await database.close()
+  }
+})

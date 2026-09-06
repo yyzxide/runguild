@@ -109,6 +109,31 @@ export type ApproveMissionDeliveryResult =
         | 'approver_not_member'
     }
 
+export interface RequestMissionDeliveryChangesInput {
+  readonly workspaceId: WorkspaceId
+  readonly missionId: MissionId
+  readonly expectedArtifactVersionId: ArtifactVersionId
+  readonly requestedBy: UserId
+  readonly reason: string
+  readonly correlationId: CorrelationId
+}
+
+export type RequestMissionDeliveryChangesResult =
+  | {
+      readonly requested: true
+      readonly taskId: TaskId
+      readonly artifactVersionId: ArtifactVersionId
+    }
+  | {
+      readonly requested: false
+      readonly reason:
+        | 'mission_not_reviewable'
+        | 'incomplete_tasks'
+        | 'delivery_not_found'
+        | 'version_conflict'
+        | 'requester_not_member'
+    }
+
 export interface MissionDeliverySnapshot {
   readonly artifactVersionId: ArtifactVersionId
   readonly artifactId: ArtifactId
@@ -581,6 +606,126 @@ export class MissionRepository {
         approved: true,
         artifactVersionId: candidate.artifactVersionId,
         reused: false,
+      }
+    })
+  }
+
+  async requestDeliveryChanges(
+    input: RequestMissionDeliveryChangesInput,
+  ): Promise<RequestMissionDeliveryChangesResult> {
+    const reason = input.reason.trim()
+    if (!reason || reason.length > 20_000) {
+      throw new Error('Delivery change request reason must be between 1 and 20000 characters')
+    }
+    return withTransaction(this.pool, async (client) => {
+      const mission = await client.query<{
+        readonly project_id: string
+        readonly status: MissionStatus
+      }>(
+        'SELECT project_id, status FROM missions WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
+        [input.missionId, input.workspaceId],
+      )
+      const row = mission.rows[0]
+      if (!row || row.status !== 'reviewing') {
+        return { requested: false, reason: 'mission_not_reviewable' }
+      }
+      const member = await client.query(
+        'SELECT 1 FROM users WHERE id = $1 AND workspace_id = $2',
+        [input.requestedBy, input.workspaceId],
+      )
+      if (!member.rows[0]) return { requested: false, reason: 'requester_not_member' }
+      const incomplete = await client.query<{ readonly incomplete: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE mission_id = $1 AND status <> 'completed') AS incomplete",
+        [input.missionId],
+      )
+      if (incomplete.rows[0]?.incomplete) return { requested: false, reason: 'incomplete_tasks' }
+
+      const candidate = await this.readDeliveryCandidate(client, input.missionId)
+      if (!candidate) return { requested: false, reason: 'delivery_not_found' }
+      if (candidate.artifactVersionId !== input.expectedArtifactVersionId) {
+        return { requested: false, reason: 'version_conflict' }
+      }
+
+      const taskId = ('task_' + randomUUID()) as TaskId
+      await client.query(
+        'INSERT INTO tasks ' +
+        '(id, mission_id, title, description, status, required_role, priority, position, max_attempts, review_required) ' +
+        "SELECT $1, $2, 'Address final delivery feedback', $3, 'ready', 'builder', 0, " +
+        'COALESCE(MAX(position), -1) + 1, 3, TRUE FROM tasks WHERE mission_id = $2',
+        [
+          taskId,
+          input.missionId,
+          'Human rejected Artifact Version ' + candidate.artifactVersionId + '.\n\nRequired corrections:\n' + reason,
+        ],
+      )
+      await client.query(
+        'INSERT INTO task_dependencies (mission_id, task_id, depends_on_task_id) ' +
+        'SELECT $1, $2, id FROM tasks WHERE mission_id = $1 AND id <> $2',
+        [input.missionId, taskId],
+      )
+      await client.query(
+        'INSERT INTO task_acceptance_criteria ' +
+        '(id, task_id, criterion_key, description, required, required_evidence_kinds) VALUES ' +
+        "($1, $2, 'delivery-feedback-addressed', $3, TRUE, ARRAY['file_diff']), " +
+        "($4, $2, 'delivery-verification', 'Configured tests and runnable smoke command pass after the correction.', " +
+        "TRUE, ARRAY['test_run', 'command_result'])",
+        [
+          'criterion_' + randomUUID(),
+          taskId,
+          reason,
+          'criterion_' + randomUUID(),
+        ],
+      )
+      await client.query(
+        'INSERT INTO approvals ' +
+        '(id, workspace_id, mission_id, artifact_version_id, subject_type, subject_id, kind, status, ' +
+        'requested_by, resolved_by, reason, resolved_at) ' +
+        "VALUES ($1, $2, $3, $4, 'artifact_version', $4, 'mission_delivery', 'rejected', " +
+        '$5, $5, $6, NOW())',
+        [
+          'approval_' + randomUUID(),
+          input.workspaceId,
+          input.missionId,
+          candidate.artifactVersionId,
+          input.requestedBy,
+          reason,
+        ],
+      )
+      await client.query(
+        "UPDATE missions SET status = 'running', updated_at = NOW() WHERE id = $1 AND status = 'reviewing'",
+        [input.missionId],
+      )
+      await appendDomainEvent(client, {
+        type: 'task.status_changed',
+        workspaceId: input.workspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: input.missionId,
+        actor: { kind: 'user', id: input.requestedBy },
+        correlationId: input.correlationId,
+        payload: {
+          taskId,
+          from: 'blocked',
+          to: 'ready',
+          reason: 'human requested final delivery corrections: ' + reason,
+        },
+      })
+      await appendDomainEvent(client, {
+        type: 'mission.status_changed',
+        workspaceId: input.workspaceId,
+        projectId: row.project_id as ProjectId,
+        missionId: input.missionId,
+        actor: { kind: 'user', id: input.requestedBy },
+        correlationId: input.correlationId,
+        payload: {
+          from: 'reviewing',
+          to: 'running',
+          reason: 'human rejected final Artifact Version ' + candidate.artifactVersionId,
+        },
+      })
+      return {
+        requested: true,
+        taskId,
+        artifactVersionId: candidate.artifactVersionId,
       }
     })
   }
