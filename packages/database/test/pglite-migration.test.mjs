@@ -30,6 +30,7 @@ const migrationUrls = [
   new URL('../migrations/0023_project_lifecycle.sql', import.meta.url),
   new URL('../migrations/0024_model_protocol_events.sql', import.meta.url),
   new URL('../migrations/0025_agent_run_hop_budget.sql', import.meta.url),
+  new URL('../migrations/0026_flash_agent_hop_budget.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {
@@ -107,7 +108,7 @@ test('core migration executes on an in-process PostgreSQL engine', async () => {
       "SELECT column_default FROM information_schema.columns " +
       "WHERE table_schema = 'public' AND table_name = 'agent_runs' AND column_name = 'max_hops'",
     )
-    assert.match(runBudget.rows[0].column_default, /40/)
+    assert.match(runBudget.rows[0].column_default, /60/)
   } finally {
     await database.close()
   }

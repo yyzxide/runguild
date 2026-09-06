@@ -29,6 +29,7 @@ const MIGRATIONS = [
   '0023_project_lifecycle.sql',
   '0024_model_protocol_events.sql',
   '0025_agent_run_hop_budget.sql',
+  '0026_flash_agent_hop_budget.sql',
 ] as const
 
 function checksum(contents: string): string {

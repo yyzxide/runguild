@@ -1,0 +1,2 @@
+ALTER TABLE agent_runs
+  ALTER COLUMN max_hops SET DEFAULT 60;
