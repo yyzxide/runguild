@@ -28,6 +28,7 @@ const migrationUrls = [
   new URL('../migrations/0021_authentication.sql', import.meta.url),
   new URL('../migrations/0022_project_memberships.sql', import.meta.url),
   new URL('../migrations/0023_project_lifecycle.sql', import.meta.url),
+  new URL('../migrations/0024_model_protocol_events.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {

@@ -18,6 +18,7 @@ const migrationUrls = [
   new URL('../../database/migrations/0007_worktrees.sql', import.meta.url),
   new URL('../../database/migrations/0008_context.sql', import.meta.url),
   new URL('../../database/migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../../database/migrations/0024_model_protocol_events.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -152,6 +153,16 @@ test('real persistence runs model, idempotent tool, ledger, and completion gate 
       'tool_completed',
       'run_finished',
     ])
+    await persistence.recordEvent('run_e2e', 1, 'model_protocol_rejected', {
+      code: 'unknown_tool', repairCount: 1,
+    })
+    const protocolEvent = await database.query(
+      "SELECT kind, data FROM agent_run_events WHERE run_id = 'run_e2e' ORDER BY seq DESC LIMIT 1",
+    )
+    assert.deepEqual(protocolEvent.rows[0], {
+      kind: 'model_protocol_rejected',
+      data: { code: 'unknown_tool', repairCount: 1 },
+    })
   } finally {
     await database.close()
   }

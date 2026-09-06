@@ -16,6 +16,7 @@ const projectScopedAgentMigrationUrl = new URL('../migrations/0020_project_scope
 const authenticationMigrationUrl = new URL('../migrations/0021_authentication.sql', import.meta.url)
 const projectMembershipMigrationUrl = new URL('../migrations/0022_project_memberships.sql', import.meta.url)
 const projectLifecycleMigrationUrl = new URL('../migrations/0023_project_lifecycle.sql', import.meta.url)
+const modelProtocolEventsMigrationUrl = new URL('../migrations/0024_model_protocol_events.sql', import.meta.url)
 const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
@@ -219,6 +220,15 @@ test('Project lifecycle schema preserves reversible archive state and an audit l
   assert.match(sql, /CREATE TABLE IF NOT EXISTS project_lifecycle_events/)
   assert.match(sql, /renamed.*archived.*restored/s)
   assert.match(runner, /0023_project_lifecycle\.sql/)
+})
+
+test('Model protocol repair failures have a durable runtime event kind', async () => {
+  const sql = await readFile(modelProtocolEventsMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(sql, /model_protocol_rejected/)
+  assert.match(sql, /agent_run_events_kind_check/)
+  assert.match(runner, /0024_model_protocol_events\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {
