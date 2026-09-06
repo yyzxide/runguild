@@ -199,6 +199,12 @@ export class TaskRepository {
         "WHERE id = $1 AND status = 'failed'",
         [input.taskId, maxAttempts],
       )
+      await client.query(
+        "UPDATE task_worktrees SET status = 'ready', integrated_commit = NULL, integrated_at = NULL, " +
+        "last_error = NULL, updated_at = NOW() WHERE task_id = $1 AND status = 'integrated' " +
+        'AND head_commit = base_commit AND integrated_commit = head_commit',
+        [input.taskId],
+      )
       await appendDomainEvent(client, {
         type: 'task.status_changed',
         workspaceId: input.workspaceId,

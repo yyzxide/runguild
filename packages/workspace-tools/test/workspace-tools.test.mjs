@@ -189,6 +189,19 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
     assert.equal(setup.evidence[2].draft.metadata.normalizedHunkStarts, true)
     assert.equal(setup.evidence[2].draft.metadata.appendedTrailingNewline, true)
 
+    const headerless = [
+      '@@ -1,2 +1,2 @@',
+      '-gamma',
+      '+delta',
+      ' second line',
+      '',
+    ].join('\n')
+    await patch.execute(
+      { path: 'sample.txt', unifiedDiff: headerless },
+      { request: request('file.patch', { path: 'sample.txt', unifiedDiff: headerless }, 'call_headerless') },
+    )
+    assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'delta\nsecond line\n')
+
     const ambiguous = [
       'diff --git a/sample.txt b/sample.txt',
       '--- a/sample.txt',
@@ -239,6 +252,20 @@ test('workspace patch safely creates nested files beneath missing directories', 
     assert.equal(
       await readFile(join(setup.root, 'src/core/types.ts'), 'utf8'),
       'export const direction = "north"\n',
+    )
+
+    const headerless = '@@ -0,0 +1,1 @@\n+export const speed = 1\n'
+    await patch.execute(
+      { path: 'src/config/speed.ts', unifiedDiff: headerless },
+      { request: request('file.patch', { path: 'src/config/speed.ts', unifiedDiff: headerless }, 'call_nested_headerless') },
+    )
+    assert.equal(await readFile(join(setup.root, 'src/config/speed.ts'), 'utf8'), 'export const speed = 1\n')
+    await assert.rejects(
+      patch.execute(
+        { path: 'safe.ts\n+++ b/escape.ts', unifiedDiff: headerless },
+        { request: request('file.patch', {}, 'call_header_injection') },
+      ),
+      /control characters/,
     )
 
     await symlink('/tmp', join(setup.root, 'linked'))

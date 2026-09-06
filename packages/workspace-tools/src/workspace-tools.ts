@@ -249,6 +249,28 @@ function patchPaths(diff: string): readonly string[] {
   return [...paths]
 }
 
+async function addHeaderlessPatchPaths(
+  path: string,
+  diff: string,
+  boundary: WorkspaceBoundary,
+): Promise<string> {
+  if (!diff.trimStart().startsWith('@@ ')) return diff
+  if (/[\r\n\t]/.test(path)) throw new Error('Patch intent path contains header control characters')
+  await boundary.patchTarget(path)
+  let exists = true
+  try {
+    await lstat(resolve(boundary.root, path))
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+    if (code !== 'ENOENT') throw error
+    exists = false
+  }
+  const header = exists
+    ? 'diff --git a/' + path + ' b/' + path + '\n--- a/' + path + '\n+++ b/' + path + '\n'
+    : 'diff --git a/' + path + ' b/' + path + '\nnew file mode 100644\n--- /dev/null\n+++ b/' + path + '\n'
+  return header + diff
+}
+
 function normalizeUnifiedDiffHunkCounts(diff: string): {
   readonly diff: string
   readonly changed: boolean
@@ -623,7 +645,11 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!input.unifiedDiff || Buffer.byteLength(input.unifiedDiff) > MAX_PATCH_BYTES) {
         throw new Error('Patch must be non-empty and no larger than 1 MiB')
       }
-      const counted = normalizeUnifiedDiffHunkCounts(input.unifiedDiff)
+      const expandedDiff = await addHeaderlessPatchPaths(input.path, input.unifiedDiff, boundary)
+      if (Buffer.byteLength(expandedDiff) > MAX_PATCH_BYTES) {
+        throw new Error('Expanded patch is larger than 1 MiB')
+      }
+      const counted = normalizeUnifiedDiffHunkCounts(expandedDiff)
       const paths = patchPaths(counted.diff)
       if (!paths.includes(input.path)) {
         throw new Error('Patch intent path is not present in the unified diff')
@@ -1014,7 +1040,7 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
   },
   {
     action: 'file.patch' as const,
-    description: 'Apply a unified diff inside the assigned Git workspace. Reusing the same patch is detected safely.',
+    description: 'Apply a unified diff inside the assigned Git workspace. A hunk-only diff beginning with @@ is accepted using path as its target; a full diff must include diff --git, ---, and +++ headers. Never wrap the diff in Markdown fences. Reusing the same patch is detected safely.',
     inputSchema: {
       type: 'object',
       required: ['path', 'unifiedDiff'],

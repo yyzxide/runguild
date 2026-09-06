@@ -139,6 +139,8 @@ test('human retry preserves attempts, adds one bounded attempt, and records an e
   assert.deepEqual(result, { retried: true, maxAttempts: 4 })
   assert.equal(statements.some((sql) =>
     sql.startsWith("UPDATE tasks SET status = 'ready', max_attempts = $2")), true)
+  assert.equal(statements.some((sql) =>
+    sql.startsWith("UPDATE task_worktrees SET status = 'ready'")), true)
   assert.equal(statements.filter((sql) => sql.startsWith('INSERT INTO domain_events')).length, 1)
   assert.equal(statements.filter((sql) => sql.startsWith('INSERT INTO outbox_events')).length, 1)
 })
