@@ -138,6 +138,12 @@ test('human retry preserves attempts, adds one bounded attempt, and records an e
 
   assert.deepEqual(result, { retried: true, maxAttempts: 4 })
   assert.equal(statements.some((sql) =>
+    sql.startsWith("UPDATE review_executions SET status = 'cancelled'")), true)
+  assert.equal(statements.some((sql) =>
+    sql.startsWith("UPDATE reviews SET status = 'cancelled'")), true)
+  assert.equal(statements.some((sql) =>
+    sql.startsWith("UPDATE task_submissions SET status = 'superseded'")), true)
+  assert.equal(statements.some((sql) =>
     sql.startsWith("UPDATE tasks SET status = 'ready', max_attempts = $2")), true)
   assert.equal(statements.some((sql) =>
     sql.startsWith("UPDATE task_worktrees SET status = 'ready'")), true)

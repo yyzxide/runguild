@@ -195,6 +195,25 @@ export class TaskRepository {
 
       const maxAttempts = row.max_attempts + 1
       await client.query(
+        "UPDATE review_executions SET status = 'cancelled', lease_token = NULL, lease_expires_at = NULL, " +
+        'finished_at = COALESCE(finished_at, NOW()), updated_at = NOW() WHERE submission_id IN (' +
+        "SELECT id FROM task_submissions WHERE task_id = $1 AND status IN ('submitted', 'in_review', 'approved')" +
+        ") AND status IN ('queued', 'running', 'model_complete', 'failed')",
+        [input.taskId],
+      )
+      await client.query(
+        "UPDATE reviews SET status = 'cancelled', completed_at = COALESCE(completed_at, NOW()) " +
+        'WHERE submission_id IN (' +
+        "SELECT id FROM task_submissions WHERE task_id = $1 AND status IN ('submitted', 'in_review', 'approved')" +
+        ") AND status IN ('requested', 'in_progress')",
+        [input.taskId],
+      )
+      await client.query(
+        "UPDATE task_submissions SET status = 'superseded', updated_at = NOW() " +
+        "WHERE task_id = $1 AND status IN ('submitted', 'in_review', 'approved')",
+        [input.taskId],
+      )
+      await client.query(
         "UPDATE tasks SET status = 'ready', max_attempts = $2, updated_at = NOW() " +
         "WHERE id = $1 AND status = 'failed'",
         [input.taskId, maxAttempts],
