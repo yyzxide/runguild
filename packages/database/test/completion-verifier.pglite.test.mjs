@@ -90,6 +90,32 @@ test('durable evidence is deduplicated and gates Task completion and dependency 
       reason: 'Required durable evidence is missing.',
     })
 
+    const failed = await evidence.recordToolEvidence({
+      workspaceId: 'ws_gate',
+      missionId: 'mission_gate',
+      taskId: 'task_gate',
+      runId: 'run_gate',
+      agentId: 'agent_gate',
+      toolCallId: 'call_tests_failed',
+      kind: 'test_run',
+      uri: 'test-run://call_tests_failed#failed',
+      contentHash: 'failed',
+      metadata: { command: ['npm', 'test'], passed: false, exitCode: 1 },
+    })
+    assert.equal(failed.length, 1)
+    assert.equal((await database.query(
+      "SELECT acceptance_criterion_id FROM evidence WHERE id = $1",
+      [failed[0].id],
+    )).rows[0].acceptance_criterion_id, null)
+    await database.query(
+      "UPDATE evidence SET acceptance_criterion_id = 'criterion_tests' WHERE id = $1",
+      [failed[0].id],
+    )
+    assert.deepEqual(await verifier.verify({ run, summary: 'Failed test is not proof.', evidence: failed }), {
+      accepted: false,
+      reason: 'Required durable evidence is missing.',
+    })
+
     const input = {
       workspaceId: 'ws_gate',
       missionId: 'mission_gate',
@@ -120,7 +146,7 @@ test('durable evidence is deduplicated and gates Task completion and dependency 
     const durable = await database.query(
       "SELECT COUNT(*)::int AS evidence_count FROM evidence WHERE run_id = 'run_gate'",
     )
-    assert.equal(durable.rows[0].evidence_count, 1)
+    assert.equal(durable.rows[0].evidence_count, 2)
   } finally {
     await database.close()
   }

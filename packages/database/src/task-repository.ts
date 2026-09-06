@@ -631,6 +631,7 @@ export class TaskRepository {
         '  AND (' +
         '    (cardinality(c.required_evidence_kinds) = 0 AND NOT EXISTS (' +
         '      SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
+        "      AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
         '      AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
         '    )) ' +
         '    OR EXISTS (' +
@@ -638,6 +639,7 @@ export class TaskRepository {
         '      WHERE NOT EXISTS (' +
         '        SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
         '        AND e.kind = required_kind ' +
+        "        AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
         '        AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
         '      )' +
         '    )' +

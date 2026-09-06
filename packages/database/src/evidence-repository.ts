@@ -59,13 +59,17 @@ export class EvidenceRepository {
       throw new Error('Evidence uri and contentHash are required')
     }
     return withTransaction(this.pool, async (client) => {
-      const criteria = await client.query<{ id: string }>(
-        'SELECT id FROM task_acceptance_criteria ' +
-        'WHERE task_id = $1 AND required AND (' +
-        'cardinality(required_evidence_kinds) = 0 OR $2 = ANY(required_evidence_kinds)' +
-        ') ORDER BY criterion_key',
-        [input.taskId, input.kind],
-      )
+      const successfulExecutionEvidence = !['test_run', 'command_result'].includes(input.kind)
+        || input.metadata['passed'] === true
+      const criteria = successfulExecutionEvidence
+        ? await client.query<{ id: string }>(
+            'SELECT id FROM task_acceptance_criteria ' +
+            'WHERE task_id = $1 AND required AND (' +
+            'cardinality(required_evidence_kinds) = 0 OR $2 = ANY(required_evidence_kinds)' +
+            ') ORDER BY criterion_key',
+            [input.taskId, input.kind],
+          )
+        : { rows: [] }
       const criterionIds: Array<string | null> = criteria.rows.length === 0
         ? [null]
         : criteria.rows.map((row) => row.id)
