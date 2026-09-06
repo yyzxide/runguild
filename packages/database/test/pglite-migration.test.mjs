@@ -29,6 +29,7 @@ const migrationUrls = [
   new URL('../migrations/0022_project_memberships.sql', import.meta.url),
   new URL('../migrations/0023_project_lifecycle.sql', import.meta.url),
   new URL('../migrations/0024_model_protocol_events.sql', import.meta.url),
+  new URL('../migrations/0025_agent_run_hop_budget.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {
@@ -102,6 +103,11 @@ test('core migration executes on an in-process PostgreSQL engine', async () => {
       "AND indexname = 'uq_artifact_version_exact_state'",
     )
     assert.equal(artifactIndex.rows.length, 1)
+    const runBudget = await database.query(
+      "SELECT column_default FROM information_schema.columns " +
+      "WHERE table_schema = 'public' AND table_name = 'agent_runs' AND column_name = 'max_hops'",
+    )
+    assert.match(runBudget.rows[0].column_default, /40/)
   } finally {
     await database.close()
   }
