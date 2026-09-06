@@ -249,6 +249,17 @@ function patchPaths(diff: string): readonly string[] {
   return [...paths]
 }
 
+function stripModelPatchEnvelope(diff: string): string {
+  const lines = diff.split('\n')
+  return lines.filter((line) => {
+    const trimmed = line.trim()
+    return !/^```(?:diff|patch)?$/i.test(trimmed)
+      && trimmed !== '*** Begin Patch'
+      && trimmed !== '*** End Patch'
+      && !line.startsWith('*** Update File: ')
+  }).join('\n')
+}
+
 async function addHeaderlessPatchPaths(
   path: string,
   diff: string,
@@ -645,7 +656,8 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!input.unifiedDiff || Buffer.byteLength(input.unifiedDiff) > MAX_PATCH_BYTES) {
         throw new Error('Patch must be non-empty and no larger than 1 MiB')
       }
-      const expandedDiff = await addHeaderlessPatchPaths(input.path, input.unifiedDiff, boundary)
+      const modelDiff = stripModelPatchEnvelope(input.unifiedDiff)
+      const expandedDiff = await addHeaderlessPatchPaths(input.path, modelDiff, boundary)
       if (Buffer.byteLength(expandedDiff) > MAX_PATCH_BYTES) {
         throw new Error('Expanded patch is larger than 1 MiB')
       }
@@ -657,7 +669,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       for (const path of paths) await boundary.patchTarget(path)
       const normalized = await normalizeUnifiedDiffHunkStarts(counted.diff, boundary)
       const check = await runCommand({
-        command: ['git', 'apply', '--check', '--whitespace=nowarn', '-'],
+        command: ['git', 'apply', '--check', '--unidiff-zero', '--whitespace=nowarn', '-'],
         cwd: boundary.root,
         timeoutMs: 30_000,
         stdin: normalized.diff,
@@ -666,7 +678,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       let alreadyApplied = false
       if (check.exitCode !== 0) {
         const reverse = await runCommand({
-          command: ['git', 'apply', '--reverse', '--check', '--whitespace=nowarn', '-'],
+          command: ['git', 'apply', '--reverse', '--check', '--unidiff-zero', '--whitespace=nowarn', '-'],
           cwd: boundary.root,
           timeoutMs: 30_000,
           stdin: normalized.diff,
@@ -677,7 +689,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       }
       if (!alreadyApplied) {
         const applied = await runCommand({
-          command: ['git', 'apply', '--whitespace=nowarn', '-'],
+          command: ['git', 'apply', '--unidiff-zero', '--whitespace=nowarn', '-'],
           cwd: boundary.root,
           timeoutMs: 30_000,
           stdin: normalized.diff,

@@ -202,6 +202,21 @@ test('workspace patch is replay-safe and produces file diff evidence', async () 
     )
     assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'delta\nsecond line\n')
 
+    const zeroContextEnvelope = [
+      '*** Begin Patch',
+      '*** Update File: sample.txt',
+      '@@ -1,1 +1,1 @@',
+      '-delta',
+      '+epsilon',
+      '*** End Patch',
+      '',
+    ].join('\n')
+    await patch.execute(
+      { path: 'sample.txt', unifiedDiff: zeroContextEnvelope },
+      { request: request('file.patch', { path: 'sample.txt', unifiedDiff: zeroContextEnvelope }, 'call_zero_context') },
+    )
+    assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'epsilon\nsecond line\n')
+
     const ambiguous = [
       'diff --git a/sample.txt b/sample.txt',
       '--- a/sample.txt',
