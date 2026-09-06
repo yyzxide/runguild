@@ -458,6 +458,26 @@ test('repository commit finalizes a clean unchanged Worktree without inventing a
   }
 })
 
+test('repository commit restores the index when staged evidence exceeds its size limit', async () => {
+  const setup = await fixture()
+  try {
+    await writeFile(join(setup.root, 'large.txt'), 'x'.repeat(2 * 1024 * 1024 + 1024), 'utf8')
+    const commit = setup.handlers.get('repo.commit')
+    await assert.rejects(
+      commit.execute(
+        { message: 'Do not commit oversized evidence' },
+        { request: request('repo.commit', {}, 'call_commit_oversized') },
+      ),
+      /Staged diff exceeds the 2 MiB evidence limit/,
+    )
+    const staged = await execute('git', ['-C', setup.root, 'diff', '--cached', '--name-only'])
+    assert.equal(staged.stdout, '')
+    assert.equal(await readFile(join(setup.root, 'large.txt'), 'utf8'), 'x'.repeat(2 * 1024 * 1024 + 1024))
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
 test('Integration resolution evidence is based on the reconciled current branch, not the stale Task base', async () => {
   const setup = await fixture()
   try {

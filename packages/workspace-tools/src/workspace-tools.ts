@@ -810,6 +810,15 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (branch.exitCode !== 0 || branch.stdout.trim() !== record.branchName) {
         throw new Error('Assigned Worktree is attached to the wrong branch')
       }
+      const resetIndex = async (): Promise<void> => {
+        const reset = await runCommand({
+          command: ['git', 'reset', '--quiet', 'HEAD', '--', '.'],
+          cwd: boundary.root,
+          timeoutMs: 30_000,
+        })
+        if (reset.exitCode !== 0) throw new Error('Task index could not be restored: ' + reset.stderr)
+      }
+      await resetIndex()
       const before = await runCommand({
         command: ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
         cwd: boundary.root,
@@ -831,32 +840,29 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         if (staged.exitCode !== 0) throw new Error('Staging Task changes failed: ' + staged.stderr)
         try {
           await assertStagedSymlinksStayInsideWorkspace(boundary, context.abortSignal)
-        } catch (error) {
-          const unstaged = await runCommand({
-            command: ['git', 'reset', '--mixed', '--quiet', 'HEAD', '--', '.'],
+          const diff = await runCommand({
+            command: ['git', 'diff', '--cached', '--binary', '--no-ext-diff', '--'],
             cwd: boundary.root,
             timeoutMs: 30_000,
+            maxCaptureBytes: MAX_GIT_DIFF_BYTES,
+            ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
           })
-          if (unstaged.exitCode !== 0) {
-            throw new Error('Unsafe staged symlink was rejected, but the index could not be restored: ' + unstaged.stderr, {
-              cause: error,
+          if (diff.exitCode !== 0 || diff.truncated) {
+            throw new Error(diff.truncated
+              ? 'Staged diff exceeds the 2 MiB evidence limit'
+              : 'Staged diff failed: ' + diff.stderr)
+          }
+          exactDiff = diff.stdout
+        } catch (error) {
+          try {
+            await resetIndex()
+          } catch (resetError) {
+            throw new Error('Task commit was rejected, but the index could not be restored', {
+              cause: new AggregateError([error, resetError]),
             })
           }
           throw error
         }
-        const diff = await runCommand({
-          command: ['git', 'diff', '--cached', '--binary', '--no-ext-diff', '--'],
-          cwd: boundary.root,
-          timeoutMs: 30_000,
-          maxCaptureBytes: MAX_GIT_DIFF_BYTES,
-          ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
-        })
-        if (diff.exitCode !== 0 || diff.truncated) {
-          throw new Error(diff.truncated
-            ? 'Staged diff exceeds the 2 MiB evidence limit'
-            : 'Staged diff failed: ' + diff.stderr)
-        }
-        exactDiff = diff.stdout
         const created = await runCommand({
           command: [
             'git', '-c', 'user.name=RunGuild',
@@ -867,7 +873,10 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           timeoutMs: 60_000,
           ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
         })
-        if (created.exitCode !== 0) throw new Error('Task commit failed: ' + created.stderr)
+        if (created.exitCode !== 0) {
+          await resetIndex()
+          throw new Error('Task commit failed: ' + created.stderr)
+        }
         const head = await runCommand({
           command: ['git', 'rev-parse', '--verify', 'HEAD^{commit}'],
           cwd: boundary.root,
