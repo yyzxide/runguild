@@ -270,6 +270,7 @@ async function createRuntime(
     tools,
     completionVerifier,
     contextBuilder,
+    maxModelProtocolRepairs: 5,
     toolDefinitions: [
       ...WORKSPACE_TOOL_DEFINITIONS,
       ...ARTIFACT_TOOL_DEFINITIONS,

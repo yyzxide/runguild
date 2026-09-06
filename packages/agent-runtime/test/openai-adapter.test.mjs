@@ -357,8 +357,33 @@ test('OpenAI adapter reports provider function names that are not declared for t
     toolCallId: 'call_unknown',
     toolName: 'unknown_tool',
     message: 'Tool function "unknown_tool" was not declared for this model hop. ' +
-      'Use exactly one of the currently declared tool functions.',
+      'No tool function is currently declared.',
   })
+})
+
+test('OpenAI adapter lists exact provider function names when a model calls a hidden tool', async () => {
+  const fake = fakeClient([response({
+    output: [{
+      type: 'function_call',
+      call_id: 'call_hidden',
+      name: 'repo__status',
+      arguments: '{}',
+      status: 'completed',
+    }],
+  })])
+  const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+
+  const result = await adapter.complete({
+    messages: [],
+    tools: [
+      { action: 'artifact.edit', description: 'Edit artifact.', inputSchema: { type: 'object' } },
+      { action: 'run.set_status', description: 'Finish run.', inputSchema: { type: 'object' } },
+    ],
+  })
+
+  assert.equal(result.protocolError.code, 'unknown_tool')
+  assert.match(result.protocolError.message, /artifact__edit, run__set_status/)
+  assert.doesNotMatch(result.protocolError.message, /repo__status,/)
 })
 
 test('OpenAI adapter rejects a malformed multi-call response without executing its valid prefix', async () => {

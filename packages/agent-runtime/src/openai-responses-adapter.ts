@@ -207,13 +207,17 @@ function parseToolCall(
   const action = actionsByProviderName.get(item.name)
   if (action === undefined) {
     const toolName = diagnosticToolName(item.name)
+    const available = [...actionsByProviderName.keys()]
     return {
       error: {
         code: 'unknown_tool',
         toolCallId: item.call_id as ToolCallId,
         toolName,
         message: 'Tool function ' + JSON.stringify(toolName) +
-          ' was not declared for this model hop. Use exactly one of the currently declared tool functions.',
+          ' was not declared for this model hop. ' +
+          (available.length === 0
+            ? 'No tool function is currently declared.'
+            : 'Use exactly one of these currently declared function names: ' + available.join(', ') + '.'),
       },
     }
   }
