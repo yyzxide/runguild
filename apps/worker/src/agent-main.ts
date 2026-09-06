@@ -280,7 +280,7 @@ async function createRuntime(
           implementationGate: {
             maxDiscoveryHops: IMPLEMENTATION_DISCOVERY_HOP_LIMIT,
             discoveryActions: ['repo.status', 'repo.search', 'repo.diff', 'file.read'],
-            implementationActions: ['file.patch'],
+            implementationActions: ['file.patch', 'file.delete'],
           },
           ...(context.reviewRequired
             ? {
@@ -300,7 +300,7 @@ async function createRuntime(
                       'This is the dedicated delivery reserve. Run one exact allowlisted verification now. If it passes, make no ' +
                       'optional changes and use the remaining calls for repo.commit, artifact.edit with append_content, ' +
                       'artifact.create_version, artifact.submit_for_review, and run.set_status. If verification fails and its output ' +
-                      'identifies an exact acceptance-critical fix, file.patch remains available for that bounded fix and one rerun. ' +
+                      'identifies an exact acceptance-critical fix, file.patch and file.delete remain available for that bounded fix and one rerun. ' +
                       'Otherwise report failed with the exact blocker; never submit a failure Artifact.',
                   },
                 ],

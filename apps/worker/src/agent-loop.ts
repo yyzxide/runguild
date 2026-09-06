@@ -198,8 +198,8 @@ export function executionMessages(
   const implementationPolicy = requiresFilePatch(context)
     ? '\n- This Task requires file_diff evidence. Runtime permits at most ' +
       String(IMPLEMENTATION_DISCOVERY_HOP_LIMIT) +
-      ' discovery hops before the first successful file.patch and after each later successful file.patch. ' +
-      'When a window expires, repo.status, repo.search, repo.diff, and file.read stay hidden until another file.patch succeeds.'
+      ' discovery hops before the first successful file.patch or file.delete and after each later successful file change. ' +
+      'When a window expires, repo.status, repo.search, repo.diff, and file.read stay hidden until another file.patch or file.delete succeeds.'
     : ''
   return [
     {

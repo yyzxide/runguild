@@ -297,6 +297,50 @@ test('workspace patch safely creates nested files beneath missing directories', 
   }
 })
 
+test('workspace delete removes only tracked regular files and is replay-safe', async () => {
+  const setup = await fixture()
+  try {
+    const deleteFile = setup.handlers.get('file.delete')
+    const context = { request: request('file.delete', { path: 'sample.txt' }, 'call_delete') }
+
+    const first = await deleteFile.execute({ path: 'sample.txt' }, context)
+    const replay = await deleteFile.execute({ path: 'sample.txt' }, context)
+    await assert.rejects(readFile(join(setup.root, 'sample.txt'), 'utf8'), { code: 'ENOENT' })
+    assert.deepEqual(first.output, {
+      path: 'sample.txt',
+      deleted: true,
+      alreadyDeleted: false,
+      diffHash: first.output.diffHash,
+    })
+    assert.equal(replay.output.alreadyDeleted, true)
+    assert.equal(replay.output.diffHash, first.output.diffHash)
+    assert.deepEqual(setup.evidence.map((item) => item.draft.kind), ['file_diff', 'file_diff'])
+    assert.deepEqual(setup.evidence[0].draft.metadata, {
+      paths: ['sample.txt'],
+      deleted: true,
+      alreadyDeleted: false,
+    })
+
+    await writeFile(join(setup.root, 'untracked.txt'), 'temporary\n', 'utf8')
+    await assert.rejects(
+      deleteFile.execute(
+        { path: 'untracked.txt' },
+        { request: request('file.delete', { path: 'untracked.txt' }, 'call_delete_untracked') },
+      ),
+      /Only tracked files can be deleted/,
+    )
+    await assert.rejects(
+      deleteFile.execute(
+        { path: '../outside.txt' },
+        { request: request('file.delete', { path: '../outside.txt' }, 'call_delete_escape') },
+      ),
+      /unsafe path/,
+    )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
 test('test tool executes only an exact allowlisted argv and records test evidence', async () => {
   const setup = await fixture()
   try {

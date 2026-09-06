@@ -72,6 +72,9 @@ export interface ToolActionInputs {
     readonly path: string
     readonly unifiedDiff: string
   }
+  'file.delete': {
+    readonly path: string
+  }
   'shell.run': {
     readonly command: readonly string[]
     readonly timeoutMs: number
@@ -159,6 +162,12 @@ export interface ToolActionOutputs {
   'file.patch': {
     readonly path: string
     readonly changed: boolean
+    readonly diffHash: string
+  }
+  'file.delete': {
+    readonly path: string
+    readonly deleted: boolean
+    readonly alreadyDeleted: boolean
     readonly diffHash: string
   }
   'shell.run': {

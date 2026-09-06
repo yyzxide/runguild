@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { lstat, readlink, realpath, readFile, stat } from 'node:fs/promises'
+import { lstat, readlink, realpath, readFile, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 
@@ -479,6 +479,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
   ToolHandler<'repo.diff'>,
   ToolHandler<'file.read'>,
   ToolHandler<'file.patch'>,
+  ToolHandler<'file.delete'>,
   ToolHandler<'repo.commit'>,
   ToolHandler<'test.run'>,
 ]> {
@@ -719,6 +720,64 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       return {
         output: { path: paths.length === 1 ? paths[0] ?? input.path : '<multiple>', changed: true, diffHash },
         sideEffects,
+        evidence,
+      }
+    },
+  }
+
+  const deleteFile: ToolHandler<'file.delete'> = {
+    action: 'file.delete',
+    risk: 'workspace_write',
+    retryMode: 'native_idempotency',
+    leaseMs: 60_000,
+    async execute(input, context) {
+      const relativePath = await boundary.patchTarget(input.path)
+      const target = resolve(boundary.root, relativePath)
+      const tracked = await runCommand({
+        command: ['git', 'ls-files', '--error-unmatch', '--', relativePath],
+        cwd: boundary.root,
+        timeoutMs: 30_000,
+        ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
+      })
+      if (tracked.exitCode !== 0) {
+        throw new Error('Only tracked files can be deleted: ' + input.path)
+      }
+
+      let alreadyDeleted = false
+      try {
+        const info = await lstat(target)
+        if (info.isSymbolicLink()) throw new Error('Symbolic links cannot be deleted: ' + input.path)
+        if (!info.isFile()) throw new Error('Path is not a regular file: ' + input.path)
+        await unlink(target)
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+        if (code !== 'ENOENT') throw error
+        alreadyDeleted = true
+      }
+
+      const diff = await runCommand({
+        command: ['git', 'diff', '--binary', '--no-ext-diff', 'HEAD', '--', relativePath],
+        cwd: boundary.root,
+        timeoutMs: 30_000,
+        maxCaptureBytes: MAX_GIT_DIFF_BYTES,
+        ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
+      })
+      if (diff.exitCode !== 0 || diff.truncated || !diff.stdout) {
+        throw new Error(diff.truncated
+          ? 'Deleted file diff exceeds the 2 MiB safety limit'
+          : 'Deleted file did not produce an auditable Git diff: ' + input.path)
+      }
+      const diffHash = hash(diff.stdout)
+      const evidence = await options.evidence.record(context, {
+        kind: 'file_diff',
+        uri: 'workspace://' + relativePath + '#' + diffHash,
+        contentHash: diffHash,
+        metadata: { paths: [relativePath], deleted: true, alreadyDeleted },
+      })
+      if (evidence.length === 0) throw new Error('Delete evidence was not persisted')
+      return {
+        output: { path: relativePath, deleted: true, alreadyDeleted, diffHash },
+        sideEffects: [{ type: 'file.changed', path: relativePath, diffHash }],
         evidence,
       }
     },
@@ -1001,7 +1060,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     },
   }
 
-  return [search, repositoryStatus, repositoryDiff, read, patch, commit, tests]
+  return [search, repositoryStatus, repositoryDiff, read, patch, deleteFile, commit, tests]
 }
 
 export const WORKSPACE_TOOL_DEFINITIONS = [
@@ -1059,6 +1118,18 @@ export const WORKSPACE_TOOL_DEFINITIONS = [
       properties: {
         path: { type: 'string' },
         unifiedDiff: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    action: 'file.delete' as const,
+    description: 'Delete one tracked regular file inside the assigned Git workspace. Directories, symlinks, untracked files, .git paths, absolute paths, and paths escaping the Worktree are rejected. The deletion is recoverable from Git and emits durable file_diff evidence.',
+    inputSchema: {
+      type: 'object',
+      required: ['path'],
+      properties: {
+        path: { type: 'string' },
       },
       additionalProperties: false,
     },
