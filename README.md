@@ -1,5 +1,7 @@
 # RunGuild
 
+[![CI](https://github.com/yyzxide/runguild/actions/workflows/ci.yml/badge.svg)](https://github.com/yyzxide/runguild/actions/workflows/ci.yml)
+
 RunGuild is a verifiable execution platform where humans and
 persistent AI agent teams turn conversations into software-engineering
 missions, execute dependency-aware task graphs, collaborate on shared
@@ -558,3 +560,6 @@ TEST_DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control_te
 The external integration suite truncates its fixtures between cases and
 therefore refuses to run unless `current_database()` ends in `_test`. Never
 point `TEST_DATABASE_URL` at the development or production RunGuild database.
+The GitHub Actions workflow provides a dedicated PostgreSQL 17 service whose
+database name ends in `_test`, so the normally opt-in coordination suite runs
+on every push to `main` and every pull request instead of being skipped.
