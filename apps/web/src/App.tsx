@@ -744,6 +744,58 @@ function messageTime(value: string): string {
   }).format(new Date(value))
 }
 
+type ComposerIntent = 'message' | 'task'
+
+interface PendingConversationSubmission {
+  readonly version: 1
+  readonly clientRequestId: string
+  readonly conversationId: string
+  readonly intent: ComposerIntent
+  readonly body: string
+  readonly mentions: readonly string[]
+  readonly replyToMessageId?: string
+  readonly missionId?: string
+  readonly title?: string
+  readonly plannerAgentId?: string
+}
+
+function inferComposerIntent(value: string): ComposerIntent {
+  const taskMarker = /(?:帮我|请.{0,12}(?:实现|开发|完成|修复|优化|重构|新增|添加|设计|测试|部署|编写|创建|构建|搭建|接入|排查)|实现|开发|完成|修复|优化|重构|新增|添加|设计|测试|部署|编写|创建|构建|搭建|接入|排查|做一个|build|implement|fix|refactor|create|deploy|test)/iu
+  return taskMarker.test(value.trim()) ? 'task' : 'message'
+}
+
+function pendingSubmissionKey(identity: TestIdentity, conversationId: string): string {
+  return ['runguild:pending-submission', identity.workspaceId, identity.userId, conversationId].join(':')
+}
+
+function readPendingSubmission(identity: TestIdentity, conversationId: string): PendingConversationSubmission | null {
+  const raw = window.localStorage.getItem(pendingSubmissionKey(identity, conversationId))
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw) as Partial<PendingConversationSubmission>
+    if (value.version !== 1
+        || typeof value.clientRequestId !== 'string'
+        || value.conversationId !== conversationId
+        || (value.intent !== 'message' && value.intent !== 'task')
+        || typeof value.body !== 'string'
+        || !Array.isArray(value.mentions)
+        || !value.mentions.every((agentId) => typeof agentId === 'string')) return null
+    if (value.intent === 'task'
+        && (typeof value.title !== 'string' || typeof value.plannerAgentId !== 'string')) return null
+    return value as PendingConversationSubmission
+  } catch {
+    return null
+  }
+}
+
+function sameSubmission(
+  left: PendingConversationSubmission,
+  right: PendingConversationSubmission,
+): boolean {
+  return JSON.stringify({ ...left, clientRequestId: undefined })
+    === JSON.stringify({ ...right, clientRequestId: undefined })
+}
+
 function TeamRoomView({
   identity,
   setup,
@@ -777,6 +829,8 @@ function TeamRoomView({
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [planningBusy, setPlanningBusy] = useState(false)
+  const [composerIntentOverride, setComposerIntentOverride] = useState<ComposerIntent | null>(null)
+  const [submissionRecoveryAttempted, setSubmissionRecoveryAttempted] = useState('')
   const [roomError, setRoomError] = useState<string | null>(null)
   const [plannerStartAttempted, setPlannerStartAttempted] = useState('')
   const [plannerStartError, setPlannerStartError] = useState<string | null>(null)
@@ -801,6 +855,55 @@ function TeamRoomView({
   const planningBlockReason = runtime?.control.enabled
     ? plannerWorker?.missing.join('、') || '规划 Agent Worker 不可用'
     : '规划 Agent Worker 未在线，当前部署不允许从 Web 启动'
+  const composerIntent = mission || planningActive
+    ? 'message'
+    : composerIntentOverride ?? inferComposerIntent(draft)
+
+  const acceptPlanningRequest = useCallback((request: ConversationPlanningRequest) => {
+    setPlanningRequest(request)
+    setPlannerStartError(null)
+    window.localStorage.setItem('runguild:last-planning:' + request.conversationId, request.id)
+    setSelectedMessageIds([])
+  }, [])
+
+  const submitPendingSubmission = useCallback(async (pending: PendingConversationSubmission) => {
+    let request: ConversationPlanningRequest | null = null
+    let message: ConversationMessage
+    if (pending.intent === 'task') {
+      const result = await missionApi.submitConversationTask({
+        identity,
+        conversationId: pending.conversationId,
+        body: pending.body,
+        mentions: pending.mentions,
+        title: pending.title!,
+        plannerAgentId: pending.plannerAgentId!,
+        clientRequestId: pending.clientRequestId,
+        ...(pending.replyToMessageId === undefined ? {} : { replyToMessageId: pending.replyToMessageId }),
+      })
+      message = result.message
+      request = result.request
+      acceptPlanningRequest(request)
+    } else {
+      message = await missionApi.postMessage({
+        identity,
+        conversationId: pending.conversationId,
+        body: pending.body,
+        mentions: pending.mentions,
+        clientRequestId: pending.clientRequestId,
+        ...(pending.missionId === undefined ? {} : { missionId: pending.missionId }),
+        ...(pending.replyToMessageId === undefined ? {} : { replyToMessageId: pending.replyToMessageId }),
+      })
+    }
+    setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message])
+    const storageKey = pendingSubmissionKey(identity, pending.conversationId)
+    if (readPendingSubmission(identity, pending.conversationId)?.clientRequestId === pending.clientRequestId) {
+      window.localStorage.removeItem(storageKey)
+    }
+    setDraft((current) => current.trim() === pending.body ? '' : current)
+    setReplyTo(null)
+    setComposerIntentOverride(null)
+    return request
+  }, [acceptPlanningRequest, identity])
 
   useEffect(() => {
     if (!setup) return
@@ -838,6 +941,8 @@ function TeamRoomView({
     setSelectedMessageIds([])
     setPlanningTitle('')
     setPlanningRequest(null)
+    setComposerIntentOverride(null)
+    setSubmissionRecoveryAttempted('')
     setPlannerStartAttempted('')
     setPlannerStartError(null)
     if (!conversationId) return
@@ -905,10 +1010,7 @@ function TeamRoomView({
       title,
       plannerAgentId: planner.id,
     })
-    setPlanningRequest(request)
-    setPlannerStartError(null)
-    window.localStorage.setItem('runguild:last-planning:' + conversationId, request.id)
-    setSelectedMessageIds([])
+    acceptPlanningRequest(request)
     return request
   }
   const wakePlanner = async (request: ConversationPlanningRequest) => {
@@ -923,6 +1025,20 @@ function TeamRoomView({
       onOpenRuntime()
     }
   }
+  useEffect(() => {
+    if (!conversationId || sending) return
+    const pending = readPendingSubmission(identity, conversationId)
+    if (!pending || pending.clientRequestId === submissionRecoveryAttempted) return
+    setSubmissionRecoveryAttempted(pending.clientRequestId)
+    setSending(true)
+    setRoomError(null)
+    void submitPendingSubmission(pending)
+      .catch((caught: unknown) => setRoomError(
+        (caught instanceof Error ? caught.message : '待确认的发送请求恢复失败')
+        + '；原请求仍保留，点击发送可使用同一请求 ID 安全重试。',
+      ))
+      .finally(() => setSending(false))
+  }, [conversationId, identity, sending, submissionRecoveryAttempted, submitPendingSubmission])
   const createPlanningRequest = async () => {
     if (!conversationId || selectedMessageIds.length === 0 || !planningTitle.trim() || planningBusy) return
     setPlanningBusy(true)
@@ -942,21 +1058,31 @@ function TeamRoomView({
     setRoomError(null)
     try {
       const body = draft.trim()
-      const message = await missionApi.postMessage({
-        identity,
+      const pending: PendingConversationSubmission = {
+        version: 1,
+        clientRequestId: crypto.randomUUID(),
         conversationId,
+        intent: composerIntent,
         body,
         mentions: selectedAgents,
-        ...(mission?.id || planningRequest?.missionId ? { missionId: mission?.id ?? planningRequest!.missionId } : {}),
+        ...(mission?.id || planningRequest?.missionId
+          ? { missionId: mission?.id ?? planningRequest!.missionId }
+          : {}),
         ...(replyTo ? { replyToMessageId: replyTo.id } : {}),
-      })
-      setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message])
-      setDraft('')
-      setReplyTo(null)
-      if (!mission && !planningActive) {
-        const request = await persistPlanningRequest([message.id], body.slice(0, 80))
-        await wakePlanner(request)
+        ...(composerIntent === 'task' ? {
+          title: body.slice(0, 80),
+          plannerAgentId: planner?.id,
+        } : {}),
       }
+      if (pending.intent === 'task' && !pending.plannerAgentId) throw new Error('当前工作区缺少规划 Agent')
+      const existing = readPendingSubmission(identity, conversationId)
+      if (existing && !sameSubmission(existing, pending)) {
+        throw new Error('上一条发送请求仍待确认，请先用原内容重试，避免重复创建任务')
+      }
+      const resumable = existing ?? pending
+      window.localStorage.setItem(pendingSubmissionKey(identity, conversationId), JSON.stringify(resumable))
+      const request = await submitPendingSubmission(resumable)
+      if (request) await wakePlanner(request)
     } catch (caught) {
       setRoomError(caught instanceof Error ? caught.message : '消息或任务提交失败')
     } finally {
@@ -986,7 +1112,7 @@ function TeamRoomView({
   return (
     <>
       <section className="page-heading room-heading">
-        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>团队协作室</span></div><h1>和 Agent 团队一起工作</h1><p>直接在对话框描述任务；首条任务会自动创建 Mission、唤醒 Planner 并生成任务 DAG。</p></div>
+        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>团队协作室</span></div><h1>和 Agent 团队一起工作</h1><p>发送前明确选择“新任务”或“普通消息”；任务会原子创建 Mission 并唤醒 Planner，问候不会误建 DAG。</p></div>
         <div className="page-actions"><StatusPill tone="live"><span className="pulse-dot" />5 秒同步</StatusPill><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
       </section>
       {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p></div></div> : null}
@@ -1042,13 +1168,14 @@ function TeamRoomView({
           <div className="room-composer">
             {replyTo ? <div className="reply-banner"><span>正在回复 <strong>{replyTo.authorName}</strong> · {replyTo.body.slice(0, 72)}</span><button onClick={() => setReplyTo(null)}>取消</button></div> : null}
             <div className="recipient-picker"><span><AtSign size={13} />选择消息要路由给的 Agent</span><div>{agents.map((agent) => <button key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div>
-            <div className="composer-field"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '继续补充约束，或 @Agent 调整当前任务方向。' : '例如：帮我完成一个复杂的贪吃蛇游戏。发送后会自动开始规划。'} /><button aria-label={mission ? '发送到当前 Mission' : planningActive ? '补充规划上下文' : '发送并启动规划'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{mission ? '发送' : planningActive ? '补充上下文' : '发送并规划'}</span></button></div>
-            <div className="composer-scope"><span className={mission || planningActive ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : planningActive ? '已有任务正在规划；新消息作为补充上下文' : '任务模式：发送后自动创建 Mission 并唤醒 Planner'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
+            {!mission && !planningActive ? <div className="composer-intent" aria-label="发送方式"><span>发送方式</span><div><button className={composerIntent === 'task' ? 'is-selected' : ''} aria-pressed={composerIntent === 'task'} onClick={() => setComposerIntentOverride('task')}><Network size={12} />新任务<small>创建 Mission + DAG</small></button><button className={composerIntent === 'message' ? 'is-selected' : ''} aria-pressed={composerIntent === 'message'} onClick={() => setComposerIntentOverride('message')}><MessageCircle size={12} />普通消息<small>仅记录与路由</small></button></div><em>{composerIntentOverride ? '已手动选择' : '已按输入内容判断，可手动切换'}</em></div> : null}
+            <div className="composer-field"><textarea value={draft} onChange={(event) => { setDraft(event.target.value); setComposerIntentOverride(null) }} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '继续补充约束，或 @Agent 调整当前任务方向。' : '任务示例：帮我实现一个贪吃蛇游戏；普通消息示例：你好。'} /><button aria-label={mission ? '发送到当前 Mission' : planningActive ? '补充规划上下文' : composerIntent === 'task' ? '发送并启动规划' : '发送普通消息'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{mission ? '发送' : planningActive ? '补充上下文' : composerIntent === 'task' ? '发送并规划' : '发送消息'}</span></button></div>
+            <div className="composer-scope"><span className={mission || planningActive || composerIntent === 'task' ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : planningActive ? '已有任务正在规划；新消息作为补充上下文' : composerIntent === 'task' ? '新任务：消息与 Mission 在同一事务提交' : '普通消息：不会创建 Mission 或任务 DAG'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
           </div>
         </section>
 
         <aside className="routing-rail">
-          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>尚无 Mission 时，发送操作会自动创建规划请求并唤醒 Planner；运行中的新消息则直接路由到当前任务。</p></div>
+          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>“新任务”会同时保存消息并创建规划请求；“普通消息”只进入会话账本。已有 Mission 时，新消息直接路由到当前任务。</p></div>
           <section className="planning-launcher">
             <span className="micro-label">发送即规划</span>
             <h3>{planningRequest ? '任务已接收' : '直接描述任务'}</h3>

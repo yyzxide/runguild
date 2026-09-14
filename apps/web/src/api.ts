@@ -905,6 +905,7 @@ export const missionApi = {
     readonly conversationId: string
     readonly body: string
     readonly mentions: readonly string[]
+    readonly clientRequestId: string
     readonly missionId?: string
     readonly replyToMessageId?: string
   }): Promise<ConversationMessage> {
@@ -914,7 +915,7 @@ export const missionApi = {
         method: 'POST',
         headers: {
           ...actorHeaders(input.identity.userId),
-          'x-idempotency-key': 'web-message-' + crypto.randomUUID(),
+          'x-idempotency-key': 'web-message-' + input.clientRequestId,
         },
         body: JSON.stringify({
           body: input.body,
@@ -925,6 +926,39 @@ export const missionApi = {
       },
     )
     return result.message
+  },
+
+  async submitConversationTask(input: {
+    readonly identity: TestIdentity
+    readonly conversationId: string
+    readonly body: string
+    readonly mentions: readonly string[]
+    readonly title: string
+    readonly plannerAgentId: string
+    readonly clientRequestId: string
+    readonly replyToMessageId?: string
+  }): Promise<{
+    readonly message: ConversationMessage
+    readonly request: ConversationPlanningRequest
+    readonly reused: boolean
+  }> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(input.identity.workspaceId)}/conversations/${encodeURIComponent(input.conversationId)}/task-submissions`,
+      {
+        method: 'POST',
+        headers: {
+          ...actorHeaders(input.identity.userId),
+          'x-client-request-id': input.clientRequestId,
+        },
+        body: JSON.stringify({
+          body: input.body,
+          mentions: input.mentions,
+          title: input.title,
+          plannerAgentId: input.plannerAgentId,
+          ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+        }),
+      },
+    )
   },
 
   async createPlanningRequest(input: {
