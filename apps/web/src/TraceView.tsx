@@ -147,17 +147,18 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
 
       <section className="trace-summary-block">
         <div className="panel-heading">
-          <div><span className="micro-label">仅动作 / 状态 / 错误码</span><h3>工具执行摘要</h3></div>
+          <div><span className="micro-label">动作 / 状态 / 安全目标 / 策略结果</span><h3>工具执行摘要</h3></div>
           <code>{detail.toolExecutions.length} 次</code>
         </div>
-        <p className="trace-redaction-note">不包含工具请求与结果原文。</p>
+        <p className="trace-redaction-note">不包含工具请求、结果或任意错误原文；文件目标仅显示已校验的仓库相对路径。</p>
         <div className="trace-tool-list">
           {detail.toolExecutions.map((tool) => (
             <div className="trace-tool" key={tool.id}>
               <code className="trace-tool__action">{tool.action}</code>
+              <code>{tool.targetPath ?? '—'}</code>
               <span>{statusLabels[tool.status] ?? tool.status}</span>
               <code>{tool.effectState}</code>
-              <code>{tool.errorCode ?? '—'}</code>
+              <code>{tool.policyDecision === 'protected_path_denied' ? '受保护路径已拒绝' : (tool.errorCode ?? '—')}</code>
               <small>{formatDateTime(tool.startedAt)} → {formatDateTime(tool.finishedAt)}</small>
             </div>
           ))}

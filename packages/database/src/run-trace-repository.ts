@@ -11,7 +11,8 @@ import type { Pool } from 'pg'
  * token/cost aggregates and summary projections. It never selects
  * `llm_calls.request_redacted` / `response_redacted` message bodies nor
  * `tool_executions.request` / `result` raw payloads, and it never reads
- * secrets/API keys.
+ * secrets/API keys. For repository file actions it derives only the validated,
+ * repository-relative target path and a fixed policy-decision classification.
  */
 
 export interface RunTraceAgentSummary {
@@ -81,6 +82,8 @@ export interface RunToolExecutionSummary {
   readonly status: string
   readonly effectState: string
   readonly errorCode: string | null
+  readonly targetPath: string | null
+  readonly policyDecision: 'protected_path_denied' | null
   readonly startedAt: string | null
   readonly finishedAt: string | null
 }
@@ -347,8 +350,9 @@ export class RunTraceRepository {
   }
 
   /**
-   * Redacted tool_executions summary: action/status/effect_state, timing and
-   * error code only. Raw request/result payloads are never selected.
+   * Redacted tool_executions summary: action/status/effect_state, timing,
+   * error code, repository-relative file target, and a fixed policy decision.
+   * Raw request/result payloads and arbitrary error messages are never selected.
    */
   async listToolExecutions(scope: RunTraceScope, runId: string): Promise<readonly RunToolExecutionSummary[]> {
     const { rows } = await this.pool.query<{
@@ -358,11 +362,18 @@ export class RunTraceRepository {
       status: string
       effect_state: string
       error_code: string | null
+      target_path: string | null
+      policy_decision: 'protected_path_denied' | null
       started_at: string | null
       finished_at: string | null
     }>(
       `SELECT x.id, x.run_id, x.action, x.status, x.effect_state,
               x.error->>'code' AS error_code,
+              CASE WHEN x.action IN ('file.read', 'file.patch', 'file.delete')
+                THEN LEFT(x.request #>> '{input,path}', 512) ELSE NULL END AS target_path,
+              CASE WHEN x.status = 'failed'
+                AND x.error->>'message' LIKE 'Agent tools cannot modify protected acceptance test path:%'
+                THEN 'protected_path_denied' ELSE NULL END AS policy_decision,
               x.started_at, x.finished_at
        FROM tool_executions x
        JOIN agent_runs r ON r.id = x.run_id AND r.workspace_id = x.workspace_id
@@ -380,6 +391,8 @@ export class RunTraceRepository {
       status: row.status,
       effectState: row.effect_state,
       errorCode: row.error_code,
+      targetPath: row.target_path,
+      policyDecision: row.policy_decision,
       startedAt: iso(row.started_at),
       finishedAt: iso(row.finished_at),
     }))

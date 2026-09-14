@@ -1168,7 +1168,7 @@ code, kbd { font-family: var(--mono); }
 .trace-totals { display: flex; justify-content: space-between; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--hairline); background: #f3f5f8; color: var(--muted); font-size: 10px; }
 .trace-totals code { font-size: 10px; }
 .trace-tool-list { padding: 6px 16px 14px; }
-.trace-tool { display: grid; grid-template-columns: minmax(90px, 1fr) 54px minmax(90px, 1fr) 56px 1fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--hairline); }
+.trace-tool { display: grid; grid-template-columns: minmax(90px, 0.8fr) minmax(130px, 1.2fr) 54px minmax(76px, 0.7fr) minmax(100px, 1fr) 1fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--hairline); }
 .trace-tool:last-child { border-bottom: 0; }
 .trace-tool small { color: var(--muted); font-size: 9px; }
 .trace-loading, .trace-error, .trace-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 220px; margin-top: 15px; padding: 30px; border: 1px dashed var(--hairline); border-radius: 14px; background: var(--surface); text-align: center; }

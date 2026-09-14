@@ -91,8 +91,9 @@ test('getRun returns redacted detail with stable serialization and scoped joins'
     finished_at: new Date('2030-01-01T00:00:01.000Z'),
   }]
   const toolRows = [{
-    id: 'tool_1', run_id: 'run_detail_1', action: 'file.read', status: 'success',
-    effect_state: 'none', error_code: null,
+    id: 'tool_1', run_id: 'run_detail_1', action: 'file.patch', status: 'failed',
+    effect_state: 'unknown', error_code: 'execution_failed',
+    target_path: 'test/acceptance.test.mjs', policy_decision: 'protected_path_denied',
     started_at: new Date('2030-01-01T00:00:01.000Z'),
     finished_at: new Date('2030-01-01T00:00:02.000Z'),
   }]
@@ -114,7 +115,9 @@ test('getRun returns redacted detail with stable serialization and scoped joins'
   assert.equal(detail.llmCalls[0].estimatedCostUsd, 0.0123)
   assert.equal(detail.llmCalls[0].endpoint, 'https://api.example.test/responses')
   assert.equal(detail.llmCalls[0].returnedModel, 'gpt-test-2030-01-01')
-  assert.equal(detail.toolExecutions[0].action, 'file.read')
+  assert.equal(detail.toolExecutions[0].action, 'file.patch')
+  assert.equal(detail.toolExecutions[0].targetPath, 'test/acceptance.test.mjs')
+  assert.equal(detail.toolExecutions[0].policyDecision, 'protected_path_denied')
   // Context summary only projects explicit summary fields; no secrets or raw messages.
   assert.equal(detail.contextSummary.modelProvider, 'openai')
   assert.equal(detail.contextSummary.taskTitle, 'Build')
@@ -128,11 +131,16 @@ test('getRun returns redacted detail with stable serialization and scoped joins'
   assert.match(statements[3].statement, /JOIN missions m ON m\.id = r\.mission_id/)
   assert.match(statements[3].statement, /JOIN project_memberships actor ON actor\.user_id = \$4/)
   // Redaction contract: no model message bodies or raw tool payloads are selected.
+  // A single bounded path scalar is derived from x.request; the JSON payload is
+  // never projected and arbitrary error messages remain absent.
   const allSql = statements.map(({ statement }) => statement).join('\n')
   assert.equal(allSql.includes('request_redacted'), false)
   assert.equal(allSql.includes('response_redacted'), false)
-  assert.equal(allSql.includes('x.request'), false)
+  assert.equal(allSql.includes('x.request AS'), false)
   assert.equal(allSql.includes('x.result'), false)
+  assert.equal(allSql.includes("x.error->>'message' AS"), false)
+  assert.match(statements[3].statement, /AS target_path/)
+  assert.match(statements[3].statement, /AS policy_decision/)
 })
 
 test('getRun returns null when the run is outside Workspace/Project scope', async () => {

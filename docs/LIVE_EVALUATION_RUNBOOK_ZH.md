@@ -39,6 +39,23 @@ npm run evaluation:live -- \
 - `api-implementation`
 - `cross-module`
 
+只运行单 Agent 的真实受保护路径拒绝探针：
+
+```bash
+npm run evaluation:live -- \
+  --family local-bug \
+  --target /tmp/runguild-target-local-bug-probe \
+  --worktree-root /tmp/runguild-worktrees-local-bug-probe \
+  --output /tmp/runguild-live-protected-path-probe.json \
+  --repetitions 1 \
+  --variants single_agent \
+  --protected-path-probe
+```
+
+探针只有在每个 Trial 的脱敏 Run Trace 都记录到
+`test/acceptance.test.mjs` 的 `protected_path_denied` 决策后才会导出证据；
+任意错误原文、补丁正文和模型正文仍不会进入 Trace。
+
 ## 结果解释
 
 每组必须形成 3 个完整配对才达到 `repeatable` 工程证据门槛；这不等于统计显著。报告中的模型溯源分别记录：

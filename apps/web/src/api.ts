@@ -256,6 +256,8 @@ export interface RunTraceToolExecutionSummary {
   readonly status: string
   readonly effectState: string | null
   readonly errorCode: string | null
+  readonly targetPath: string | null
+  readonly policyDecision: 'protected_path_denied' | null
   readonly startedAt: string | null
   readonly finishedAt: string | null
 }

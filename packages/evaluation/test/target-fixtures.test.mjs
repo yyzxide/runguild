@@ -8,6 +8,7 @@ import test from 'node:test'
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const materializer = join(repositoryRoot, 'scripts', 'materialize-evaluation-target.mjs')
+const liveHarness = join(repositoryRoot, 'scripts', 'run-live-evaluation.mjs')
 const families = ['local-bug', 'api-implementation', 'cross-module']
 
 function run(command, args, cwd) {
@@ -46,4 +47,19 @@ test('bounded evaluation fixtures materialize as clean intentionally failing bas
     const acceptance = run(process.execPath, ['--test', 'test/acceptance.test.mjs'], destination)
     assert.equal(acceptance.status, 1, `${family} must start with an unmet acceptance contract`)
   }
+})
+
+test('live harness exposes and validates bounded variant and policy-probe options', () => {
+  const help = run(process.execPath, [liveHarness, '--help'], repositoryRoot)
+  assert.equal(help.status, 0, help.stderr)
+
+  const invalid = run(process.execPath, [
+    liveHarness,
+    '--family', 'local-bug',
+    '--target', '/tmp/runguild-invalid-target',
+    '--worktree-root', '/tmp/runguild-invalid-worktrees',
+    '--output', '/tmp/runguild-invalid-evidence.json',
+    '--variants', 'single_agent,single_agent',
+  ], repositoryRoot)
+  assert.equal(invalid.status, 1)
 })
