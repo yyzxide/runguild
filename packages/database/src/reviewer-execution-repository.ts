@@ -146,7 +146,9 @@ export interface CompleteReviewerModelInput {
   readonly responseSnapshot: Readonly<Record<string, unknown>>
   readonly modelProvider: string
   readonly modelName: string
+  readonly endpoint?: string
   readonly providerRequestId?: string
+  readonly returnedModel?: string
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cachedInputTokens?: number
@@ -162,7 +164,9 @@ export interface RecordInvalidReviewerModelResponseInput {
   readonly responseSnapshot: Readonly<Record<string, unknown>>
   readonly modelProvider: string
   readonly modelName: string
+  readonly endpoint?: string
   readonly providerRequestId?: string
+  readonly returnedModel?: string
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cachedInputTokens?: number
@@ -421,8 +425,8 @@ export class ReviewerExecutionRepository {
       >>(
         "UPDATE review_executions SET status = 'model_complete', decision = $4::jsonb, decision_hash = $5, " +
         'prompt_snapshot = $6::jsonb, response_snapshot = $7::jsonb, model_provider = $8, model_name = $9, ' +
-        'provider_request_id = $10, input_tokens = $11, output_tokens = $12, cached_input_tokens = $13, ' +
-        'estimated_cost_usd = $14, latency_ms = $15, updated_at = NOW() ' +
+        'model_endpoint = $10, provider_request_id = $11, returned_model = $12, input_tokens = $13, ' +
+        'output_tokens = $14, cached_input_tokens = $15, estimated_cost_usd = $16, latency_ms = $17, updated_at = NOW() ' +
         'WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
         "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW() " +
         'RETURNING workspace_id, mission_id, task_id, attempt',
@@ -436,7 +440,9 @@ export class ReviewerExecutionRepository {
           canonicalJson(input.responseSnapshot),
           input.modelProvider,
           input.modelName,
+          input.endpoint ?? null,
           input.providerRequestId ?? null,
+          input.returnedModel ?? null,
           input.inputTokens,
           input.outputTokens,
           input.cachedInputTokens ?? 0,
@@ -457,9 +463,10 @@ export class ReviewerExecutionRepository {
         'workspace_id' | 'mission_id' | 'task_id' | 'attempt'
       >>(
         'UPDATE review_executions SET prompt_snapshot = $4::jsonb, response_snapshot = $5::jsonb, ' +
-        'model_provider = $6, model_name = $7, provider_request_id = $8, input_tokens = $9, ' +
-        'output_tokens = $10, cached_input_tokens = $11, estimated_cost_usd = $12, latency_ms = $13, ' +
-        'error = $14::jsonb, updated_at = NOW() WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
+        'model_provider = $6, model_name = $7, model_endpoint = $8, provider_request_id = $9, ' +
+        'returned_model = $10, input_tokens = $11, output_tokens = $12, cached_input_tokens = $13, ' +
+        'estimated_cost_usd = $14, latency_ms = $15, error = $16::jsonb, updated_at = NOW() ' +
+        'WHERE review_id = $1 AND reviewer_agent_id = $2 ' +
         "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW() " +
         'RETURNING workspace_id, mission_id, task_id, attempt',
         [
@@ -470,7 +477,9 @@ export class ReviewerExecutionRepository {
           canonicalJson(input.responseSnapshot),
           input.modelProvider,
           input.modelName,
+          input.endpoint ?? null,
           input.providerRequestId ?? null,
+          input.returnedModel ?? null,
           input.inputTokens,
           input.outputTokens,
           input.cachedInputTokens ?? 0,
@@ -494,9 +503,9 @@ export class ReviewerExecutionRepository {
   ): Promise<void> {
     await client.query(
       'INSERT INTO reviewer_model_calls ' +
-      '(id, review_id, workspace_id, mission_id, task_id, attempt, status, provider, model, ' +
-      'provider_request_id, input_tokens, output_tokens, cached_input_tokens, estimated_cost_usd, ' +
-      'latency_ms, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)',
+      '(id, review_id, workspace_id, mission_id, task_id, attempt, status, provider, model, endpoint, ' +
+      'provider_request_id, returned_model, input_tokens, output_tokens, cached_input_tokens, estimated_cost_usd, ' +
+      'latency_ms, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb)',
       [
         'review_model_call_' + randomUUID(),
         input.reviewId,
@@ -507,7 +516,9 @@ export class ReviewerExecutionRepository {
         status,
         input.modelProvider,
         input.modelName,
+        input.endpoint ?? null,
         input.providerRequestId ?? null,
+        input.returnedModel ?? null,
         input.inputTokens,
         input.outputTokens,
         input.cachedInputTokens ?? 0,

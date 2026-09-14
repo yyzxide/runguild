@@ -405,6 +405,14 @@ supports multiline patch bodies without accepting missing delimiters, broken
 quotes, non-object arguments, or unknown tools; the official endpoint remains
 strict-only.
 
+Every model ledger entry now separates the configured model from the model
+identifier actually returned by the provider and records the exact normalized
+`/responses` endpoint. The same provenance is persisted for execution Agents,
+automatic Reviewers, and the Conversation Planner. Endpoint validation rejects
+embedded credentials, query strings, fragments, and non-loopback plaintext
+HTTP, so the redacted Run Trace can expose routing evidence without leaking an
+API key. Historical rows remain explicitly unknown rather than being inferred.
+
 Run the API and scheduler worker:
 
 ~~~bash

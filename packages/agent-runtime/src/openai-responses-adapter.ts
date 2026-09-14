@@ -38,6 +38,41 @@ export interface OpenAIResponsesAdapterOptions {
 
 const PROVIDER_TOOL_NAME = /^[a-zA-Z0-9_-]+$/
 const MAX_PROVIDER_TOOL_NAME_LENGTH = 64
+const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
+const MAX_RETURNED_MODEL_LENGTH = 256
+
+function responsesEndpoint(baseURL: string | undefined): string {
+  if (baseURL !== undefined && baseURL.trim() !== baseURL) {
+    throw new Error('OpenAI baseURL must not contain surrounding whitespace')
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(baseURL ?? DEFAULT_OPENAI_BASE_URL)
+  } catch (error) {
+    throw new Error('OpenAI baseURL must be an absolute URL', { cause: error })
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('OpenAI baseURL must not contain credentials')
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error('OpenAI baseURL must not contain a query or fragment')
+  }
+  const localHttp = parsed.protocol === 'http:'
+    && ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname)
+  if (parsed.protocol !== 'https:' && !localHttp) {
+    throw new Error('OpenAI baseURL must use HTTPS, except for a loopback HTTP endpoint')
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '') + '/responses'
+  return parsed.toString()
+}
+
+function returnedModel(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim()
+      || value.length > MAX_RETURNED_MODEL_LENGTH || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error('OpenAI response.model must be a bounded non-empty model identifier')
+  }
+  return value
+}
 
 function diagnosticToolName(value: string): string {
   return value.length <= MAX_PROVIDER_TOOL_NAME_LENGTH
@@ -265,11 +300,13 @@ function finishReason(response: Response, hasTools: boolean): ModelResponse['fin
 export class OpenAIResponsesAdapter implements ModelAdapter {
   readonly provider = 'openai'
   readonly model: string
+  readonly endpoint: string
   private readonly client: ResponsesClient
 
   constructor(private readonly options: OpenAIResponsesAdapterOptions) {
     assertOptions(options)
     this.model = options.model
+    this.endpoint = responsesEndpoint(options.baseURL)
     this.client = options.client ?? new OpenAI({
       apiKey: options.apiKey,
       ...(options.baseURL === undefined ? {} : { baseURL: options.baseURL }),
@@ -331,6 +368,7 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
         cachedInputTokens: response.usage?.input_tokens_details.cached_tokens ?? 0,
       },
       providerRequestId: response.id,
+      returnedModel: returnedModel(response.model),
       ...(protocolError === undefined ? {} : { protocolError }),
     }
   }

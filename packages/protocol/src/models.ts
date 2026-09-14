@@ -63,11 +63,15 @@ export interface ModelResponse {
   readonly finishReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'error'
   readonly usage: ModelUsage
   readonly providerRequestId?: string
+  /** Exact model identifier reported by the provider response. */
+  readonly returnedModel?: string
   readonly protocolError?: ModelProtocolError
 }
 
 export interface ModelAdapter {
   readonly provider: string
   readonly model: string
+  /** Exact non-secret HTTP endpoint used for model requests, when known. */
+  readonly endpoint?: string
   complete(request: ModelRequest): Promise<ModelResponse>
 }

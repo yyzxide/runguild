@@ -316,6 +316,7 @@ export class RuntimeRepository {
     provider: string,
     model: string,
     request: ModelRequest,
+    endpoint?: string,
   ): Promise<number> {
     const startedAt = Date.now()
     const run = await this.loadRun(runId)
@@ -327,9 +328,9 @@ export class RuntimeRepository {
     await withTransaction(this.pool, async (client) => {
       await client.query(
         'INSERT INTO llm_calls ' +
-        '(id, workspace_id, mission_id, task_id, run_id, hop, provider, model, status, ' +
+        '(id, workspace_id, mission_id, task_id, run_id, hop, provider, model, endpoint, status, ' +
         "request_hash, request_redacted, context_snapshot_id) " +
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running', $9, $10::jsonb, $11)",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'running', $10, $11::jsonb, $12)",
         [
           callId,
           run.workspaceId,
@@ -339,6 +340,7 @@ export class RuntimeRepository {
           hop,
           provider,
           model,
+          endpoint ?? null,
           hash,
           JSON.stringify(redacted),
           request.context?.snapshotId ?? null,
@@ -354,7 +356,7 @@ export class RuntimeRepository {
         current_hop: run.currentHop,
         max_hops: run.maxHops,
         context_snapshot: run.contextSnapshot,
-      }, hop, 'model_requested', { callId, provider, model })
+      }, hop, 'model_requested', { callId, provider, model, endpoint: endpoint ?? null })
     })
     return startedAt
   }
@@ -369,13 +371,14 @@ export class RuntimeRepository {
     await withTransaction(this.pool, async (client) => {
       const updated = await client.query(
         "UPDATE llm_calls SET status = 'succeeded', response_redacted = $2::jsonb, " +
-        'provider_request_id = $3, input_tokens = $4, output_tokens = $5, cached_input_tokens = $6, ' +
-        'estimated_cost_usd = $7, latency_ms = $8, finished_at = NOW() ' +
+        'provider_request_id = $3, returned_model = $4, input_tokens = $5, output_tokens = $6, cached_input_tokens = $7, ' +
+        'estimated_cost_usd = $8, latency_ms = $9, finished_at = NOW() ' +
         "WHERE id = $1 AND status = 'running'",
         [
           callId,
           JSON.stringify(redactedResponse(response)),
           response.providerRequestId ?? null,
+          response.returnedModel ?? null,
           response.usage.inputTokens,
           response.usage.outputTokens,
           response.usage.cachedInputTokens ?? null,
@@ -397,6 +400,7 @@ export class RuntimeRepository {
       }
       await this.insertRunEvent(client, run, hop, 'model_responded', {
         callId,
+        returnedModel: response.returnedModel ?? null,
         finishReason: response.finishReason,
         toolCount: response.toolCalls.length,
       })

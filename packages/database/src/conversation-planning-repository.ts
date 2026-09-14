@@ -117,7 +117,9 @@ export interface CompletePlanningModelInput {
   readonly responseSnapshot: Readonly<Record<string, unknown>>
   readonly modelProvider: string
   readonly modelName: string
+  readonly endpoint?: string
   readonly providerRequestId?: string
+  readonly returnedModel?: string
   readonly inputTokens: number
   readonly outputTokens: number
   readonly estimatedCostUsd?: number
@@ -497,8 +499,9 @@ export class ConversationPlanningRepository {
       "UPDATE conversation_planning_requests SET status = 'model_complete', error = NULL, " +
       'plan = $4::jsonb, plan_hash = $5, ' +
       'prompt_snapshot = $6::jsonb, response_snapshot = $7::jsonb, model_provider = $8, model_name = $9, ' +
-      'provider_request_id = $10, input_tokens = $11, output_tokens = $12, estimated_cost_usd = $13, ' +
-      'latency_ms = $14, updated_at = NOW() WHERE id = $1 AND planner_agent_id = $2 ' +
+      'model_endpoint = $10, provider_request_id = $11, returned_model = $12, input_tokens = $13, ' +
+      'output_tokens = $14, estimated_cost_usd = $15, latency_ms = $16, updated_at = NOW() ' +
+      'WHERE id = $1 AND planner_agent_id = $2 ' +
       "AND status = 'running' AND lease_token = $3 AND lease_expires_at > NOW()",
       [
         input.requestId,
@@ -510,7 +513,9 @@ export class ConversationPlanningRepository {
         canonicalJson(input.responseSnapshot),
         input.modelProvider,
         input.modelName,
+        input.endpoint ?? null,
         input.providerRequestId ?? null,
+        input.returnedModel ?? null,
         input.inputTokens,
         input.outputTokens,
         input.estimatedCostUsd ?? null,

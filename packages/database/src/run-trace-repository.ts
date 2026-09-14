@@ -61,6 +61,8 @@ export interface RunLlmCallSummary {
   readonly hop: number
   readonly provider: string
   readonly model: string
+  readonly endpoint: string | null
+  readonly returnedModel: string | null
   readonly status: string
   readonly inputTokens: number | null
   readonly outputTokens: number | null
@@ -298,6 +300,8 @@ export class RunTraceRepository {
       hop: number
       provider: string
       model: string
+      endpoint: string | null
+      returned_model: string | null
       status: string
       input_tokens: number | null
       output_tokens: number | null
@@ -308,7 +312,7 @@ export class RunTraceRepository {
       started_at: string
       finished_at: string | null
     }>(
-      `SELECT c.id, c.run_id, c.hop, c.provider, c.model, c.status,
+      `SELECT c.id, c.run_id, c.hop, c.provider, c.model, c.endpoint, c.returned_model, c.status,
               c.input_tokens, c.output_tokens, c.cached_input_tokens,
               c.estimated_cost_usd, c.latency_ms,
               c.error->>'code' AS error_code,
@@ -328,6 +332,8 @@ export class RunTraceRepository {
       hop: row.hop,
       provider: row.provider,
       model: row.model,
+      endpoint: row.endpoint,
+      returnedModel: row.returned_model,
       status: row.status,
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,

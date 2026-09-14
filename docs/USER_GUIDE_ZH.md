@@ -323,6 +323,8 @@ docker compose down -v
 
 在工作台检查 Worker 心跳，在 Mission 页面检查依赖和 Task 状态，在运行记录中检查模型调用、工具调用、失败和恢复。
 
+模型调用摘要会分别显示配置的请求模型、供应商实际返回的模型标识和精确 `/responses` 端点。三者一致是正常情况；别名被解析为具体模型时，请求模型和返回模型可能不同。旧记录缺少这些字段时会明确显示“未知”，系统不会根据当前配置倒推历史事实。
+
 `Agent active` 只表示 Agent 配置启用，不表示 Worker 在线。真正的进程状态来自持久化 Worker 心跳。
 
 ### 6.4 Review、Integration 与最终批准
@@ -346,6 +348,7 @@ docker compose down -v
 | Worker 未启动 | 配置与启停中的缺失项 | 保存仓库、Worktree、模型和命令配置后启动 |
 | Worker 心跳失联 | Worker 终端或 API 子进程日志 | 等租约过期后重启；不要并行启动同一 Agent |
 | Planner 一直等待 | Planner Worker、Planning Request 状态、模型配置 | 启动 Planner，检查 Key、端点和模型名称 |
+| 请求模型与返回模型不同 | Run Trace 中的端点和返回模型 | 先确认是否为供应商别名解析；若端点异常，停止 Worker 并检查 `OPENAI_BASE_URL` |
 | Task 等待依赖 | Mission DAG 上游状态 | 先解决失败或未完成的上游 Task |
 | Builder 无法测试 | Worktree setup、测试 argv、超时 | 修正精确 argv；不要开放任意 Shell |
 | Review 失败 | Review 材料、Reviewer Worker、运行记录 | 修复证据或使用受审计的 Review retry |

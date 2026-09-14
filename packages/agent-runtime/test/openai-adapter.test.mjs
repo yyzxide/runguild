@@ -6,6 +6,7 @@ import { OpenAIResponsesAdapter } from '../dist/index.js'
 function response(overrides = {}) {
   return {
     id: 'resp_test',
+    model: 'model-test-returned',
     status: 'completed',
     output_text: '',
     output: [],
@@ -78,6 +79,8 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
   assert.equal(fake.requests[0].body.tool_choice, 'auto')
   assert.equal(fake.requests[0].body.parallel_tool_calls, true)
   assert.equal(result.providerRequestId, 'resp_first')
+  assert.equal(result.returnedModel, 'model-test-returned')
+  assert.equal(adapter.endpoint, 'https://api.openai.com/v1/responses')
   assert.equal(result.finishReason, 'tool_calls')
   assert.deepEqual(result.toolCalls, [{
     id: 'call_search',
@@ -89,6 +92,43 @@ test('OpenAI adapter maps protocol messages and function calls to Responses API 
     outputTokens: 5,
     cachedInputTokens: 3,
   })
+})
+
+test('OpenAI adapter records a normalized compatible endpoint and rejects ambiguous provenance', async () => {
+  const fake = fakeClient([response()])
+  const adapter = new OpenAIResponsesAdapter({
+    apiKey: '', model: 'model-test', baseURL: 'https://api.example.test/v1/', client: fake.client,
+  })
+  assert.equal(adapter.endpoint, 'https://api.example.test/v1/responses')
+
+  for (const baseURL of [
+    'https://user:secret@example.test/v1',
+    'https://example.test/v1?tenant=one',
+    'https://example.test/v1#fragment',
+    'http://example.test/v1',
+    ' https://example.test/v1',
+  ]) {
+    assert.throws(
+      () => new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', baseURL, client: fake.client }),
+      /baseURL|HTTPS|credentials|query|whitespace/,
+    )
+  }
+
+  const local = new OpenAIResponsesAdapter({
+    apiKey: '', model: 'model-test', baseURL: 'http://127.0.0.1:8080/v1', client: fake.client,
+  })
+  assert.equal(local.endpoint, 'http://127.0.0.1:8080/v1/responses')
+})
+
+test('OpenAI adapter rejects a response without a trustworthy returned model identifier', async () => {
+  for (const model of [undefined, '', ' model-name', 'model\nname', 'x'.repeat(257)]) {
+    const fake = fakeClient([response({ model })])
+    const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'model-test', client: fake.client })
+    await assert.rejects(
+      adapter.complete({ messages: [{ role: 'user', content: 'hello' }], tools: [] }),
+      /response\.model/,
+    )
+  }
 })
 
 test('OpenAI adapter can require non-thinking one-at-a-time structured control-plane output', async () => {

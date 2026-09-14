@@ -168,6 +168,12 @@ the stored plan without paying for the model twice. The Planner can propose the
 plan and report back to the room, but only a human can approve and materialize
 the DAG.
 
+Planner and Reviewer ledgers preserve three distinct provenance fields: the
+configured model, the exact normalized transport endpoint, and the model name
+returned by the provider. The ordinary Agent LLM ledger uses the same contract.
+These are facts from different points in the request lifecycle and are not
+silently collapsed into one label.
+
 The current Planner contract represents independent approval as
 `reviewRequired=true` on the producing Task. It must not generate a downstream
 Reviewer Task solely to approve that parent: the parent cannot complete until
@@ -685,7 +691,10 @@ failed harness can be diagnosed without reading raw model content.
 ## 10. Current model execution
 
 The production provider is OpenAI Responses. Every successful response id is
-stored in the LLM ledger. The default OpenAI endpoint reuses it as
+stored in the LLM ledger. Each call also stores the exact credential-free
+`/responses` endpoint and the provider-returned model identifier separately
+from the requested model. Missing provenance in historical rows remains null.
+The default OpenAI endpoint reuses the response id as
 `previous_response_id` after a durable resume, while a configured custom
 `OPENAI_BASE_URL` conservatively replays the complete local transcript because
 OpenAI-compatible endpoints are not guaranteed to persist responses. A

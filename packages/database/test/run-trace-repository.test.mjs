@@ -84,6 +84,7 @@ test('getRun returns redacted detail with stable serialization and scoped joins'
   }]
   const llmRows = [{
     id: 'llm_1', run_id: 'run_detail_1', hop: 1, provider: 'openai', model: 'gpt-test',
+    endpoint: 'https://api.example.test/responses', returned_model: 'gpt-test-2030-01-01',
     status: 'completed', input_tokens: 1000, output_tokens: 500, cached_input_tokens: 0,
     estimated_cost_usd: '0.0123', latency_ms: 1200, error_code: null,
     started_at: new Date('2030-01-01T00:00:00.000Z'),
@@ -111,6 +112,8 @@ test('getRun returns redacted detail with stable serialization and scoped joins'
   // BIGSERIAL seq and pg NUMERIC cost are JSON-safe numbers.
   assert.equal(detail.events[0].seq, 1)
   assert.equal(detail.llmCalls[0].estimatedCostUsd, 0.0123)
+  assert.equal(detail.llmCalls[0].endpoint, 'https://api.example.test/responses')
+  assert.equal(detail.llmCalls[0].returnedModel, 'gpt-test-2030-01-01')
   assert.equal(detail.toolExecutions[0].action, 'file.read')
   // Context summary only projects explicit summary fields; no secrets or raw messages.
   assert.equal(detail.contextSummary.modelProvider, 'openai')

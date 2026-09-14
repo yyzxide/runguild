@@ -236,6 +236,8 @@ export interface RunTraceLlmCallSummary {
   readonly hop: number
   readonly provider: string
   readonly model: string
+  readonly endpoint: string | null
+  readonly returnedModel: string | null
   readonly status: string
   readonly inputTokens: number | null
   readonly outputTokens: number | null

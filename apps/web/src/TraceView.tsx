@@ -131,6 +131,8 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
               <span className="trace-event__index">{String(call.hop).padStart(2, '0')}</span>
               <code className="trace-call__hop">hop {call.hop}</code>
               <strong>{statusLabels[call.status] ?? call.status}</strong>
+              <p>{call.provider} · {call.model}{call.returnedModel === null ? '' : ` → ${call.returnedModel}`}</p>
+              <code>{call.endpoint ?? '端点未知（历史记录）'}</code>
               <p>{formatNumber(call.inputTokens)} 输入 · {formatNumber(call.outputTokens)} 输出 · {formatNumber(call.cachedInputTokens)} 缓存</p>
               <code>{formatCost(call.estimatedCostUsd)}</code>
               <code>{call.latencyMs === null ? '—' : `${call.latencyMs} ms`}</code>

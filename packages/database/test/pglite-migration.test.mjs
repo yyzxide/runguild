@@ -33,6 +33,8 @@ const migrationUrls = [
   new URL('../migrations/0026_flash_agent_hop_budget.sql', import.meta.url),
   new URL('../migrations/0027_protected_test_paths.sql', import.meta.url),
   new URL('../migrations/0028_test_sandbox_config.sql', import.meta.url),
+  new URL('../migrations/0029_evaluation_unknown_pricing.sql', import.meta.url),
+  new URL('../migrations/0030_model_provider_provenance.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {
@@ -111,6 +113,14 @@ test('core migration executes on an in-process PostgreSQL engine', async () => {
       "WHERE table_schema = 'public' AND table_name = 'agent_runs' AND column_name = 'max_hops'",
     )
     assert.match(runBudget.rows[0].column_default, /60/)
+    const provenanceColumns = await database.query(
+      "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' " +
+      "AND ((table_name = 'llm_calls' AND column_name IN ('endpoint', 'returned_model')) " +
+      "OR (table_name = 'reviewer_model_calls' AND column_name IN ('endpoint', 'returned_model')) " +
+      "OR (table_name = 'review_executions' AND column_name IN ('model_endpoint', 'returned_model')) " +
+      "OR (table_name = 'conversation_planning_requests' AND column_name IN ('model_endpoint', 'returned_model')))",
+    )
+    assert.equal(provenanceColumns.rows.length, 8)
   } finally {
     await database.close()
   }

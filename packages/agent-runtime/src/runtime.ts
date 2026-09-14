@@ -72,6 +72,7 @@ export interface RuntimePersistence {
     provider: string,
     model: string,
     request: ModelRequest,
+    endpoint?: string,
   ): Promise<number>
   finishModelCall(
     callId: LlmCallId,
@@ -360,6 +361,7 @@ export class AgentRuntime {
         this.options.model.provider,
         this.options.model.model,
         request,
+        this.options.model.endpoint,
       )
 
       let response: Awaited<ReturnType<ModelAdapter['complete']>>

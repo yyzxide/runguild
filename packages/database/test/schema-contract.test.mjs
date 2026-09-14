@@ -21,6 +21,8 @@ const agentRunHopBudgetMigrationUrl = new URL('../migrations/0025_agent_run_hop_
 const flashAgentHopBudgetMigrationUrl = new URL('../migrations/0026_flash_agent_hop_budget.sql', import.meta.url)
 const protectedTestPathsMigrationUrl = new URL('../migrations/0027_protected_test_paths.sql', import.meta.url)
 const testSandboxConfigMigrationUrl = new URL('../migrations/0028_test_sandbox_config.sql', import.meta.url)
+const unknownPricingMigrationUrl = new URL('../migrations/0029_evaluation_unknown_pricing.sql', import.meta.url)
+const modelProviderProvenanceMigrationUrl = new URL('../migrations/0030_model_provider_provenance.sql', import.meta.url)
 const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
@@ -264,6 +266,20 @@ test('Project Runtime Configuration distinguishes trusted process and Linux sand
   assert.match(sql, /test_max_processes BETWEEN 16 AND 4096/)
   assert.match(sql, /trusted_process_network_check/)
   assert.match(runner, /0028_test_sandbox_config\.sql/)
+})
+
+test('migration runner includes unknown-pricing correction and exact model provider provenance', async () => {
+  const unknownPricingSql = await readFile(unknownPricingMigrationUrl, 'utf8')
+  const provenanceSql = await readFile(modelProviderProvenanceMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(unknownPricingSql, /estimatedCostUsd/)
+  assert.match(provenanceSql, /ALTER TABLE llm_calls/)
+  assert.match(provenanceSql, /ALTER TABLE reviewer_model_calls/)
+  assert.match(provenanceSql, /ALTER TABLE conversation_planning_requests/)
+  assert.match(provenanceSql, /returned_model/)
+  assert.match(runner, /0029_evaluation_unknown_pricing\.sql/)
+  assert.match(runner, /0030_model_provider_provenance\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

@@ -22,10 +22,12 @@ const migrationUrls = [
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
   new URL('../migrations/0010_conversations.sql', import.meta.url),
+  new URL('../migrations/0011_conversation_planning.sql', import.meta.url),
   new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
   new URL('../migrations/0016_submission_evidence.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
   new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
+  new URL('../migrations/0030_model_provider_provenance.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -474,7 +476,9 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
           responseSnapshot: { finishReason: 'stop', content: 'Approved in prose.', toolCalls: [] },
           modelProvider: 'openai',
           modelName: 'test',
+          endpoint: 'https://api.example.test/responses',
           providerRequestId: 'response_invalid',
+          returnedModel: 'test-2026-09-14',
           inputTokens: 321,
           outputTokens: 17,
           cachedInputTokens: 123,
@@ -495,22 +499,26 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
     )
     assert.equal(failed.rows[0].status, 'failed')
     const invalidResponse = await database.query(
-      'SELECT response_snapshot, provider_request_id, input_tokens, output_tokens ' +
+      'SELECT response_snapshot, model_endpoint, provider_request_id, returned_model, input_tokens, output_tokens ' +
       'FROM review_executions WHERE review_id = $1',
       [reviewId],
     )
     assert.equal(invalidResponse.rows[0].response_snapshot.content, 'Approved in prose.')
     assert.equal(invalidResponse.rows[0].provider_request_id, 'response_invalid')
+    assert.equal(invalidResponse.rows[0].model_endpoint, 'https://api.example.test/responses')
+    assert.equal(invalidResponse.rows[0].returned_model, 'test-2026-09-14')
     assert.equal(invalidResponse.rows[0].input_tokens, 321)
     assert.equal(invalidResponse.rows[0].output_tokens, 17)
     const invalidCalls = await database.query(
-      'SELECT attempt, status, input_tokens, output_tokens, cached_input_tokens, error ' +
+      'SELECT attempt, status, endpoint, returned_model, input_tokens, output_tokens, cached_input_tokens, error ' +
       'FROM reviewer_model_calls WHERE review_id = $1 ORDER BY attempt',
       [reviewId],
     )
     assert.deepEqual(invalidCalls.rows, [{
       attempt: 1,
       status: 'invalid',
+      endpoint: 'https://api.example.test/responses',
+      returned_model: 'test-2026-09-14',
       input_tokens: 321,
       output_tokens: 17,
       cached_input_tokens: 123,

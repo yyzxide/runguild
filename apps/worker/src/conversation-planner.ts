@@ -229,7 +229,9 @@ export class ConversationPlanner {
           },
           modelProvider: model.provider,
           modelName: model.model,
+          ...(model.endpoint === undefined ? {} : { endpoint: model.endpoint }),
           ...(response.providerRequestId === undefined ? {} : { providerRequestId: response.providerRequestId }),
+          ...(response.returnedModel === undefined ? {} : { returnedModel: response.returnedModel }),
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
           ...(response.usage.estimatedCostUsd === undefined

@@ -12,7 +12,9 @@ import {
 const migrations = [
   '0001_core.sql', '0002_orchestration.sql', '0003_runtime.sql',
   '0010_conversations.sql', '0011_conversation_planning.sql',
+  '0014_reviewer_execution.sql', '0018_reviewer_model_calls.sql',
   '0021_authentication.sql', '0023_project_lifecycle.sql',
+  '0030_model_provider_provenance.sql',
 ]
 
 function poolAdapter(database) {
@@ -138,7 +140,9 @@ test('selected Conversation messages atomically create a leased Planner request 
       requestId: 'planning_request', plannerAgentId: 'planner',
       leaseToken: retried.work.leaseToken, plan,
       promptSnapshot: { messages: 2 }, responseSnapshot: { toolCalls: 1 },
-      modelProvider: 'test', modelName: 'planner-model', providerRequestId: 'response_1',
+      modelProvider: 'test', modelName: 'planner-model',
+      endpoint: 'https://api.example.test/responses', providerRequestId: 'response_1',
+      returnedModel: 'planner-model-2026-09-14',
       inputTokens: 120, outputTokens: 80, estimatedCostUsd: 0.01, latencyMs: 25,
     })
     const awaiting = await repository.markAwaitingApproval({
@@ -148,6 +152,14 @@ test('selected Conversation messages atomically create a leased Planner request 
     assert.equal(awaiting.status, 'awaiting_approval')
     assert.equal(awaiting.planVersion, 1)
     assert.equal('error' in awaiting, false)
+    const provenance = await database.query(
+      'SELECT model_endpoint, returned_model FROM conversation_planning_requests WHERE id = $1',
+      ['planning_request'],
+    )
+    assert.deepEqual(provenance.rows[0], {
+      model_endpoint: 'https://api.example.test/responses',
+      returned_model: 'planner-model-2026-09-14',
+    })
     assert.equal(await repository.get('ws', 'planning_request', { kind: 'user', id: 'outsider' }), null)
     await database.query(
       "UPDATE missions SET status = 'running', approved_by = 'user', approved_at = NOW() " +
