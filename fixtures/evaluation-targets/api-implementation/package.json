@@ -1,0 +1,9 @@
+{
+  "name": "runguild-eval-api-implementation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "node --check src/router.mjs"
+  }
+}
