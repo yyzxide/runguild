@@ -205,7 +205,7 @@ function scenarioDefinition(family, baselineCommit) {
     singleAgentPlan: {
       summary: 'One Builder inspects, implements, verifies, commits, and submits the complete bounded change.',
       tasks: [task(
-        'implement', metadata.name, metadata.focus + ' Then implement the complete contract, run both configured checks, commit, and submit the exact Artifact Version.',
+        'implement', metadata.name, metadata.focus + ' Then implement the complete contract and commit the source change. Run both configured checks only after the commit so they produce clean stable HEAD evidence; if a fix is needed, recommit and rerun. Finally submit the exact Artifact Version.',
         'builder', [], true, implementationCriteria,
       )],
     },
@@ -220,7 +220,7 @@ function scenarioDefinition(family, baselineCommit) {
         ),
         task(
           'implement', metadata.name,
-          'Read the upstream Mission Artifact, verify it against the repository, then implement the complete contract, run both configured checks, commit, and submit the exact Artifact Version.',
+          'Read the upstream Mission Artifact, verify it against the repository, then implement the complete contract and commit the source change. Run both configured checks only after the commit so they produce clean stable HEAD evidence; if a fix is needed, recommit and rerun. Finally submit the exact Artifact Version.',
           'builder', ['research'], true, implementationCriteria,
         ),
       ],

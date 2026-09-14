@@ -248,6 +248,27 @@ test('durable cancellation wins before a model call', async () => {
   assert.equal(setup.model.requests.length, 0)
 })
 
+test('external lease recovery after a model response prevents stale tool side effects', async () => {
+  const persistence = new MemoryPersistence()
+  persistence.finishModelCall = async () => {
+    persistence.run.status = 'timed_out'
+  }
+  const tools = new MemoryTools()
+  const setup = runtime({
+    persistence,
+    tools,
+    responses: [response({
+      toolCalls: [{ id: 'call_stale', action: 'repo.search', input: { query: 'must-not-run' } }],
+    })],
+  })
+
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+
+  assert.deepEqual(outcome, { status: 'timed_out', summary: 'Run is already timed_out.', hops: 1 })
+  assert.equal(tools.calls.length, 0)
+  assert.equal(persistence.messages.some((message) => message.toolCallId === 'call_stale'), false)
+})
+
 test('hop budget times out repeated non-terminal model responses', async () => {
   const persistence = new MemoryPersistence(2)
   const setup = runtime({

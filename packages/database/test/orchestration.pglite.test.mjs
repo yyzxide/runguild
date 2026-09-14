@@ -261,6 +261,63 @@ test('mission approval routes ready DAG tasks by role and requires a Dispatch To
   }
 })
 
+test('scheduler dispatches at most one unconsumed or active Run per Agent identity', async () => {
+  const database = new PGlite()
+  try {
+    await applyMigrations(database)
+    await database.exec(
+      "INSERT INTO workspaces (id, name) VALUES ('ws_backpressure', 'Backpressure');" +
+      "INSERT INTO projects (id, workspace_id, name) VALUES ('project_backpressure', 'ws_backpressure', 'Project');" +
+      "INSERT INTO agents (id, workspace_id, name, role, model_provider, model_name) VALUES " +
+      "('builder_backpressure', 'ws_backpressure', 'Builder', 'builder', 'test', 'test');" +
+      "INSERT INTO conversations (id, workspace_id, project_id, kind, title) VALUES " +
+      "('room_backpressure', 'ws_backpressure', 'project_backpressure', 'project_room', 'Room');" +
+      "INSERT INTO conversation_members (conversation_id, workspace_id, participant_kind, participant_id) VALUES " +
+      "('room_backpressure', 'ws_backpressure', 'agent', 'builder_backpressure');" +
+      "INSERT INTO missions (id, workspace_id, project_id, title, goal, status, created_by) VALUES " +
+      "('mission_backpressure', 'ws_backpressure', 'project_backpressure', 'Mission', 'Goal', 'running', 'user');" +
+      "INSERT INTO tasks (id, mission_id, title, status, required_role, priority) VALUES " +
+      "('task_backpressure_a', 'mission_backpressure', 'A', 'ready', 'builder', 1), " +
+      "('task_backpressure_b', 'mission_backpressure', 'B', 'ready', 'builder', 2), " +
+      "('task_backpressure_c', 'mission_backpressure', 'C', 'ready', 'builder', 3);",
+    )
+    const pool = poolAdapter(database)
+    const scheduler = new SchedulerRepository(pool)
+    const tasks = new TaskRepository(pool)
+    const first = await scheduler.dispatchReadyTasks({
+      limit: 10, dispatchSeconds: 60, correlationId: 'backpressure_first',
+    })
+    assert.equal(first.length, 1)
+    assert.equal(first[0].taskId, 'task_backpressure_a')
+    assert.equal((await scheduler.dispatchReadyTasks({
+      limit: 10, dispatchSeconds: 60, correlationId: 'backpressure_pending',
+    })).length, 0)
+
+    await database.exec(
+      "UPDATE task_dispatches SET status = 'cancelled' WHERE task_id = 'task_backpressure_a';" +
+      "UPDATE tasks SET status = 'completed' WHERE id = 'task_backpressure_a';",
+    )
+    const second = await scheduler.dispatchReadyTasks({
+      limit: 10, dispatchSeconds: 60, correlationId: 'backpressure_second',
+    })
+    assert.equal(second.length, 1)
+    assert.equal(second[0].taskId, 'task_backpressure_b')
+    const claimed = await tasks.claimTask({
+      workspaceId: 'ws_backpressure', projectId: 'project_backpressure',
+      missionId: 'mission_backpressure', taskId: 'task_backpressure_b',
+      agentId: 'builder_backpressure', runId: 'run_backpressure',
+      correlationId: 'backpressure_claim', dispatchToken: second[0].dispatchToken,
+      leaseSeconds: 60,
+    })
+    assert.equal(claimed.claimed, true)
+    assert.equal((await scheduler.dispatchReadyTasks({
+      limit: 10, dispatchSeconds: 60, correlationId: 'backpressure_active',
+    })).length, 0)
+  } finally {
+    await database.close()
+  }
+})
+
 test('final human approval binds the exact Artifact Version before completing a Mission', async () => {
   const database = new PGlite()
   try {

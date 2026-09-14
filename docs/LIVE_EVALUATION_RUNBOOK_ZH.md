@@ -9,6 +9,8 @@
 - `test/acceptance.test.mjs` 是受保护控制面证据，Agent 的补丁和测试副作用都不能修改它。
 - Bubblewrap 使用 `network=host`，隔离文件系统和资源，但不宣称隔离网络。
 - 输出保留配置、报告、Run Trace 和模型溯源，不保留模型请求/响应正文。
+- 同一 Agent 身份同时最多持有一个待消费 Dispatch 或活动 Run，避免串行 Worker 预先领取多个会过期的租约。
+- Evaluation 中的 `waiting_human` 视为本次自主 Trial 失败并形成终态指标；它不会让无人值守实验永久挂起。
 
 ## 单组实验
 

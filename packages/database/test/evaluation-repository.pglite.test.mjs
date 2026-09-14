@@ -421,3 +421,36 @@ test('materialization reservations use fencing tokens and retry a failed worker 
     await database.close()
   }
 })
+
+test('autonomous Evaluation records waiting_human as a failed terminal Trial', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const pool = poolAdapter(database)
+    const repository = new EvaluationRepository(pool)
+    const experiment = await createExperiment(repository)
+    const coordinator = new EvaluationCoordinator(
+      repository,
+      new EvaluationMissionDriver(new MissionRepository(pool)),
+    )
+    await coordinator.tick({ materializationLimit: 10, collectionLimit: 10, leaseSeconds: 30 })
+    const materialized = await repository.getExperiment('ws_eval', 'project_eval', experiment.id)
+    const single = materialized.trials.find((trial) => trial.variant === 'single_agent')
+    assert.ok(single?.missionId)
+    await database.query(
+      "UPDATE tasks SET status = 'waiting_human' WHERE mission_id = $1",
+      [single.missionId],
+    )
+
+    const collected = await coordinator.tick({ materializationLimit: 10, collectionLimit: 10, leaseSeconds: 30 })
+    assert.equal(collected.collected, 1)
+    assert.equal(collected.successful, 0)
+    const snapshot = await repository.getExperiment('ws_eval', 'project_eval', experiment.id)
+    const terminal = snapshot.trials.find((trial) => trial.id === single.id)
+    assert.equal(terminal.status, 'completed')
+    assert.equal(terminal.metrics.success, false)
+    assert.equal(terminal.metrics.taskCompletionRate, 0)
+  } finally {
+    await database.close()
+  }
+})

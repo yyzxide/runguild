@@ -497,9 +497,9 @@ export class EvaluationRepository {
       "m.status IN ('completed', 'failed', 'cancelled') OR " +
       '(EXISTS (SELECT 1 FROM tasks any_task WHERE any_task.mission_id = m.id) AND (' +
       "  NOT EXISTS (SELECT 1 FROM tasks open_task WHERE open_task.mission_id = m.id AND open_task.status <> 'completed') OR " +
-      "  (EXISTS (SELECT 1 FROM tasks bad_task WHERE bad_task.mission_id = m.id AND bad_task.status IN ('failed', 'cancelled')) " +
+      "  (EXISTS (SELECT 1 FROM tasks bad_task WHERE bad_task.mission_id = m.id AND bad_task.status IN ('failed', 'cancelled', 'waiting_human')) " +
       "   AND NOT EXISTS (SELECT 1 FROM tasks active_task WHERE active_task.mission_id = m.id " +
-      "     AND active_task.status IN ('ready', 'claimed', 'running', 'waiting_human', 'reviewing')))" +
+      "     AND active_task.status IN ('ready', 'claimed', 'running', 'reviewing')))" +
       '))) ORDER BY t.started_at, t.id LIMIT $1',
       [limit],
     )
@@ -585,9 +585,9 @@ export class EvaluationRepository {
       const success = taskResult.rows.every((task) => task.status === 'completed')
         && ['reviewing', 'completed'].includes(missionRow.status)
       const hasFailure = ['failed', 'cancelled'].includes(missionRow.status)
-        || taskResult.rows.some((task) => ['failed', 'cancelled'].includes(task.status))
+        || taskResult.rows.some((task) => ['failed', 'cancelled', 'waiting_human'].includes(task.status))
       const hasActive = taskResult.rows.some((task) =>
-        ['ready', 'claimed', 'running', 'waiting_human', 'reviewing'].includes(task.status))
+        ['ready', 'claimed', 'running', 'reviewing'].includes(task.status))
       if (!success && (!hasFailure || hasActive)) return null
 
       const aggregates = await this.metricAggregates(client, trial.mission_id)

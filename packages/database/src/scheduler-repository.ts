@@ -99,13 +99,14 @@ export class SchedulerRepository {
           "  WHERE member.participant_kind = 'agent' AND member.participant_id = a.id " +
           '  AND member.workspace_id = a.workspace_id AND conversation.project_id = $3' +
           ') ' +
-          'ORDER BY (' +
-          '  SELECT COUNT(*) FROM agent_runs r WHERE r.agent_id = a.id ' +
-          "  AND r.status IN ('queued', 'starting', 'running', 'waiting_tool', 'waiting_human')" +
-          ') + (' +
-          '  SELECT COUNT(*) FROM task_dispatches d WHERE d.agent_id = a.id ' +
+          'AND NOT EXISTS (' +
+          '  SELECT 1 FROM agent_runs r WHERE r.agent_id = a.id ' +
+          "  AND r.status IN ('queued', 'starting', 'running', 'waiting_tool')" +
+          ') ' +
+          'AND NOT EXISTS (' +
+          '  SELECT 1 FROM task_dispatches d WHERE d.agent_id = a.id ' +
           "  AND d.status = 'pending' AND d.expires_at > NOW()" +
-          ') ASC, a.id ASC LIMIT 1',
+          ') ORDER BY a.id ASC LIMIT 1',
           [task.workspace_id, task.required_role, task.project_id],
         )
         const agentIdRaw = agent.rows[0]?.id

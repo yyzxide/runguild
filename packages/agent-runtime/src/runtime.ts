@@ -376,6 +376,9 @@ export class AgentRuntime {
         const message = error instanceof Error ? error.message : String(error)
         return this.finish(input.runId, 'failed', 'Model call failed: ' + message, hop)
       }
+      context = await this.requireRun(input.runId)
+      const externallyTerminated = terminalOutcome(context)
+      if (externallyTerminated) return externallyTerminated
 
       const assistantMessage: ModelMessage = {
         role: 'assistant',
