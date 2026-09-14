@@ -198,7 +198,7 @@ Reviewer 和协作室；任何一步失败都会整体回滚。浏览器不会�
 ID、Project ID、Agent ID 或 Conversation ID。
 
 若创建时留空仓库路径，进入工作台后打开“配置与启停”，再补充仓库路径、
-Worktree 根目录、准备命令和测试白名单。创建工作区不会自动启动 Worker，也
+Worktree 根目录、准备命令、测试白名单和受保护验收路径。创建工作区不会自动启动 Worker，也
 不会扫描或修改填写的仓库。
 
 ### 3.8 重命名、归档与恢复工作区
@@ -224,8 +224,9 @@ Worktree 根目录、准备命令和测试白名单。创建工作区不会自�
 3. **默认分支**：通常是 `main`。
 4. **Worktree 准备命令**：新 Worktree 没有 `node_modules`，Node 项目通常需要一个经过审查的精确 argv，例如 `npm ci --ignore-scripts --no-audit --no-fund`。
 5. **测试白名单**：每项都是精确 argv，不是 Shell 文本，例如 `npm run typecheck`、`npm test`。
-6. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
-7. **Token 和超时**：先保留默认值，真实运行暴露问题后再调整。
+6. **受保护验收路径**：填写 Git 已跟踪的测试、夹具与命令入口，例如 `test/acceptance`、`package.json`。Agent 不能修改这些路径；测试前后会校验内容清单。若命令是 `npm test`，至少保护 `package.json` 与真正决定通过/失败的测试目录。
+7. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
+8. **Token 和超时**：先保留默认值，真实运行暴露问题后再调整。
 
 API Key 只来自 API 进程环境，不进入 PostgreSQL，也不会返回浏览器。
 
@@ -328,6 +329,7 @@ docker compose down -v
 
 - Worktree 中形成精确 Git commit；
 - 必需测试产生 Evidence；
+- 测试对应干净、稳定的 Git HEAD，且受保护验收文件未变化；
 - Artifact Version 已冻结；
 - Reviewer 审查的是该精确版本和提交；
 - Integration Worker 只集成已审查的 commit。

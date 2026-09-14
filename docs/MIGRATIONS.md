@@ -48,6 +48,10 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 | 0021 | `0021_authentication.sql` | 增加用户角色、密码凭据、可撤销 Session、CSRF、登录节流和认证审计事件。 |
 | 0022 | `0022_project_memberships.sql` | 增加 Project 级人类成员与 Owner/Operator/Viewer 角色、成员变更审计，并把已有租户用户回填到原先可访问的 Project。 |
 | 0023 | `0023_project_lifecycle.sql` | 增加 Project 可恢复归档状态、归档操作者、活动 Project 索引，以及重命名/归档/恢复审计账本。 |
+| 0024 | `0024_model_protocol_events.sql` | 增加模型协议修复失败事件，使结构化输出错误进入持久化 Run Trace。 |
+| 0025 | `0025_agent_run_hop_budget.sql` | 调整 Agent Run hop 预算并为验收收尾保留有界空间。 |
+| 0026 | `0026_flash_agent_hop_budget.sql` | 为 Flash 类模型增加可配置的默认执行 hop 预算。 |
+| 0027 | `0027_protected_test_paths.sql` | 持久化项目级受保护验收路径，供 Agent Worker 冻结测试内容清单并拒绝篡改。 |
 
 ## 为什么不能跳过 Migration
 

@@ -8,6 +8,7 @@ import { withTransaction } from './transaction.js'
 
 const DEFAULT_TEST_COMMANDS = [['npm', 'test'], ['npm', 'run', 'typecheck']] as const
 const DEFAULT_WORKTREE_SETUP_COMMANDS: readonly (readonly string[])[] = []
+const DEFAULT_PROTECTED_TEST_PATHS: readonly string[] = []
 
 export interface ProjectRuntimeConfiguration {
   readonly project: {
@@ -22,6 +23,7 @@ export interface ProjectRuntimeConfiguration {
     readonly worktreeSetupCommands: readonly (readonly string[])[]
     readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
+    readonly protectedTestPaths: readonly string[]
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
   }
@@ -45,6 +47,7 @@ export interface UpdateProjectRuntimeConfigurationInput {
   readonly worktreeSetupCommands: readonly (readonly string[])[]
   readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
+  readonly protectedTestPaths: readonly string[]
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number
   readonly agentModels: readonly {
@@ -87,6 +90,12 @@ function validateInput(input: UpdateProjectRuntimeConfigurationInput): {
         || command.length < 1 || command.length > 30
         || command.some((part) => typeof part !== 'string' || !part.trim() || part.length > 1_000))) {
     throw new Error('Test commands must contain 1-50 non-empty argument arrays')
+  }
+  if (!Array.isArray(input.protectedTestPaths) || input.protectedTestPaths.length > 200
+      || input.protectedTestPaths.some((path) => typeof path !== 'string'
+        || !path.trim() || path.length > 4_096 || path.includes('\0') || isAbsolute(path)
+        || path.split(/[\\/]/).includes('..') || path === '.git' || path.startsWith('.git/'))) {
+    throw new Error('Protected test paths must contain at most 200 safe relative paths')
   }
   if (!Array.isArray(input.worktreeSetupCommands) || input.worktreeSetupCommands.length > 20
       || input.worktreeSetupCommands.some((command) => !Array.isArray(command)
@@ -137,6 +146,7 @@ export class ProjectRuntimeConfigRepository {
         readonly worktree_setup_commands: readonly (readonly string[])[] | null
         readonly worktree_setup_timeout_ms: number | null
         readonly test_commands: readonly (readonly string[])[] | null
+        readonly protected_test_paths: readonly string[] | null
         readonly agent_context_input_tokens: number | null
         readonly agent_max_test_timeout_ms: number | null
         readonly conversation_id: string | null
@@ -144,6 +154,7 @@ export class ProjectRuntimeConfigRepository {
         'SELECT project.id, project.workspace_id, project.name, project.repository_path, ' +
         'project.default_branch, config.worktree_root, config.worktree_setup_commands, ' +
         'config.worktree_setup_timeout_ms, config.test_commands, ' +
+        'config.protected_test_paths, ' +
         'config.agent_context_input_tokens, config.agent_max_test_timeout_ms, room.id AS conversation_id ' +
         'FROM projects project ' +
         'JOIN project_memberships actor ON actor.user_id = $3 ' +
@@ -189,6 +200,7 @@ export class ProjectRuntimeConfigRepository {
           worktreeSetupCommands: row.worktree_setup_commands ?? DEFAULT_WORKTREE_SETUP_COMMANDS,
           worktreeSetupTimeoutMs: row.worktree_setup_timeout_ms ?? 300_000,
           testCommands: row.test_commands?.length ? row.test_commands : DEFAULT_TEST_COMMANDS,
+          protectedTestPaths: row.protected_test_paths ?? DEFAULT_PROTECTED_TEST_PATHS,
           agentContextInputTokens: row.agent_context_input_tokens ?? 65_536,
           agentMaxTestTimeoutMs: row.agent_max_test_timeout_ms ?? 120_000,
         },
@@ -238,12 +250,13 @@ export class ProjectRuntimeConfigRepository {
       await client.query(
         'INSERT INTO project_runtime_configs ' +
         '(project_id, workspace_id, worktree_root, worktree_setup_commands, worktree_setup_timeout_ms, ' +
-        'test_commands, agent_context_input_tokens, agent_max_test_timeout_ms) ' +
-        'VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8) ON CONFLICT (project_id) DO UPDATE SET ' +
+        'test_commands, protected_test_paths, agent_context_input_tokens, agent_max_test_timeout_ms) ' +
+        'VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8, $9) ON CONFLICT (project_id) DO UPDATE SET ' +
         'worktree_root = EXCLUDED.worktree_root, ' +
         'worktree_setup_commands = EXCLUDED.worktree_setup_commands, ' +
         'worktree_setup_timeout_ms = EXCLUDED.worktree_setup_timeout_ms, ' +
         'test_commands = EXCLUDED.test_commands, ' +
+        'protected_test_paths = EXCLUDED.protected_test_paths, ' +
         'agent_context_input_tokens = EXCLUDED.agent_context_input_tokens, ' +
         'agent_max_test_timeout_ms = EXCLUDED.agent_max_test_timeout_ms, updated_at = NOW()',
         [
@@ -253,6 +266,7 @@ export class ProjectRuntimeConfigRepository {
           canonicalJson(input.worktreeSetupCommands),
           input.worktreeSetupTimeoutMs,
           canonicalJson(input.testCommands),
+          canonicalJson([...new Set(input.protectedTestPaths.map((path) => path.trim()))].sort()),
           input.agentContextInputTokens,
           input.agentMaxTestTimeoutMs,
         ],

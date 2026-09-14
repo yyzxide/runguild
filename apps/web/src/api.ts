@@ -395,6 +395,7 @@ export interface ProjectRuntimeConfiguration {
     readonly worktreeSetupCommands: readonly (readonly string[])[]
     readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
+    readonly protectedTestPaths: readonly string[]
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
   }
@@ -446,6 +447,7 @@ export interface UpdateProjectRuntimeConfiguration {
   readonly worktreeSetupCommands: readonly (readonly string[])[]
   readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
+  readonly protectedTestPaths: readonly string[]
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number
   readonly agentModels: readonly {

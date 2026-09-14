@@ -624,6 +624,14 @@ HEAD is contained by the recorded base ref.
 
 The runtime exposes no general shell tool. `test.run` spawns an argv array
 without a shell and only when it exactly matches the configured allowlist.
+The Project configuration can also freeze a list of Git-tracked acceptance-test
+files or directories when a Task Worktree is first assigned. Agent patch,
+delete, and commit tools reject those paths; every test run re-hashes the
+protected manifest before and after execution. A zero exit code is not passing
+Evidence when the Worktree changed during the command, the protected manifest
+changed, the snapshot is dirty, or the result cannot be tied to the exact HEAD
+and tree. The Evidence content hash includes this repository state, so identical
+console output at different commits cannot collapse into one stale record.
 The development-only local Worker supervisor follows the same boundary. Its
 routes exist only when `ENABLE_LOCAL_RUNTIME_CONTROL=true`; child processes
 receive an explicit environment allowlist, model credentials come only from the

@@ -422,6 +422,7 @@ const updateProjectRuntimeConfigSchema = z.object({
   worktreeSetupCommands: z.array(z.array(z.string().min(1).max(1_000)).min(1).max(30)).max(20),
   worktreeSetupTimeoutMs: z.number().int().min(1_000).max(900_000),
   testCommands: z.array(z.array(z.string().min(1).max(1_000)).min(1).max(30)).min(1).max(50),
+  protectedTestPaths: z.array(z.string().trim().min(1).max(4_096)).max(200),
   agentContextInputTokens: z.number().int().min(256).max(2_000_000),
   agentMaxTestTimeoutMs: z.number().int().min(1_000).max(900_000),
   agentModels: z.array(z.object({

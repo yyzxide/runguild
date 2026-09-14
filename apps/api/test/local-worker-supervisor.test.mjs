@@ -16,6 +16,7 @@ const configuration = {
     worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
     worktreeSetupTimeoutMs: 240_000,
     testCommands: [['npm', 'test']],
+    protectedTestPaths: ['test/acceptance', 'package.json'],
     agentContextInputTokens: 65_536,
     agentMaxTestTimeoutMs: 120_000,
   },
@@ -53,6 +54,7 @@ test('local supervisor injects persisted Worktree setup argv into only the Agent
   const environment = supervisor.environmentFor({ kind: 'agent', agentId: 'builder' }, configuration)
   assert.equal(environment.AGENT_WORKTREE_SETUP_COMMANDS_JSON, '[["npm","ci","--ignore-scripts"]]')
   assert.equal(environment.AGENT_WORKTREE_SETUP_TIMEOUT_MS, '240000')
+  assert.equal(environment.AGENT_PROTECTED_TEST_PATHS_JSON, '["test/acceptance","package.json"]')
   assert.equal(environment.WORKSPACE_ID, 'workspace')
   assert.equal(environment.PROJECT_ID, 'project')
   assert.equal(environment.OPENAI_API_KEY, 'secret-value')
@@ -60,6 +62,7 @@ test('local supervisor injects persisted Worktree setup argv into only the Agent
   assert.equal(integration.WORKSPACE_ID, 'workspace')
   assert.equal(integration.PROJECT_ID, 'project')
   assert.equal(integration.AGENT_WORKTREE_SETUP_COMMANDS_JSON, undefined)
+  assert.equal(integration.AGENT_PROTECTED_TEST_PATHS_JSON, undefined)
   assert.equal(integration.OPENAI_API_KEY, undefined)
 })
 

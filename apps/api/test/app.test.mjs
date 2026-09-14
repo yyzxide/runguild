@@ -114,6 +114,7 @@ function fakeProjectRuntimeConfigs() {
       worktreeSetupCommands: [],
       worktreeSetupTimeoutMs: 300_000,
       testCommands: [['npm', 'test']],
+      protectedTestPaths: [],
       agentContextInputTokens: 65_536,
       agentMaxTestTimeoutMs: 120_000,
     },
@@ -143,6 +144,7 @@ function fakeProjectRuntimeConfigs() {
             worktreeSetupCommands: input.worktreeSetupCommands,
             worktreeSetupTimeoutMs: input.worktreeSetupTimeoutMs,
             testCommands: input.testCommands,
+            protectedTestPaths: input.protectedTestPaths,
             agentContextInputTokens: input.agentContextInputTokens,
             agentMaxTestTimeoutMs: input.agentMaxTestTimeoutMs,
           },
@@ -744,6 +746,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
         worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
         worktreeSetupTimeoutMs: 240_000,
         testCommands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
+        protectedTestPaths: ['apps/api/test', 'package.json'],
         agentContextInputTokens: 80_000,
         agentMaxTestTimeoutMs: 180_000,
         agentModels: [{ agentId: 'planner_api', modelProvider: 'openai', modelName: 'gpt-new' }],
@@ -753,6 +756,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     const updatedRuntimeBody = await updatedRuntime.json()
     assert.equal(updatedRuntimeBody.configuration.agents[0].modelName, 'gpt-new')
     assert.deepEqual(updatedRuntimeBody.configuration.runtime.worktreeSetupCommands, [['npm', 'ci', '--ignore-scripts']])
+    assert.deepEqual(updatedRuntimeBody.configuration.runtime.protectedTestPaths, ['apps/api/test', 'package.json'])
 
     const agentRuntimeConfig = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/runtime-config', {
       headers: { 'x-actor-id': 'planner_api', 'x-actor-kind': 'agent' },

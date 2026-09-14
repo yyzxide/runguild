@@ -211,6 +211,7 @@ function RuntimeConfigPanel({
     worktreeSetupCommands: runtime.configuration.runtime.worktreeSetupCommands,
     worktreeSetupTimeoutMs: runtime.configuration.runtime.worktreeSetupTimeoutMs,
     testCommands: runtime.configuration.runtime.testCommands,
+    protectedTestPaths: runtime.configuration.runtime.protectedTestPaths,
     agentContextInputTokens: runtime.configuration.runtime.agentContextInputTokens,
     agentMaxTestTimeoutMs: runtime.configuration.runtime.agentMaxTestTimeoutMs,
     agentModels: runtime.configuration.agents.map((agent) => ({
@@ -222,17 +223,20 @@ function RuntimeConfigPanel({
   const [draft, setDraft] = useState<UpdateProjectRuntimeConfiguration>(toDraft)
   const [setupCommandsJson, setSetupCommandsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.worktreeSetupCommands, null, 2))
   const [testCommandsJson, setTestCommandsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.testCommands, null, 2))
+  const [protectedTestPathsJson, setProtectedTestPathsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.protectedTestPaths, null, 2))
   const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
     setDraft(toDraft())
     setSetupCommandsJson(JSON.stringify(runtime.configuration.runtime.worktreeSetupCommands, null, 2))
     setTestCommandsJson(JSON.stringify(runtime.configuration.runtime.testCommands, null, 2))
+    setProtectedTestPathsJson(JSON.stringify(runtime.configuration.runtime.protectedTestPaths, null, 2))
   }, [toDraft])
 
   const save = () => {
     let setupCommands: unknown
     let commands: unknown
+    let protectedPaths: unknown
     try {
       setupCommands = JSON.parse(setupCommandsJson)
     } catch {
@@ -255,11 +259,23 @@ function RuntimeConfigPanel({
       setFormError('测试命令必须是非空的二维字符串数组。')
       return
     }
+    try {
+      protectedPaths = JSON.parse(protectedTestPathsJson)
+    } catch {
+      setFormError('受保护验收路径不是合法 JSON。请填写相对路径字符串数组。')
+      return
+    }
+    if (!Array.isArray(protectedPaths) || protectedPaths.length > 200
+        || protectedPaths.some((path) => typeof path !== 'string' || !path.trim())) {
+      setFormError('受保护验收路径必须是至多 200 项的相对路径字符串数组。')
+      return
+    }
     setFormError(null)
     onSave({
       ...draft,
       worktreeSetupCommands: setupCommands as string[][],
       testCommands: commands as string[][],
+      protectedTestPaths: protectedPaths as string[],
     })
   }
   const workerOnline = (kind: WorkerKind, agentId?: string) => kind === 'agent'
@@ -313,6 +329,7 @@ function RuntimeConfigPanel({
               <div className="manifest-step__body">
                 <div className="manifest-step__heading"><span><Terminal size={18} /></span><div><strong>允许 Agent 执行的测试</strong><small>使用参数数组，不经过 Shell；这也是工具网关的命令白名单。</small></div></div>
                 <label className="runtime-field runtime-field--code"><span>测试命令 JSON</span><textarea rows={5} value={testCommandsJson} onChange={(event) => setTestCommandsJson(event.target.value)} spellCheck={false} /></label>
+                <label className="runtime-field runtime-field--code"><span>受保护验收路径 JSON</span><textarea rows={4} value={protectedTestPathsJson} onChange={(event) => setProtectedTestPathsJson(event.target.value)} spellCheck={false} placeholder={'["test/acceptance", "package.json"]'} /><small>填写 Git 已跟踪的测试、夹具和命令入口。Agent 无法修改；测试运行前后都会核对内容清单。</small></label>
                 <div className="runtime-limits">
                   <label className="runtime-field"><span>上下文输入 Token</span><input type="number" min={256} max={2_000_000} value={draft.agentContextInputTokens} onChange={(event) => setDraft({ ...draft, agentContextInputTokens: Number(event.target.value) })} /></label>
                   <label className="runtime-field"><span>单次测试超时（毫秒）</span><input type="number" min={1_000} max={900_000} value={draft.agentMaxTestTimeoutMs} onChange={(event) => setDraft({ ...draft, agentMaxTestTimeoutMs: Number(event.target.value) })} /></label>

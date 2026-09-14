@@ -36,6 +36,7 @@ async function setup(database) {
     '0015_worktree_setup.sql',
     '0016_submission_evidence.sql',
     '0017_integration_conflict_recovery.sql',
+    '0027_protected_test_paths.sql',
   ]) {
     await database.exec(await readFile(new URL('../migrations/' + migration, import.meta.url), 'utf8'))
   }
@@ -71,6 +72,7 @@ test('Project Runtime Config Repository returns defaults and persists safe launc
     assert.deepEqual(initial.runtime.worktreeSetupCommands, [])
     assert.equal(initial.runtime.worktreeSetupTimeoutMs, 300_000)
     assert.deepEqual(initial.runtime.testCommands, [['npm', 'test'], ['npm', 'run', 'typecheck']])
+    assert.deepEqual(initial.runtime.protectedTestPaths, [])
     assert.deepEqual(initial.agents.map((agent) => agent.id), ['planner', 'builder'])
 
     const updated = await repository.update({
@@ -81,6 +83,7 @@ test('Project Runtime Config Repository returns defaults and persists safe launc
       worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
       worktreeSetupTimeoutMs: 240_000,
       testCommands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
+      protectedTestPaths: ['package.json', 'test/acceptance'],
       agentContextInputTokens: 80_000,
       agentMaxTestTimeoutMs: 180_000,
       agentModels: [
@@ -97,12 +100,13 @@ test('Project Runtime Config Repository returns defaults and persists safe launc
     assert.deepEqual(updated.agents.map((agent) => agent.modelName), ['gpt-planner', 'gpt-builder'])
 
     const stored = await database.query(
-      "SELECT worktree_setup_commands, worktree_setup_timeout_ms, test_commands, agent_max_test_timeout_ms " +
+      "SELECT worktree_setup_commands, worktree_setup_timeout_ms, test_commands, protected_test_paths, agent_max_test_timeout_ms " +
       "FROM project_runtime_configs WHERE project_id = 'project'",
     )
     assert.deepEqual(stored.rows[0].worktree_setup_commands, [['npm', 'ci', '--ignore-scripts']])
     assert.equal(stored.rows[0].worktree_setup_timeout_ms, 240_000)
     assert.deepEqual(stored.rows[0].test_commands, [['npm', 'test'], ['npm', 'run', 'typecheck']])
+    assert.deepEqual(stored.rows[0].protected_test_paths, ['package.json', 'test/acceptance'])
     assert.equal(stored.rows[0].agent_max_test_timeout_ms, 180_000)
   } finally {
     await database.close()
@@ -122,6 +126,7 @@ test('Project Runtime Config Repository enforces tenant, team, and path boundari
       worktreeRoot: '/workspace/worktrees',
       worktreeSetupCommands: [], worktreeSetupTimeoutMs: 300_000,
       testCommands: [['npm', 'test']],
+      protectedTestPaths: [],
       agentContextInputTokens: 65_536, agentMaxTestTimeoutMs: 120_000,
       agentModels: [],
     }
@@ -139,6 +144,10 @@ test('Project Runtime Config Repository enforces tenant, team, and path boundari
     await assert.rejects(
       repository.update({ ...valid, userId: 'outsider' }),
       /not found or forbidden/,
+    )
+    await assert.rejects(
+      repository.update({ ...valid, protectedTestPaths: ['../outside.test.ts'] }),
+      /safe relative paths/,
     )
   } finally {
     await database.close()

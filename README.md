@@ -425,6 +425,7 @@ AGENT_CONTEXT_INPUT_TOKENS=65536 \
 AGENT_WORKTREE_SETUP_COMMANDS_JSON='[["npm","ci","--ignore-scripts","--no-audit","--no-fund"]]' \
 AGENT_WORKTREE_SETUP_TIMEOUT_MS=300000 \
 AGENT_TEST_COMMANDS_JSON='[["npm","test"],["npm","run","typecheck"]]' \
+AGENT_PROTECTED_TEST_PATHS_JSON='["packages/database/test","packages/workspace-tools/test","package.json"]' \
 npm run agent:start
 ~~~
 
