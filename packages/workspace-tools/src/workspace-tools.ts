@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { lstat, readlink, realpath, readFile, stat, unlink } from 'node:fs/promises'
+import { lstat, readdir, readlink, realpath, readFile, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 
@@ -41,12 +41,13 @@ export interface WorkspaceEvidenceRecorder {
 export interface WorkspaceToolsOptions {
   readonly root: string
   readonly allowedTestCommands: readonly (readonly string[])[]
+  readonly protectedTestPaths?: readonly string[]
   readonly evidence: WorkspaceEvidenceRecorder
   readonly worktrees?: Pick<TaskWorktreeRepository, 'get' | 'recordCommit' | 'recordUnchangedIntegration'>
   readonly maxTestTimeoutMs?: number
 }
 
-function hash(value: string): string {
+function hash(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
@@ -233,6 +234,91 @@ class WorkspaceBoundary {
       }
     }
     return path
+  }
+}
+
+interface ProtectedTestManifest {
+  readonly roots: readonly string[]
+  readonly files: readonly { readonly path: string; readonly contentHash: string }[]
+  readonly manifestHash: string
+}
+
+function normalizeProtectedTestPaths(paths: readonly string[]): readonly string[] {
+  if (paths.length > 200) throw new Error('Protected test paths accept at most 200 entries')
+  const normalized = paths.map((value) => {
+    const path = value.trim().replaceAll('\\', '/')
+    if (!path || path.includes('\0') || isAbsolute(path)
+        || path.split('/').includes('..') || path === '.git' || path.startsWith('.git/')) {
+      throw new Error('Protected test path must stay inside the Worktree: ' + value)
+    }
+    return path.replace(/^\.\//, '').replace(/\/$/, '') || '.'
+  })
+  return [...new Set(normalized)].sort()
+}
+
+async function collectProtectedFiles(
+  boundary: WorkspaceBoundary,
+  roots: readonly string[],
+): Promise<readonly { readonly path: string; readonly contentHash: string }[]> {
+  const files: Array<{ readonly path: string; readonly contentHash: string }> = []
+  const visit = async (relativePath: string): Promise<void> => {
+    const absolute = resolve(boundary.root, relativePath)
+    if (!boundary.contains(absolute)) throw new Error('Protected test path escapes the Worktree: ' + relativePath)
+    const info = await lstat(absolute)
+    if (info.isSymbolicLink()) throw new Error('Protected test paths cannot contain symbolic links: ' + relativePath)
+    if (info.isDirectory()) {
+      const entries = await readdir(absolute, { withFileTypes: true })
+      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+        await visit(relativePath === '.' ? entry.name : relativePath + '/' + entry.name)
+      }
+      return
+    }
+    if (!info.isFile()) throw new Error('Protected test path must contain only regular files: ' + relativePath)
+    files.push({ path: relativePath, contentHash: hash(await readFile(absolute)) })
+  }
+  for (const root of roots) await visit(root)
+  if (roots.length > 0 && files.length === 0) throw new Error('Protected test paths cannot be empty directories')
+  return files.sort((left, right) => left.path.localeCompare(right.path))
+}
+
+async function captureProtectedTestManifest(
+  boundary: WorkspaceBoundary,
+  configuredPaths: readonly string[],
+  verifyTracked: boolean,
+): Promise<ProtectedTestManifest> {
+  const roots = normalizeProtectedTestPaths(configuredPaths)
+  const files = await collectProtectedFiles(boundary, roots)
+  if (verifyTracked && files.length > 0) {
+    const tracked = await runCommand({
+      command: ['git', 'ls-files', '--cached', '--', ...roots],
+      cwd: boundary.root,
+      timeoutMs: 30_000,
+      maxCaptureBytes: MAX_GIT_DIFF_BYTES,
+    })
+    const trackedFiles = new Set(tracked.stdout.split('\n').filter(Boolean))
+    if (tracked.exitCode !== 0 || tracked.truncated || files.some((file) => !trackedFiles.has(file.path))) {
+      throw new Error('Every protected test file must be tracked by Git')
+    }
+  }
+  return { roots, files, manifestHash: hash(JSON.stringify(files)) }
+}
+
+async function assertProtectedTestsIntact(
+  boundary: WorkspaceBoundary,
+  expected: ProtectedTestManifest,
+): Promise<void> {
+  const current = await captureProtectedTestManifest(boundary, expected.roots, false)
+  if (current.manifestHash !== expected.manifestHash) {
+    throw new Error('Protected acceptance tests changed after the Task Worktree was assigned')
+  }
+}
+
+function assertPathIsNotProtected(path: string, manifest: ProtectedTestManifest): void {
+  const normalized = path.replaceAll('\\', '/').replace(/^\.\//, '')
+  const protectedRoot = manifest.roots.find((root) =>
+    root === '.' || normalized === root || normalized.startsWith(root + '/'))
+  if (protectedRoot) {
+    throw new Error('Agent tools cannot modify protected acceptance test path: ' + protectedRoot)
   }
 }
 
@@ -484,6 +570,11 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
   ToolHandler<'test.run'>,
 ]> {
   const boundary = await WorkspaceBoundary.create(options.root)
+  const protectedTests = await captureProtectedTestManifest(
+    boundary,
+    options.protectedTestPaths ?? [],
+    true,
+  )
   const maxTestTimeoutMs = options.maxTestTimeoutMs ?? 120_000
   if (!Number.isInteger(maxTestTimeoutMs) || maxTestTimeoutMs < 1_000 || maxTestTimeoutMs > 900_000) {
     throw new RangeError('maxTestTimeoutMs must be an integer between 1000 and 900000')
@@ -667,7 +758,10 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!paths.includes(input.path)) {
         throw new Error('Patch intent path is not present in the unified diff')
       }
-      for (const path of paths) await boundary.patchTarget(path)
+      for (const path of paths) {
+        assertPathIsNotProtected(path, protectedTests)
+        await boundary.patchTarget(path)
+      }
       const normalized = await normalizeUnifiedDiffHunkStarts(counted.diff, boundary)
       const check = await runCommand({
         command: ['git', 'apply', '--check', '--unidiff-zero', '--whitespace=nowarn', '-'],
@@ -731,6 +825,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     retryMode: 'native_idempotency',
     leaseMs: 60_000,
     async execute(input, context) {
+      assertPathIsNotProtected(input.path, protectedTests)
       const relativePath = await boundary.patchTarget(input.path)
       const target = resolve(boundary.root, relativePath)
       const tracked = await runCommand({
@@ -789,6 +884,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     retryMode: 'native_idempotency',
     leaseMs: 60_000,
     async execute(input, context) {
+      await assertProtectedTestsIntact(boundary, protectedTests)
       const message = input.message.trim()
       if (!message || message.length > 2_000 || message.includes('\0')) {
         throw new Error('Commit message must be between 1 and 2000 characters')
@@ -1003,6 +1099,7 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       }
       const timeoutMs = Math.min(input.timeoutMs, maxTestTimeoutMs)
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) throw new Error('Invalid test timeout')
+      await assertProtectedTestsIntact(boundary, protectedTests)
       const before = await gitTestSnapshot(boundary.root, context.abortSignal)
       const result = await runCommand({
         command: input.command,
@@ -1011,9 +1108,26 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
       })
       const after = await gitTestSnapshot(boundary.root, context.abortSignal)
-      const passed = result.exitCode === 0 && !result.timedOut
-      const contentHash = hash(result.stdout + '\n---stderr---\n' + result.stderr)
       const stable = before.stateHash === after.stateHash
+      let protectedTestsIntact = true
+      let protectedTestIntegrityError: string | undefined
+      try {
+        await assertProtectedTestsIntact(boundary, protectedTests)
+      } catch (error) {
+        protectedTestsIntact = false
+        protectedTestIntegrityError = error instanceof Error ? error.message : 'Protected acceptance tests changed'
+      }
+      const passed = result.exitCode === 0 && !result.timedOut && stable && protectedTestsIntact
+      const contentHash = hash(JSON.stringify({
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        beforeStateHash: before.stateHash,
+        afterStateHash: after.stateHash,
+        protectedTestManifestHash: protectedTests.manifestHash,
+        protectedTestsIntact,
+      }))
       const evidenceMetadata = {
         command: input.command,
         exitCode: result.exitCode,
@@ -1024,6 +1138,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         clean: before.clean && after.clean && stable,
         stable,
         stateHash: after.stateHash,
+        protectedTestManifestHash: protectedTests.manifestHash,
+        protectedTestsIntact,
+        ...(protectedTestIntegrityError === undefined ? {} : { protectedTestIntegrityError }),
       }
       const testEvidence = await options.evidence.record(context, {
         kind: 'test_run',
@@ -1046,6 +1163,9 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           clean: before.clean && after.clean && stable,
           stable,
           stateHash: after.stateHash,
+          protectedTestManifestHash: protectedTests.manifestHash,
+          protectedTestsIntact,
+          ...(protectedTestIntegrityError === undefined ? {} : { protectedTestIntegrityError }),
         },
       })
       const evidence = [...testEvidence, ...commandEvidence]

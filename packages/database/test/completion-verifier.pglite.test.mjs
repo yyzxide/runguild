@@ -100,7 +100,10 @@ test('durable evidence is deduplicated and gates Task completion and dependency 
       kind: 'test_run',
       uri: 'test-run://call_tests_failed#failed',
       contentHash: 'failed',
-      metadata: { command: ['npm', 'test'], passed: false, exitCode: 1 },
+      metadata: {
+        command: ['npm', 'test'], passed: false, exitCode: 1,
+        clean: true, stable: true, protectedTestsIntact: true,
+      },
     })
     assert.equal(failed.length, 1)
     assert.equal((await database.query(
@@ -126,8 +129,34 @@ test('durable evidence is deduplicated and gates Task completion and dependency 
       kind: 'test_run',
       uri: 'test-run://call_tests#sha256',
       contentHash: 'sha256',
-      metadata: { command: ['npm', 'test'], passed: true },
+      metadata: {
+        command: ['npm', 'test'], passed: true,
+        clean: true, stable: true, protectedTestsIntact: true,
+      },
     }
+    const tampered = await evidence.recordToolEvidence({
+      ...input,
+      toolCallId: 'call_tests_tampered',
+      contentHash: 'tampered',
+      uri: 'test-run://call_tests_tampered#tampered',
+      metadata: {
+        command: ['npm', 'test'], passed: true,
+        clean: false, stable: false, protectedTestsIntact: false,
+      },
+    })
+    assert.equal((await database.query(
+      'SELECT acceptance_criterion_id FROM evidence WHERE id = $1',
+      [tampered[0].id],
+    )).rows[0].acceptance_criterion_id, null)
+    await database.query(
+      "UPDATE evidence SET acceptance_criterion_id = 'criterion_tests' WHERE id = $1",
+      [tampered[0].id],
+    )
+    assert.deepEqual(await verifier.verify({ run, summary: 'Dirty test is not proof.', evidence: tampered }), {
+      accepted: false,
+      reason: 'Required durable evidence is missing.',
+    })
+
     const first = await evidence.recordToolEvidence(input)
     const replay = await evidence.recordToolEvidence(input)
     assert.equal(first.length, 1)
@@ -146,7 +175,7 @@ test('durable evidence is deduplicated and gates Task completion and dependency 
     const durable = await database.query(
       "SELECT COUNT(*)::int AS evidence_count FROM evidence WHERE run_id = 'run_gate'",
     )
-    assert.equal(durable.rows[0].evidence_count, 2)
+    assert.equal(durable.rows[0].evidence_count, 3)
   } finally {
     await database.close()
   }

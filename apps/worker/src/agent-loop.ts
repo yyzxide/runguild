@@ -64,6 +64,7 @@ export interface AgentInboxProcessorDependencies {
     abortSignal?: AbortSignal,
   ) => Promise<RuntimeRunner>
   readonly allowedTestCommands?: readonly (readonly string[])[]
+  readonly protectedTestPaths?: readonly string[]
   readonly planner?: PlanningProcessor
   readonly reviewer?: ReviewProcessor
 }
@@ -135,6 +136,7 @@ function reviewPayload(value: unknown): ArtifactReviewRequestedInboxPayload {
 export function executionMessages(
   context: AgentExecutionContext,
   allowedTestCommands: readonly (readonly string[])[] = [],
+  protectedTestPaths: readonly string[] = [],
 ): readonly ModelMessage[] {
   // Frozen contexts created before the Conversation Plane shipped do not have
   // this field. Treat them as an empty team-room transcript during replay.
@@ -211,6 +213,8 @@ export function executionMessages(
         'Never invent command results or claim a file changed without a successful tool result.\n\n' +
         'Execution policy:\n' +
         '- test.run accepts only these exact argv arrays: ' + JSON.stringify(allowedTestCommands) + '.\n' +
+        '- Acceptance test paths are control-plane protected and must not be modified: ' +
+          JSON.stringify(protectedTestPaths) + '.\n' +
         '- Never add Shell operators such as &&, ||, ;, pipes, redirection, or extra environment-probe commands to argv.\n' +
         '- repo.search paths are literal existing relative files or directories; globs are unsupported. Omit paths to search the whole Worktree.\n' +
         '- Batch independent reads/searches in one response.' + implementationPolicy + '\n' +
@@ -363,7 +367,11 @@ export class AgentInboxProcessor {
       const runtime = await this.dependencies.createRuntime(context, abortController.signal)
       outcome = await runtime.run({
         runId: run.runId,
-        initialMessages: executionMessages(context, this.dependencies.allowedTestCommands),
+        initialMessages: executionMessages(
+          context,
+          this.dependencies.allowedTestCommands,
+          this.dependencies.protectedTestPaths,
+        ),
         skills: (context.skills ?? []).map((skill) => ({
           skillId: skill.skillId,
           versionId: skill.versionId,
@@ -380,7 +388,11 @@ export class AgentInboxProcessor {
         await delay(this.options.waitingToolRetryMs ?? 1_000, undefined, { signal: abortController.signal })
         outcome = await runtime.run({
           runId: run.runId,
-          initialMessages: executionMessages(context, this.dependencies.allowedTestCommands),
+          initialMessages: executionMessages(
+            context,
+            this.dependencies.allowedTestCommands,
+            this.dependencies.protectedTestPaths,
+          ),
           skills: (context.skills ?? []).map((skill) => ({
             skillId: skill.skillId,
             versionId: skill.versionId,

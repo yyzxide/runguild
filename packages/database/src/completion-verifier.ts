@@ -47,12 +47,16 @@ export class DatabaseCompletionVerifier {
         '    (cardinality(c.required_evidence_kinds) = 0 AND NOT EXISTS (' +
         '      SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
         "      AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
+        "      AND (e.kind <> 'test_run' OR (e.metadata->>'clean' = 'true' " +
+        "        AND e.metadata->>'stable' = 'true' AND e.metadata->>'protectedTestsIntact' = 'true')) " +
         '      AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
         '    )) OR EXISTS (' +
         '      SELECT 1 FROM unnest(c.required_evidence_kinds) required_kind WHERE NOT EXISTS (' +
         '        SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
         '        AND e.kind = required_kind AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        "        AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true')" +
+        "        AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
+        "        AND (e.kind <> 'test_run' OR (e.metadata->>'clean' = 'true' " +
+        "          AND e.metadata->>'stable' = 'true' AND e.metadata->>'protectedTestsIntact' = 'true'))" +
         '      )' +
         '    )' +
         '  )' +

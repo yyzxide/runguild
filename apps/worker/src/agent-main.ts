@@ -84,6 +84,21 @@ function testCommandsSetting(): readonly (readonly string[])[] {
   return parsed as readonly (readonly string[])[]
 }
 
+function protectedTestPathsSetting(): readonly string[] {
+  const raw = process.env.AGENT_PROTECTED_TEST_PATHS_JSON ?? '[]'
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new Error('AGENT_PROTECTED_TEST_PATHS_JSON must be valid JSON', { cause: error })
+  }
+  if (!Array.isArray(parsed) || parsed.length > 200
+      || parsed.some((path) => typeof path !== 'string' || !path.trim() || path.length > 4_096)) {
+    throw new Error('AGENT_PROTECTED_TEST_PATHS_JSON must be an array of relative paths')
+  }
+  return parsed
+}
+
 function worktreeSetupCommandsSetting(): readonly (readonly string[])[] {
   const raw = process.env.AGENT_WORKTREE_SETUP_COMMANDS_JSON ?? '[]'
   let parsed: unknown
@@ -130,6 +145,7 @@ const leaseSeconds = integerSetting('AGENT_LEASE_SECONDS', 60, 5, 3_600)
 const maxTestTimeoutMs = integerSetting('AGENT_MAX_TEST_TIMEOUT_MS', 120_000, 1_000, 900_000)
 const worktreeSetupTimeoutMs = integerSetting('AGENT_WORKTREE_SETUP_TIMEOUT_MS', 300_000, 1_000, 900_000)
 const allowedTestCommands = testCommandsSetting()
+const protectedTestPaths = protectedTestPathsSetting()
 const worktreeSetupCommands = worktreeSetupCommandsSetting()
 const contextBuilder = new DeterministicContextBuilder({ tokenBudget: contextInputTokens })
 
@@ -256,6 +272,7 @@ async function createRuntime(
     const workspaceHandlers = await createWorkspaceToolHandlers({
       root: assigned.worktree.worktreePath,
       allowedTestCommands,
+      protectedTestPaths,
       maxTestTimeoutMs,
       evidence: evidenceRecorder,
       worktrees,
@@ -336,6 +353,7 @@ const processor = new AgentInboxProcessor({
   contexts,
   createRuntime,
   allowedTestCommands,
+  protectedTestPaths,
   planner,
   reviewer,
 }, {

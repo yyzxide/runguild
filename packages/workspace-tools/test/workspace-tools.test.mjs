@@ -29,7 +29,7 @@ function request(action, input, id = 'call_test') {
   }
 }
 
-async function fixture() {
+async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'mission-workspace-tools-'))
   await writeFile(join(root, 'sample.txt'), 'alpha\nsecond line\n', 'utf8')
   await execute('git', ['init', root])
@@ -59,10 +59,11 @@ async function fixture() {
     updatedAt: new Date().toISOString(),
   }
   const evidence = []
-  const command = ['/bin/echo', 'tests ok']
+  const command = options.command ?? ['/bin/echo', 'tests ok']
   const handlers = await createWorkspaceToolHandlers({
     root,
     allowedTestCommands: [command],
+    protectedTestPaths: options.protectedTestPaths ?? [],
     evidence: {
       async record(context, draft) {
         const item = {
@@ -374,6 +375,44 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
       ),
       /not in the workspace allowlist/,
     )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('protected acceptance tests cannot be patched and a mutating zero-exit test is failed', async () => {
+  const command = ['/bin/sh', '-c', 'printf "tampered\\n" > sample.txt']
+  const setup = await fixture({ command, protectedTestPaths: ['sample.txt'] })
+  try {
+    const patch = setup.handlers.get('file.patch')
+    const unifiedDiff = [
+      'diff --git a/sample.txt b/sample.txt',
+      '--- a/sample.txt',
+      '+++ b/sample.txt',
+      '@@ -1,2 +1,2 @@',
+      '-alpha',
+      '+forged test',
+      ' second line',
+      '',
+    ].join('\n')
+    await assert.rejects(
+      patch.execute(
+        { path: 'sample.txt', unifiedDiff },
+        { request: request('file.patch', { path: 'sample.txt', unifiedDiff }, 'call_protected_patch') },
+      ),
+      /cannot modify protected acceptance test path/,
+    )
+    assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'alpha\nsecond line\n')
+
+    const result = await setup.handlers.get('test.run').execute(
+      { command, timeoutMs: 10_000 },
+      { request: request('test.run', { command, timeoutMs: 10_000 }, 'call_mutating_test') },
+    )
+    assert.equal(result.output.exitCode, 0)
+    assert.equal(result.output.passed, false)
+    assert.equal(setup.evidence[0].draft.metadata.stable, false)
+    assert.equal(setup.evidence[0].draft.metadata.protectedTestsIntact, false)
+    assert.match(setup.evidence[0].draft.metadata.protectedTestIntegrityError, /changed/)
   } finally {
     await rm(setup.root, { recursive: true, force: true })
   }
