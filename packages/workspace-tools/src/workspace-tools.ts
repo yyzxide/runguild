@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { lstat, readdir, readlink, realpath, readFile, stat, unlink } from 'node:fs/promises'
+import { access, lstat, readdir, readlink, realpath, readFile, stat, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 
@@ -42,9 +42,103 @@ export interface WorkspaceToolsOptions {
   readonly root: string
   readonly allowedTestCommands: readonly (readonly string[])[]
   readonly protectedTestPaths?: readonly string[]
+  readonly testSandbox?: TestSandboxPolicy
   readonly evidence: WorkspaceEvidenceRecorder
   readonly worktrees?: Pick<TaskWorktreeRepository, 'get' | 'recordCommit' | 'recordUnchangedIntegration'>
   readonly maxTestTimeoutMs?: number
+}
+
+export interface TestSandboxPolicy {
+  readonly mode: 'trusted_process' | 'bubblewrap'
+  readonly network: 'none' | 'host'
+  readonly maxProcesses: number
+  readonly maxOpenFiles: number
+  readonly maxFileSizeMb: number
+  readonly bubblewrapExecutable?: string
+}
+
+interface TestCommandInvocation {
+  readonly command: readonly string[]
+  readonly cwd: string
+}
+
+const DEFAULT_TEST_SANDBOX: TestSandboxPolicy = {
+  mode: 'trusted_process',
+  network: 'host',
+  maxProcesses: 128,
+  maxOpenFiles: 1_024,
+  maxFileSizeMb: 512,
+}
+
+function validateTestSandbox(policy: TestSandboxPolicy): void {
+  if (policy.mode !== 'trusted_process' && policy.mode !== 'bubblewrap') {
+    throw new Error('Unsupported test sandbox mode')
+  }
+  if (policy.network !== 'none' && policy.network !== 'host') {
+    throw new Error('Unsupported test sandbox network mode')
+  }
+  for (const [label, value, maximum] of [
+    ['process count', policy.maxProcesses, 4_096],
+    ['open file count', policy.maxOpenFiles, 65_536],
+    ['file size', policy.maxFileSizeMb, 16_384],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 16 || value > maximum) {
+      throw new Error(`Test sandbox ${label} must be an integer between 16 and ${maximum}`)
+    }
+  }
+  if (policy.mode === 'trusted_process' && policy.network !== 'host') {
+    throw new Error('trusted_process mode cannot claim network isolation')
+  }
+}
+
+/** Build the fail-closed Linux Bubblewrap invocation used only by test.run. */
+export function buildBubblewrapTestInvocation(input: {
+  readonly root: string
+  readonly command: readonly string[]
+  readonly timeoutMs: number
+  readonly policy: TestSandboxPolicy
+}): TestCommandInvocation {
+  if (input.policy.mode !== 'bubblewrap') throw new Error('Bubblewrap invocation requires bubblewrap mode')
+  validateTestSandbox(input.policy)
+  const executable = input.policy.bubblewrapExecutable?.trim() || '/usr/bin/bwrap'
+  const cpuSeconds = Math.max(1, Math.ceil(input.timeoutMs / 1_000) + 5)
+  const maxFileBytes = input.policy.maxFileSizeMb * 1024 * 1024
+  const arguments_: string[] = [
+    '--die-with-parent',
+    '--new-session',
+    '--unshare-user',
+    '--unshare-pid',
+    '--unshare-ipc',
+    '--unshare-uts',
+    '--unshare-cgroup-try',
+    ...(input.policy.network === 'none' ? ['--unshare-net'] : []),
+    '--proc', '/proc',
+    '--dev', '/dev',
+    '--tmpfs', '/tmp',
+    '--ro-bind', '/usr', '/usr',
+    '--ro-bind-try', '/bin', '/bin',
+    '--ro-bind-try', '/lib', '/lib',
+    '--ro-bind-try', '/lib64', '/lib64',
+    '--ro-bind-try', '/etc', '/etc',
+    '--bind', input.root, '/workspace',
+    '--chdir', '/workspace',
+    '--clearenv',
+    '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin',
+    '--setenv', 'LANG', process.env.LANG ?? 'C.UTF-8',
+    '--setenv', 'CI', 'true',
+    '--setenv', 'HOME', '/tmp',
+    '--setenv', 'TMPDIR', '/tmp',
+    '--setenv', 'PWD', '/workspace',
+    '--',
+    '/usr/bin/prlimit',
+    `--cpu=${cpuSeconds}:${cpuSeconds}`,
+    `--nproc=${input.policy.maxProcesses}:${input.policy.maxProcesses}`,
+    `--nofile=${input.policy.maxOpenFiles}:${input.policy.maxOpenFiles}`,
+    `--fsize=${maxFileBytes}:${maxFileBytes}`,
+    '--',
+    ...input.command,
+  ]
+  return { command: [executable, ...arguments_], cwd: input.root }
 }
 
 function hash(value: string | Buffer): string {
@@ -575,6 +669,14 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
     options.protectedTestPaths ?? [],
     true,
   )
+  const testSandbox = options.testSandbox ?? DEFAULT_TEST_SANDBOX
+  validateTestSandbox(testSandbox)
+  if (testSandbox.mode === 'bubblewrap') {
+    if (process.platform !== 'linux') throw new Error('Bubblewrap test sandbox requires Linux')
+    const executable = testSandbox.bubblewrapExecutable?.trim() || '/usr/bin/bwrap'
+    if (!isAbsolute(executable)) throw new Error('Bubblewrap executable must be an absolute path')
+    await Promise.all([access(executable), access('/usr/bin/prlimit')])
+  }
   const maxTestTimeoutMs = options.maxTestTimeoutMs ?? 120_000
   if (!Number.isInteger(maxTestTimeoutMs) || maxTestTimeoutMs < 1_000 || maxTestTimeoutMs > 900_000) {
     throw new RangeError('maxTestTimeoutMs must be an integer between 1000 and 900000')
@@ -1101,9 +1203,17 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) throw new Error('Invalid test timeout')
       await assertProtectedTestsIntact(boundary, protectedTests)
       const before = await gitTestSnapshot(boundary.root, context.abortSignal)
+      const invocation = testSandbox.mode === 'bubblewrap'
+        ? buildBubblewrapTestInvocation({
+            root: boundary.root,
+            command: input.command,
+            timeoutMs,
+            policy: testSandbox,
+          })
+        : { command: input.command, cwd: boundary.root }
       const result = await runCommand({
-        command: input.command,
-        cwd: boundary.root,
+        command: invocation.command,
+        cwd: invocation.cwd,
         timeoutMs,
         ...(context.abortSignal === undefined ? {} : { abortSignal: context.abortSignal }),
       })
@@ -1127,6 +1237,8 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         afterStateHash: after.stateHash,
         protectedTestManifestHash: protectedTests.manifestHash,
         protectedTestsIntact,
+        sandboxMode: testSandbox.mode,
+        networkMode: testSandbox.network,
       }))
       const evidenceMetadata = {
         command: input.command,
@@ -1140,6 +1252,8 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         stateHash: after.stateHash,
         protectedTestManifestHash: protectedTests.manifestHash,
         protectedTestsIntact,
+        sandboxMode: testSandbox.mode,
+        networkMode: testSandbox.network,
         ...(protectedTestIntegrityError === undefined ? {} : { protectedTestIntegrityError }),
       }
       const testEvidence = await options.evidence.record(context, {
@@ -1165,6 +1279,8 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
           stateHash: after.stateHash,
           protectedTestManifestHash: protectedTests.manifestHash,
           protectedTestsIntact,
+          sandboxMode: testSandbox.mode,
+          networkMode: testSandbox.network,
           ...(protectedTestIntegrityError === undefined ? {} : { protectedTestIntegrityError }),
         },
       })

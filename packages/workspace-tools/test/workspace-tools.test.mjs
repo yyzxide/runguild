@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
 
-import { createWorkspaceToolHandlers } from '../dist/index.js'
+import { buildBubblewrapTestInvocation, createWorkspaceToolHandlers } from '../dist/index.js'
 
 const execute = promisify(execFile)
 
@@ -64,6 +64,7 @@ async function fixture(options = {}) {
     root,
     allowedTestCommands: [command],
     protectedTestPaths: options.protectedTestPaths ?? [],
+    ...(options.testSandbox ? { testSandbox: options.testSandbox } : {}),
     evidence: {
       async record(context, draft) {
         const item = {
@@ -358,6 +359,8 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
     assert.match(setup.evidence[0].draft.metadata.treeHash, /^[0-9a-f]{40}$/)
     assert.equal(setup.evidence[0].draft.metadata.clean, true)
     assert.equal(setup.evidence[0].draft.metadata.stable, true)
+    assert.equal(setup.evidence[0].draft.metadata.sandboxMode, 'trusted_process')
+    assert.equal(setup.evidence[0].draft.metadata.networkMode, 'host')
     assert.match(setup.evidence[0].draft.metadata.stateHash, /^[0-9a-f]{64}$/)
 
     await writeFile(join(setup.root, 'sample.txt'), 'dirty before test\n', 'utf8')
@@ -378,6 +381,33 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
   } finally {
     await rm(setup.root, { recursive: true, force: true })
   }
+})
+
+test('Bubblewrap test invocation mounts only runtime roots and the Task Worktree', () => {
+  const policy = {
+    mode: 'bubblewrap', network: 'none',
+    maxProcesses: 64, maxOpenFiles: 512, maxFileSizeMb: 128,
+  }
+  const invocation = buildBubblewrapTestInvocation({
+    root: '/srv/runguild/task-1',
+    command: ['npm', 'test'],
+    timeoutMs: 25_000,
+    policy,
+  })
+  assert.equal(invocation.command[0], '/usr/bin/bwrap')
+  assert.equal(invocation.cwd, '/srv/runguild/task-1')
+  assert.equal(invocation.command.includes('--unshare-net'), true)
+  assert.equal(invocation.command.includes('--clearenv'), true)
+  assert.equal(invocation.command.join(' ').includes('--ro-bind / /'), false)
+  assert.equal(invocation.command.join(' ').includes('--bind /srv/runguild/task-1 /workspace'), true)
+  assert.equal(invocation.command.join(' ').includes('--cpu=30:30'), true)
+  assert.equal(invocation.command.join(' ').endsWith('-- npm test'), true)
+
+  const hostNetwork = buildBubblewrapTestInvocation({
+    root: '/srv/runguild/task-1', command: ['npm', 'test'], timeoutMs: 25_000,
+    policy: { ...policy, network: 'host' },
+  })
+  assert.equal(hostNetwork.command.includes('--unshare-net'), false)
 })
 
 test('protected acceptance tests cannot be patched and a mutating zero-exit test is failed', async () => {
