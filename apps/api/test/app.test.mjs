@@ -300,6 +300,35 @@ function fakeConversationPlanning() {
   }
 }
 
+function fakeConversationTaskSubmissions() {
+  const calls = []
+  return {
+    calls,
+    service: {
+      async submit(input) {
+        calls.push(input)
+        return {
+          message: {
+            id: 'message_task', workspaceId: input.workspaceId,
+            conversationId: input.conversationId, sequence: '2',
+            author: { kind: 'user', id: input.createdBy }, authorName: 'Developer',
+            body: input.body, mentions: input.mentions, entityRefs: {}, deliveries: [],
+            createdAt: '2030-01-01T00:00:00.000Z',
+          },
+          request: {
+            id: 'planning_task', workspaceId: input.workspaceId, projectId: 'project_api',
+            conversationId: input.conversationId, missionId: 'mission_task',
+            plannerAgentId: input.plannerAgentId ?? 'planner_api', sourceMessageIds: ['message_task'],
+            status: 'queued', attempt: 0, maxAttempts: 3,
+            createdAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+          },
+          reused: false,
+        }
+      },
+    },
+  }
+}
+
 function fakeRuntimeServices() {
   const calls = []
   return {
@@ -620,6 +649,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   const development = fakeDevelopmentSetup()
   const conversations = fakeConversations()
   const conversationPlanning = fakeConversationPlanning()
+  const conversationTaskSubmissions = fakeConversationTaskSubmissions()
   const runTraces = fakeRunTraces()
   const app = createApiApp({
     missions: fake.service,
@@ -628,6 +658,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     runTraces: runTraces.service,
     conversations: conversations.service,
     conversationPlanning: conversationPlanning.service,
+    conversationTaskSubmissions: conversationTaskSubmissions.service,
     runControls: runtime.runControls,
     taskControls: taskControls.service,
     toolApprovals: runtime.toolApprovals,
@@ -766,6 +797,26 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     })
     assert.equal(postedMessage.status, 201)
     assert.equal((await postedMessage.json()).message.deliveries[0].status, 'steered')
+
+    const submittedTask = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/task-submissions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-actor-id': 'user_api',
+        'x-client-request-id': 'browser-task-request-1',
+      },
+      body: JSON.stringify({
+        body: '实现可恢复的任务提交。',
+        mentions: ['planner_api'],
+        title: '可恢复任务提交',
+        plannerAgentId: 'planner_api',
+      }),
+    })
+    assert.equal(submittedTask.status, 201)
+    const submittedTaskBody = await submittedTask.json()
+    assert.equal(submittedTaskBody.message.id, 'message_task')
+    assert.equal(submittedTaskBody.request.id, 'planning_task')
+    assert.equal(conversationTaskSubmissions.calls[0].clientRequestId, 'browser-task-request-1')
 
     const planningRequest = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/planning-requests', {
       method: 'POST',

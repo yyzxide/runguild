@@ -354,6 +354,13 @@ export class ConversationRepository {
   }
 
   async postMessage(input: PostConversationMessageInput): Promise<PostConversationMessageResult> {
+    return withTransaction(this.pool, (client) => this.postMessageInTransaction(client, input))
+  }
+
+  async postMessageInTransaction(
+    client: PoolClient,
+    input: PostConversationMessageInput,
+  ): Promise<PostConversationMessageResult> {
     const body = validateBody(input.body)
     const mentions = uniqueMentions(input.mentions ?? [])
     const refs = input.entityRefs ?? {}
@@ -361,81 +368,79 @@ export class ConversationRepository {
       throw new ConversationScopeError('Message idempotency key must be between 1 and 200 characters')
     }
 
-    return withTransaction(this.pool, async (client) => {
-      const conversation = await this.assertConversationAccess(
-        client,
+    const conversation = await this.assertConversationAccess(
+      client,
+      input.workspaceId,
+      input.conversationId,
+      input.author,
+    )
+    await this.assertEntityRefs(client, conversation, refs)
+    const id = input.id ?? ('message_' + randomUUID()) as MessageId
+    const inserted = await client.query<MessageRow>(
+      'INSERT INTO messages ' +
+      '(id, workspace_id, conversation_id, author_kind, author_id, body, entity_refs, ' +
+      'mentioned_agent_ids, reply_to_message_id, idempotency_key) ' +
+      'VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::text[], $9, $10) ' +
+      'ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING ' +
+      'RETURNING id, workspace_id, conversation_id, sequence, author_kind, author_id, NULL::text AS author_name, ' +
+      'body, mentioned_agent_ids, entity_refs, reply_to_message_id, created_at',
+      [
+        id,
         input.workspaceId,
         input.conversationId,
-        input.author,
+        input.author.kind,
+        input.author.id,
+        body,
+        canonicalJson(refs),
+        mentions,
+        input.replyToMessageId ?? null,
+        input.idempotencyKey?.trim() ?? null,
+      ],
+    )
+    let row = inserted.rows[0]
+    const reused = !row
+    if (!row) {
+      const existing = await client.query<MessageRow>(
+        'SELECT message.id, message.workspace_id, message.conversation_id, message.sequence, ' +
+        'message.author_kind, message.author_id, NULL::text AS author_name, message.body, ' +
+        'message.mentioned_agent_ids, message.entity_refs, message.reply_to_message_id, message.created_at ' +
+        'FROM messages message WHERE message.workspace_id = $1 AND message.idempotency_key = $2',
+        [input.workspaceId, input.idempotencyKey?.trim()],
       )
-      await this.assertEntityRefs(client, conversation, refs)
-      const id = input.id ?? ('message_' + randomUUID()) as MessageId
-      const inserted = await client.query<MessageRow>(
-        'INSERT INTO messages ' +
-        '(id, workspace_id, conversation_id, author_kind, author_id, body, entity_refs, ' +
-        'mentioned_agent_ids, reply_to_message_id, idempotency_key) ' +
-        'VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::text[], $9, $10) ' +
-        'ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING ' +
-        'RETURNING id, workspace_id, conversation_id, sequence, author_kind, author_id, NULL::text AS author_name, ' +
-        'body, mentioned_agent_ids, entity_refs, reply_to_message_id, created_at',
-        [
-          id,
-          input.workspaceId,
-          input.conversationId,
-          input.author.kind,
-          input.author.id,
-          body,
-          canonicalJson(refs),
-          mentions,
-          input.replyToMessageId ?? null,
-          input.idempotencyKey?.trim() ?? null,
-        ],
-      )
-      let row = inserted.rows[0]
-      const reused = !row
-      if (!row) {
-        const existing = await client.query<MessageRow>(
-          'SELECT message.id, message.workspace_id, message.conversation_id, message.sequence, ' +
-          'message.author_kind, message.author_id, NULL::text AS author_name, message.body, ' +
-          'message.mentioned_agent_ids, message.entity_refs, message.reply_to_message_id, message.created_at ' +
-          'FROM messages message WHERE message.workspace_id = $1 AND message.idempotency_key = $2',
-          [input.workspaceId, input.idempotencyKey?.trim()],
-        )
-        row = existing.rows[0]
-        if (!row) throw new Error('Idempotent Conversation message was not found')
-        if (row.conversation_id !== input.conversationId
-            || row.author_kind !== input.author.kind
-            || row.author_id !== input.author.id
-            || row.body !== body
-            || canonicalJson(row.entity_refs) !== canonicalJson(refs)
-            || canonicalJson(row.mentioned_agent_ids) !== canonicalJson(mentions)) {
-          throw new ConversationScopeError('Message idempotency key was reused with different content')
-        }
+      row = existing.rows[0]
+      if (!row) throw new Error('Idempotent Conversation message was not found')
+      if (row.conversation_id !== input.conversationId
+          || row.author_kind !== input.author.kind
+          || row.author_id !== input.author.id
+          || row.body !== body
+          || canonicalJson(row.entity_refs) !== canonicalJson(refs)
+          || canonicalJson(row.mentioned_agent_ids) !== canonicalJson(mentions)) {
+        throw new ConversationScopeError('Message idempotency key was reused with different content')
       }
+    }
 
-      if (!reused) {
-        await client.query('UPDATE conversations SET updated_at = NOW() WHERE id = $1', [input.conversationId])
-        await appendDomainEvent(client, {
-          type: 'message.posted',
-          workspaceId: input.workspaceId,
-          projectId: conversation.project_id as ProjectId,
-          ...(refs.missionId === undefined ? {} : { missionId: refs.missionId }),
-          actor: input.author,
-          correlationId: input.correlationId,
-          ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
-          payload: {
-            conversationId: input.conversationId,
-            messageId: row.id as MessageId,
-            mentionedAgentIds: mentions,
-          },
-        })
-        await this.routeMentions(client, row.id as MessageId, input, body, mentions, refs)
-      }
+    if (!reused) {
+      await client.query('UPDATE conversations SET updated_at = NOW() WHERE id = $1', [input.conversationId])
+      await appendDomainEvent(client, {
+        type: 'message.posted',
+        workspaceId: input.workspaceId,
+        projectId: conversation.project_id as ProjectId,
+        ...(refs.missionId === undefined ? {} : { missionId: refs.missionId }),
+        actor: input.author,
+        correlationId: input.correlationId,
+        ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+        payload: {
+          conversationId: input.conversationId,
+          messageId: row.id as MessageId,
+          mentionedAgentIds: mentions,
+        },
+      })
+      await this.routeMentions(client, row.id as MessageId, input, body, mentions, refs)
+    }
 
-      const enriched = await this.loadMessage(client, row.id as MessageId)
-      if (!enriched) throw new Error('Conversation message was not persisted')
-      return { message: enriched, reused }
-    })
+    const enriched = await this.loadMessage(client, row.id as MessageId)
+    if (!enriched) throw new Error('Conversation message was not persisted')
+    return { message: enriched, reused }
   }
 
   private async routeMentions(

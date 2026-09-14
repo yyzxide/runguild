@@ -197,6 +197,16 @@ export class ConversationPlanningRepository {
     readonly request: ConversationPlanningRequestSnapshot
     readonly reused: boolean
   }> {
+    return withTransaction(this.pool, (client) => this.createInTransaction(client, input))
+  }
+
+  async createInTransaction(
+    client: PoolClient,
+    input: CreateConversationPlanningRequestInput,
+  ): Promise<{
+    readonly request: ConversationPlanningRequestSnapshot
+    readonly reused: boolean
+  }> {
     validateCreateInput(input)
     const title = input.title.trim()
     const hash = requestHash({
@@ -207,178 +217,176 @@ export class ConversationPlanningRepository {
       ...(input.plannerAgentId === undefined ? {} : { plannerAgentId: input.plannerAgentId }),
     })
 
-    return withTransaction(this.pool, async (client) => {
-      if (input.idempotencyKey !== undefined) {
-        const existing = await client.query<PlanningRow & { request_hash: string }>(
-          'SELECT * FROM conversation_planning_requests WHERE workspace_id = $1 AND idempotency_key = $2',
-          [input.workspaceId, input.idempotencyKey.trim()],
-        )
-        if (existing.rows[0]) {
-          if (existing.rows[0].request_hash !== hash) {
-            throw new ConversationPlanningError('Planning idempotency key was reused with different input')
-          }
-          return { request: snapshot(existing.rows[0]), reused: true }
+    if (input.idempotencyKey !== undefined) {
+      const existing = await client.query<PlanningRow & { request_hash: string }>(
+        'SELECT * FROM conversation_planning_requests WHERE workspace_id = $1 AND idempotency_key = $2',
+        [input.workspaceId, input.idempotencyKey.trim()],
+      )
+      if (existing.rows[0]) {
+        if (existing.rows[0].request_hash !== hash) {
+          throw new ConversationPlanningError('Planning idempotency key was reused with different input')
         }
+        return { request: snapshot(existing.rows[0]), reused: true }
       }
+    }
 
-      const conversation = await client.query<{ project_id: string; title: string }>(
-        'SELECT conversation.project_id, conversation.title FROM conversations conversation ' +
-        'JOIN projects project ON project.id = conversation.project_id ' +
-        'AND project.workspace_id = conversation.workspace_id AND project.archived_at IS NULL ' +
-        'JOIN conversation_members member ON member.conversation_id = conversation.id ' +
-        "AND member.participant_kind = 'user' AND member.participant_id = $3 " +
-        'WHERE conversation.id = $1 AND conversation.workspace_id = $2 FOR SHARE OF project',
-        [input.conversationId, input.workspaceId, input.createdBy],
-      )
-      const conversationRow = conversation.rows[0]
-      if (!conversationRow) throw new ConversationPlanningError('Conversation was not found or the user is not a member')
+    const conversation = await client.query<{ project_id: string; title: string }>(
+      'SELECT conversation.project_id, conversation.title FROM conversations conversation ' +
+      'JOIN projects project ON project.id = conversation.project_id ' +
+      'AND project.workspace_id = conversation.workspace_id AND project.archived_at IS NULL ' +
+      'JOIN conversation_members member ON member.conversation_id = conversation.id ' +
+      "AND member.participant_kind = 'user' AND member.participant_id = $3 " +
+      'WHERE conversation.id = $1 AND conversation.workspace_id = $2 FOR SHARE OF project',
+      [input.conversationId, input.workspaceId, input.createdBy],
+    )
+    const conversationRow = conversation.rows[0]
+    if (!conversationRow) throw new ConversationPlanningError('Conversation was not found or the user is not a member')
 
-      const sourceMessages = await this.loadSourceMessages(client, input.conversationId, input.sourceMessageIds)
-      if (sourceMessages.length !== input.sourceMessageIds.length) {
-        throw new ConversationPlanningError('Every source message must belong to the selected Conversation')
-      }
-      const planner = await client.query<{
-        id: string
-        model_provider: string
-        model_name: string
-      }>(
-        'SELECT agent.id, agent.model_provider, agent.model_name FROM agents agent ' +
-        'JOIN conversation_members member ON member.participant_id = agent.id ' +
-        "AND member.participant_kind = 'agent' AND member.conversation_id = $2 " +
-        "WHERE agent.workspace_id = $1 AND agent.role = 'planner' AND agent.status = 'active' " +
-        'AND ($3::text IS NULL OR agent.id = $3) ORDER BY agent.created_at, agent.id LIMIT 1',
-        [input.workspaceId, input.conversationId, input.plannerAgentId ?? null],
-      )
-      const plannerRow = planner.rows[0]
-      if (!plannerRow) throw new ConversationPlanningError('Conversation has no active Planner Agent')
+    const sourceMessages = await this.loadSourceMessages(client, input.conversationId, input.sourceMessageIds)
+    if (sourceMessages.length !== input.sourceMessageIds.length) {
+      throw new ConversationPlanningError('Every source message must belong to the selected Conversation')
+    }
+    const planner = await client.query<{
+      id: string
+      model_provider: string
+      model_name: string
+    }>(
+      'SELECT agent.id, agent.model_provider, agent.model_name FROM agents agent ' +
+      'JOIN conversation_members member ON member.participant_id = agent.id ' +
+      "AND member.participant_kind = 'agent' AND member.conversation_id = $2 " +
+      "WHERE agent.workspace_id = $1 AND agent.role = 'planner' AND agent.status = 'active' " +
+      'AND ($3::text IS NULL OR agent.id = $3) ORDER BY agent.created_at, agent.id LIMIT 1',
+      [input.workspaceId, input.conversationId, input.plannerAgentId ?? null],
+    )
+    const plannerRow = planner.rows[0]
+    if (!plannerRow) throw new ConversationPlanningError('Conversation has no active Planner Agent')
 
-      const missionId = input.missionId ?? ('mission_' + randomUUID()) as MissionId
-      const requestId = input.id ?? ('planning_' + randomUUID()) as ConversationPlanningRequestId
-      const projectId = conversationRow.project_id as ProjectId
-      const goal = input.goal?.trim() ?? sourceGoal(sourceMessages)
-      await client.query(
-        'INSERT INTO missions ' +
-        '(id, workspace_id, project_id, conversation_id, source_message_ids, title, goal, constraints, ' +
-        "acceptance_criteria, status, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'planning', $10)",
-        [
-          missionId,
-          input.workspaceId,
-          projectId,
-          input.conversationId,
-          input.sourceMessageIds,
-          title,
-          goal,
-          canonicalJson(input.constraints ?? ['保留可审计的执行与验收证据']),
-          canonicalJson(input.acceptanceCriteria ?? ['计划形成有效 DAG', '所有必需验收项均有持久化证据']),
-          input.createdBy,
-        ],
-      )
-      await ensurePrimaryMissionArtifact(client, {
-        workspaceId: input.workspaceId,
+    const missionId = input.missionId ?? ('mission_' + randomUUID()) as MissionId
+    const requestId = input.id ?? ('planning_' + randomUUID()) as ConversationPlanningRequestId
+    const projectId = conversationRow.project_id as ProjectId
+    const goal = input.goal?.trim() ?? sourceGoal(sourceMessages)
+    await client.query(
+      'INSERT INTO missions ' +
+      '(id, workspace_id, project_id, conversation_id, source_message_ids, title, goal, constraints, ' +
+      "acceptance_criteria, status, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'planning', $10)",
+      [
+        missionId,
+        input.workspaceId,
         projectId,
-        missionId,
-        missionTitle: title,
-        createdBy: input.createdBy,
-      })
-      await appendDomainEvent(client, {
-        type: 'mission.created',
-        workspaceId: input.workspaceId,
-        projectId,
-        missionId,
-        actor: { kind: 'user', id: input.createdBy },
-        correlationId: input.correlationId,
-        payload: { title },
-      })
-      await appendDomainEvent(client, {
-        type: 'mission.status_changed',
-        workspaceId: input.workspaceId,
-        projectId,
-        missionId,
-        actor: { kind: 'user', id: input.createdBy },
-        correlationId: input.correlationId,
-        payload: { from: 'draft', to: 'planning', reason: 'selected Conversation messages promoted to a Mission' },
-      })
-      const inserted = await client.query<PlanningRow>(
-        'INSERT INTO conversation_planning_requests ' +
-        '(id, workspace_id, project_id, conversation_id, mission_id, planner_agent_id, source_message_ids, ' +
-        'idempotency_key, request_hash, model_provider, model_name, created_by) ' +
-        'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
-        [
-          requestId,
-          input.workspaceId,
-          projectId,
-          input.conversationId,
-          missionId,
-          plannerRow.id,
-          input.sourceMessageIds,
-          input.idempotencyKey?.trim() ?? null,
-          hash,
-          plannerRow.model_provider,
-          plannerRow.model_name,
-          input.createdBy,
-        ],
-      )
-      await appendDomainEvent(client, {
-        type: 'conversation.planning_requested',
-        workspaceId: input.workspaceId,
-        projectId,
-        missionId,
-        actor: { kind: 'user', id: input.createdBy },
-        correlationId: input.correlationId,
-        payload: {
-          conversationId: input.conversationId,
-          requestId,
-          sourceMessageIds: input.sourceMessageIds,
-          plannerAgentId: plannerRow.id as AgentId,
-        },
-      })
-
-      const inboxPayload = {
-        schemaVersion: 1,
-        type: 'conversation.plan_requested',
-        requestId,
-        conversationId: input.conversationId,
-        missionId,
-      }
-      const payloadJson = canonicalJson(inboxPayload)
-      await client.query(
-        'INSERT INTO inbox_messages ' +
-        '(id, workspace_id, agent_id, mission_id, kind, payload, payload_hash, dedupe_key) ' +
-        "VALUES ($1, $2, $3, $4, 'conversation.plan_requested', $5::jsonb, $6, $7)",
-        [
-          'inbox_' + randomUUID(),
-          input.workspaceId,
-          plannerRow.id,
-          missionId,
-          payloadJson,
-          createHash('sha256').update(payloadJson).digest('hex'),
-          'conversation-planning:' + requestId,
-        ],
-      )
-      await client.query(
-        'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
-        [
-          'wake_' + randomUUID(),
-          EVENT_TOPICS.agentWake,
-          plannerRow.id,
-          canonicalJson({
-            schemaVersion: 1,
-            type: 'agent.wake',
-            workspaceId: input.workspaceId,
-            missionId,
-            agentId: plannerRow.id,
-            reason: 'conversation.plan_requested',
-            requestId,
-          }),
-        ],
-      )
-      await client.query(
-        "UPDATE conversation_message_deliveries SET status = 'context_loaded', delivered_at = NOW() " +
-        "WHERE agent_id = $1 AND status = 'context_pending' AND message_id = ANY($2::text[])",
-        [plannerRow.id, input.sourceMessageIds],
-      )
-      return { request: snapshot(inserted.rows[0]!), reused: false }
+        input.conversationId,
+        input.sourceMessageIds,
+        title,
+        goal,
+        canonicalJson(input.constraints ?? ['保留可审计的执行与验收证据']),
+        canonicalJson(input.acceptanceCriteria ?? ['计划形成有效 DAG', '所有必需验收项均有持久化证据']),
+        input.createdBy,
+      ],
+    )
+    await ensurePrimaryMissionArtifact(client, {
+      workspaceId: input.workspaceId,
+      projectId,
+      missionId,
+      missionTitle: title,
+      createdBy: input.createdBy,
     })
+    await appendDomainEvent(client, {
+      type: 'mission.created',
+      workspaceId: input.workspaceId,
+      projectId,
+      missionId,
+      actor: { kind: 'user', id: input.createdBy },
+      correlationId: input.correlationId,
+      payload: { title },
+    })
+    await appendDomainEvent(client, {
+      type: 'mission.status_changed',
+      workspaceId: input.workspaceId,
+      projectId,
+      missionId,
+      actor: { kind: 'user', id: input.createdBy },
+      correlationId: input.correlationId,
+      payload: { from: 'draft', to: 'planning', reason: 'selected Conversation messages promoted to a Mission' },
+    })
+    const inserted = await client.query<PlanningRow>(
+      'INSERT INTO conversation_planning_requests ' +
+      '(id, workspace_id, project_id, conversation_id, mission_id, planner_agent_id, source_message_ids, ' +
+      'idempotency_key, request_hash, model_provider, model_name, created_by) ' +
+      'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
+      [
+        requestId,
+        input.workspaceId,
+        projectId,
+        input.conversationId,
+        missionId,
+        plannerRow.id,
+        input.sourceMessageIds,
+        input.idempotencyKey?.trim() ?? null,
+        hash,
+        plannerRow.model_provider,
+        plannerRow.model_name,
+        input.createdBy,
+      ],
+    )
+    await appendDomainEvent(client, {
+      type: 'conversation.planning_requested',
+      workspaceId: input.workspaceId,
+      projectId,
+      missionId,
+      actor: { kind: 'user', id: input.createdBy },
+      correlationId: input.correlationId,
+      payload: {
+        conversationId: input.conversationId,
+        requestId,
+        sourceMessageIds: input.sourceMessageIds,
+        plannerAgentId: plannerRow.id as AgentId,
+      },
+    })
+
+    const inboxPayload = {
+      schemaVersion: 1,
+      type: 'conversation.plan_requested',
+      requestId,
+      conversationId: input.conversationId,
+      missionId,
+    }
+    const payloadJson = canonicalJson(inboxPayload)
+    await client.query(
+      'INSERT INTO inbox_messages ' +
+      '(id, workspace_id, agent_id, mission_id, kind, payload, payload_hash, dedupe_key) ' +
+      "VALUES ($1, $2, $3, $4, 'conversation.plan_requested', $5::jsonb, $6, $7)",
+      [
+        'inbox_' + randomUUID(),
+        input.workspaceId,
+        plannerRow.id,
+        missionId,
+        payloadJson,
+        createHash('sha256').update(payloadJson).digest('hex'),
+        'conversation-planning:' + requestId,
+      ],
+    )
+    await client.query(
+      'INSERT INTO outbox_events (id, topic, partition_key, payload) VALUES ($1, $2, $3, $4::jsonb)',
+      [
+        'wake_' + randomUUID(),
+        EVENT_TOPICS.agentWake,
+        plannerRow.id,
+        canonicalJson({
+          schemaVersion: 1,
+          type: 'agent.wake',
+          workspaceId: input.workspaceId,
+          missionId,
+          agentId: plannerRow.id,
+          reason: 'conversation.plan_requested',
+          requestId,
+        }),
+      ],
+    )
+    await client.query(
+      "UPDATE conversation_message_deliveries SET status = 'context_loaded', delivered_at = NOW() " +
+      "WHERE agent_id = $1 AND status = 'context_pending' AND message_id = ANY($2::text[])",
+      [plannerRow.id, input.sourceMessageIds],
+    )
+    return { request: snapshot(inserted.rows[0]!), reused: false }
   }
 
   async get(

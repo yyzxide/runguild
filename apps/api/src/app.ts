@@ -49,6 +49,7 @@ import {
   ProjectProvisioningError,
   type ConversationRepository,
   type ConversationPlanningRepository,
+  type ConversationTaskSubmissionRepository,
   type MissionRepository,
   type DevelopmentSetupRepository,
   type ProjectMembershipRepository,
@@ -103,6 +104,7 @@ type ConversationService = Pick<
   'create' | 'listProject' | 'listMessages' | 'postMessage'
 >
 type ConversationPlanningService = Pick<ConversationPlanningRepository, 'create' | 'get'>
+type ConversationTaskSubmissionService = Pick<ConversationTaskSubmissionRepository, 'submit'>
 
 type RunControlService = Pick<RuntimeRepository, 'createControl'>
 type TaskControlService = Pick<TaskRepository, 'retryFailedTask'>
@@ -132,6 +134,7 @@ export interface ApiDependencies {
   readonly worktreeSetups?: WorktreeSetupService
   readonly conversations: ConversationService
   readonly conversationPlanning: ConversationPlanningService
+  readonly conversationTaskSubmissions: ConversationTaskSubmissionService
   readonly runControls: RunControlService
   readonly taskControls: TaskControlService
   readonly toolApprovals: ToolApprovalService
@@ -258,6 +261,16 @@ const createConversationPlanningSchema = z.object({
   goal: z.string().min(1).max(20_000).optional(),
   plannerAgentId: idSchema.optional(),
 })
+
+const submitConversationTaskSchema = z.object({
+  body: z.string().min(1).max(65_536),
+  mentions: z.array(idSchema).max(32).default([]),
+  replyToMessageId: idSchema.optional(),
+  title: z.string().min(1).max(200),
+  plannerAgentId: idSchema.optional(),
+})
+
+const clientRequestIdSchema = z.string().trim().min(8).max(200)
 
 const planSchema = z.object({
   summary: z.string().min(1).max(20_000),
@@ -1127,6 +1140,42 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       ...(req.header('x-idempotency-key')?.trim()
         ? { idempotencyKey: req.header('x-idempotency-key')!.trim() }
         : {}),
+      correlationId: correlationId(req),
+    })
+    res.status(result.reused ? 200 : 201).json(result)
+  }))
+
+  app.post('/api/v1/workspaces/:workspaceId/conversations/:conversationId/task-submissions', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_task_submission_required' } })
+      return
+    }
+    const body = submitConversationTaskSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    const clientRequestId = clientRequestIdSchema.safeParse(req.header('x-client-request-id'))
+    if (!clientRequestId.success) {
+      invalidBody(res, clientRequestId.error)
+      return
+    }
+    const result = await dependencies.conversationTaskSubmissions.submit({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      conversationId: idSchema.parse(req.params.conversationId) as ConversationId,
+      createdBy: actorRef.id,
+      body: body.data.body,
+      mentions: body.data.mentions as AgentId[],
+      ...(body.data.replyToMessageId === undefined
+        ? {}
+        : { replyToMessageId: body.data.replyToMessageId as MessageId }),
+      title: body.data.title,
+      ...(body.data.plannerAgentId === undefined
+        ? {}
+        : { plannerAgentId: body.data.plannerAgentId as AgentId }),
+      clientRequestId: clientRequestId.data,
       correlationId: correlationId(req),
     })
     res.status(result.reused ? 200 : 201).json(result)

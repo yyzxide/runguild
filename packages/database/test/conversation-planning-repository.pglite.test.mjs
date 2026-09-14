@@ -4,7 +4,10 @@ import test from 'node:test'
 
 import { PGlite } from '@electric-sql/pglite'
 
-import { ConversationPlanningRepository } from '../dist/index.js'
+import {
+  ConversationPlanningRepository,
+  ConversationTaskSubmissionRepository,
+} from '../dist/index.js'
 
 const migrations = [
   '0001_core.sql', '0002_orchestration.sql', '0003_runtime.sql',
@@ -174,6 +177,56 @@ test('planning promotion rejects foreign messages, non-members, and non-Planner 
       workspaceId: 'ws', conversationId: 'conversation', sourceMessageIds: ['message_1'],
       title: 'Invalid', plannerAgentId: 'builder', createdBy: 'user', correlationId: 'invalid-agent',
     }), /no active Planner/)
+  } finally {
+    await database.close()
+  }
+})
+
+test('task submission atomically persists message and Planning request across response-loss retries', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new ConversationTaskSubmissionRepository(poolAdapter(database))
+    const input = {
+      workspaceId: 'ws', conversationId: 'conversation', createdBy: 'user',
+      body: '实现断线后可恢复的任务提交。', mentions: ['planner'],
+      title: '可恢复任务提交', plannerAgentId: 'planner',
+      clientRequestId: 'browser-request-stable-1', correlationId: 'task-command',
+    }
+    const created = await repository.submit(input)
+    assert.equal(created.reused, false)
+    assert.equal(created.request.sourceMessageIds[0], created.message.id)
+
+    const responseLossRetry = await repository.submit(input)
+    assert.equal(responseLossRetry.reused, true)
+    assert.equal(responseLossRetry.message.id, created.message.id)
+    assert.equal(responseLossRetry.request.id, created.request.id)
+
+    const durable = await database.query(
+      "SELECT (SELECT COUNT(*)::int FROM messages WHERE body = $1) AS message_count, " +
+      "(SELECT COUNT(*)::int FROM conversation_planning_requests WHERE mission_id = $2) AS request_count, " +
+      "(SELECT COUNT(*)::int FROM missions WHERE id = $2) AS mission_count",
+      [input.body, created.request.missionId],
+    )
+    assert.deepEqual(durable.rows[0], { message_count: 1, request_count: 1, mission_count: 1 })
+
+    await assert.rejects(repository.submit({ ...input, body: '同一个请求不能改写任务内容。' }), /different content/)
+
+    await database.query("UPDATE agents SET status = 'disabled' WHERE id = 'planner'")
+    const rejectedBody = '没有 Planner 时不应只留下消息。'
+    await assert.rejects(repository.submit({
+      ...input, body: rejectedBody, title: '应当回滚',
+      clientRequestId: 'browser-request-rollback-1', correlationId: 'rollback',
+    }), /no active Planner/)
+    const rolledBack = await database.query('SELECT COUNT(*)::int AS count FROM messages WHERE body = $1', [rejectedBody])
+    assert.equal(rolledBack.rows[0].count, 0)
+
+    await database.query("UPDATE agents SET status = 'active' WHERE id = 'planner'")
+    const recovered = await repository.submit({
+      ...input, body: rejectedBody, title: '回滚后重试成功',
+      clientRequestId: 'browser-request-rollback-1', correlationId: 'rollback-retry',
+    })
+    assert.equal(recovered.reused, false)
   } finally {
     await database.close()
   }
