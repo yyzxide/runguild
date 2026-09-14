@@ -270,6 +270,7 @@ packages/
 ~~~bash
 npm run typecheck
 npm test
+npm run test:e2e # requires E2E_DATABASE_URL or TEST_DATABASE_URL ending in _test
 npm run web:start
 ~~~
 
@@ -562,4 +563,8 @@ therefore refuses to run unless `current_database()` ends in `_test`. Never
 point `TEST_DATABASE_URL` at the development or production RunGuild database.
 The GitHub Actions workflow provides a dedicated PostgreSQL 17 service whose
 database name ends in `_test`, so the normally opt-in coordination suite runs
-on every push to `main` and every pull request instead of being skipped.
+on every push to `main` and every pull request instead of being skipped. The
+same job starts the real local-mode API and Vite Web application in Chromium;
+it verifies that a greeting remains an ordinary durable message while a task
+request atomically creates a Mission and starts planning without a second
+manual action.

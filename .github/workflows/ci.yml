@@ -49,3 +49,9 @@ jobs:
 
       - name: Build and run all tests
         run: npm test
+
+      - name: Install Chromium for browser acceptance
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser acceptance
+        run: npm run test:e2e

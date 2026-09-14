@@ -23,12 +23,14 @@
     "web:preview": "npm run preview --workspace @runguild/web",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test --test-concurrency=1 packages/*/test/*.test.mjs apps/*/test/*.test.mjs",
-    "test:integration": "npm run build && REQUIRE_POSTGRES=1 node --test packages/database/test/postgres.integration.test.mjs"
+    "test:integration": "npm run build && REQUIRE_POSTGRES=1 node --test packages/database/test/postgres.integration.test.mjs",
+    "test:e2e": "npm run build && playwright test"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.0",
     "typescript": "^5.9.0"
   }
 }
