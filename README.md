@@ -7,6 +7,10 @@ persistent AI agent teams turn conversations into software-engineering
 missions, execute dependency-aware task graphs, collaborate on shared
 artifacts, and finish through evidence-based review.
 
+The dated [delivery status](docs/DELIVERY_STATUS_2026-09-14.md) maps the current
+implementation and CI evidence to the earlier audit findings. It also keeps the
+remaining real-model experiment separate from deterministic platform claims.
+
 This repository is intentionally implemented independently. Cumora is used as
 a study reference for durable agent runtime, inbox/wake, typed actions,
 coordination, and observability. The product model here is mission-first rather
@@ -229,9 +233,9 @@ remains opt-in. Reviewer usage accounting, project-scoped Workers, real
 Artifact/Evaluation/Trace projections, cross-instance Artifact fan-out, and
 persistent browser authentication are implemented. The next priority is to
 repeat bounded real-model Missions and paired experiments on a personal
-machine, then improve recovery diagnostics, cost observability, and operator
-ergonomics from those traces. Public deployment hardening is optional while
-RunGuild remains a personal-machine system.
+machine. The platform does not claim a multi-Agent advantage until that bounded
+experiment has enough complete pairs. Public deployment hardening is optional
+while RunGuild remains a personal-machine system.
 
 ## Repository layout
 

@@ -12,10 +12,11 @@ RunGuild 的文档分为产品与架构事实、个人操作、验证记录和�
 | [STATE_MACHINES.md](STATE_MACHINES.md) | 后端与排障人员 | Mission、Task、Run、Review、Worktree 等如何迁移和恢复 |
 | [PROTOCOL.md](PROTOCOL.md) | Agent Runtime 与工具开发者 | 消息、工具、Evidence、Artifact、Context 和 Evaluation 协议 |
 | [USER_GUIDE_ZH.md](USER_GUIDE_ZH.md) | 个人操作者 | 如何安装、每天启动、跑 Mission、排错、控制成本和备份 |
-| [MIGRATIONS.md](MIGRATIONS.md) | 维护数据库的人 | 0001–0023 分别改变了什么、如何安全执行 Migration |
+| [MIGRATIONS.md](MIGRATIONS.md) | 维护数据库的人 | 0001–0029 分别改变了什么、如何安全执行 Migration |
 | [ENVIRONMENT.md](ENVIRONMENT.md) | 换电脑或排查环境的人 | 哪些状态不在 Git、公司 VM 问题与代码问题如何区分 |
 | [REAL_EVALUATION_2026-08-31.md](REAL_EVALUATION_2026-08-31.md) | 技术评审与实验复盘 | 第一次真实模型 Evaluation 的冻结输入、结果、缺口和修复 |
 | [AUDIT_2026-09-14.md](AUDIT_2026-09-14.md) | 项目收尾与作品集评审 | 本次实测、独立验收缺口、入口恢复、执行边界与发布门槛 |
+| [DELIVERY_STATUS_2026-09-14.zh-CN.md](DELIVERY_STATUS_2026-09-14.zh-CN.md) / [English](DELIVERY_STATUS_2026-09-14.md) | 项目收尾与面试评审 | 审计发现如何闭环、当前能演示什么、哪些真实实验仍未完成 |
 | [INTERVIEW_GUIDE_ZH.md](INTERVIEW_GUIDE_ZH.md) | 项目讲解者 | 如何解释流程、并发、隔离、安全、恢复、Evaluation 和边界 |
 | [../apps/web/DESIGN.md](../apps/web/DESIGN.md) | 前端维护者 | 中文操作台的视觉、真实数据和安全交互原则 |
 
