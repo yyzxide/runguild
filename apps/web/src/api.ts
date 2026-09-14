@@ -708,19 +708,20 @@ export const missionApi = {
     )
   },
 
-  async listRunTraces(identity: TestIdentity): Promise<readonly RunTraceSummary[]> {
+  async listRunTraces(identity: TestIdentity, limit = 20): Promise<readonly RunTraceSummary[]> {
     const result = await request<{ readonly runs: readonly RunTraceSummary[] }>(
-      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces`,
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces?limit=${encodeURIComponent(String(limit))}`,
       { headers: actorHeaders(identity.userId) },
     )
     return result.runs
   },
 
-  getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
-    return request(
+  async getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
+    const result = await request<{ readonly run: RunTraceDetail }>(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces/${encodeURIComponent(runId)}`,
       { headers: actorHeaders(identity.userId) },
     )
+    return result.run
   },
 
   async listArtifacts(

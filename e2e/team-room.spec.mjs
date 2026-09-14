@@ -26,7 +26,7 @@ test('a greeting stays a message and a task starts planning without a second man
   await composer.fill(greeting)
   await expect(page.locator('.composer-intent button', { hasText: '普通消息' })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('button', { name: '发送普通消息' }).click()
-  await expect(page.getByText(greeting, { exact: true })).toBeVisible()
+  await expect(page.locator('.message-stream').getByText(greeting, { exact: true })).toBeVisible()
   expect((await operatorOverview(page)).missions.length).toBe(missionsBefore)
 
   const messagesResponse = await page.request.get(messagesPath)
@@ -39,13 +39,37 @@ test('a greeting stays a message and a task starts planning without a second man
   await composer.fill(task)
   await expect(page.locator('.composer-intent button', { hasText: '新任务' })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('button', { name: '发送并启动规划' }).click()
-  await expect(page.getByText(task, { exact: true })).toBeVisible()
+  await expect(page.locator('.message-stream').getByText(task, { exact: true })).toBeVisible()
   await expect(page.getByText('执行环境未就绪，规划尚未开始')).toBeVisible()
   await expect.poll(async () => (await operatorOverview(page)).missions.length).toBe(missionsBefore + 1)
 
   const pendingSubmissionKeys = await page.evaluate(() =>
     Object.keys(window.localStorage).filter((key) => key.startsWith('runguild:pending-submission:')))
   expect(pendingSubmissionKeys).toEqual([])
+
+  const traceSummary = {
+    runId: 'run_browser_acceptance', status: 'completed', attempt: 1, currentHop: 2, maxHops: 5,
+    startedAt: '2026-09-14T06:00:00.000Z', finishedAt: '2026-09-14T06:00:03.000Z',
+    createdAt: '2026-09-14T06:00:00.000Z',
+    agent: { id: 'agent_browser', name: '浏览器验收 Agent', role: 'builder' },
+    task: { id: 'task_browser', title: '验证运行详情响应', role: 'builder' },
+    mission: { id: 'mission_browser', title: '浏览器验收 Mission' },
+  }
+  await page.route(/\/run-traces\?limit=20$/, async (route) => {
+    await route.fulfill({ json: { runs: [traceSummary] } })
+  })
+  await page.route(/\/run-traces\/run_browser_acceptance$/, async (route) => {
+    await route.fulfill({ json: { run: {
+      ...traceSummary,
+      modelProvider: 'test', modelName: 'browser-fixture',
+      contextSummary: {
+        modelProvider: 'test', modelName: 'browser-fixture', taskTitle: traceSummary.task.title,
+        missionTitle: traceSummary.mission.title, tokenBudget: 4096, estimatedTokens: 512, compacted: false,
+      },
+      completionSummary: '浏览器已正确解包并展示 Run 详情',
+      events: [], llmCalls: [], toolExecutions: [],
+    } } })
+  })
 
   for (const [hash, heading] of [
     ['#/artifacts', '活文档与冻结版本'],
@@ -55,4 +79,5 @@ test('a greeting stays a message and a task starts planning without a second man
     await page.evaluate((nextHash) => { window.location.hash = nextHash }, hash)
     await expect(page.getByRole('heading', { name: heading })).toBeVisible()
   }
+  await expect(page.getByText('浏览器已正确解包并展示 Run 详情')).toBeVisible()
 })

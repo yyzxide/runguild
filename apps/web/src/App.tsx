@@ -49,6 +49,7 @@ import {
   type MissionSnapshot,
   type ProjectOperatorOverview,
   type ProjectRuntimeConfigurationResponse,
+  type RunTraceSummary,
   type TestIdentity,
   type UpdateProjectRuntimeConfiguration,
   type WorkerKind,
@@ -657,9 +658,20 @@ function StartView({
   )
 }
 
-function mapMissionTasks(mission: MissionSnapshot): MissionTask[] {
+function formatRunDuration(run: RunTraceSummary | undefined): string {
+  if (!run?.startedAt) return '—'
+  const started = new Date(run.startedAt).getTime()
+  const finished = run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now()
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return '—'
+  const seconds = Math.round((finished - started) / 1_000)
+  if (seconds < 60) return `${seconds}秒`
+  return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒`
+}
+
+function mapMissionTasks(mission: MissionSnapshot, runs: readonly RunTraceSummary[]): MissionTask[] {
   return mission.tasks.map((task, index) => {
     const planTask = mission.proposedPlan?.plan.tasks[index]
+    const latestRun = runs.find((run) => run.task.id === task.id)
     let status: TaskStatus = 'queued'
     if (task.status === 'completed') status = 'verified'
     else if (['claimed', 'running', 'reviewing'].includes(task.status)) status = 'running'
@@ -669,11 +681,14 @@ function mapMissionTasks(mission: MissionSnapshot): MissionTask[] {
       key: `任务-${String(index + 1).padStart(2, '0')}`,
       title: task.title,
       role: roleLabels[task.role ?? 'custom'] ?? task.role ?? '待分配',
-      agent: task.status === 'blocked' ? '等待依赖' : '等待调度',
+      agent: latestRun?.agent.name ?? (task.status === 'blocked' ? '等待依赖' : '等待调度'),
       status,
       statusLabel: task.status === 'ready' ? '已就绪，等待 Scheduler' : missionStatusLabels[task.status] ?? task.status,
       summary: planTask?.description ?? '任务已经由已批准计划生成。',
-      duration: '—', attempts: 0, model: '由 Worker 配置', dependsOn: task.dependsOn,
+      duration: formatRunDuration(latestRun),
+      attempts: latestRun?.attempt ?? 0,
+      model: latestRun ? '见运行账本' : '由 Worker 配置',
+      dependsOn: task.dependsOn,
       criteria: planTask?.acceptanceCriteria.map((criterion) => ({ label: criterion.description, passed: task.status === 'completed' })) ?? [],
     }
   })
@@ -690,14 +705,24 @@ function MissionContract({ mission }: { readonly mission: MissionSnapshot }) {
   )
 }
 
-function EvidenceSpine({ facts, selectedTask }: { readonly facts: readonly EvidenceFact[]; readonly selectedTask: MissionTask }) {
-  const filtered = facts.filter((fact) => fact.taskId === selectedTask.id || fact.state === 'pending')
+function EvidenceSpine({ facts, selectedTask, runs, loading, error, onOpenRun }: {
+  readonly facts: readonly EvidenceFact[]
+  readonly selectedTask: MissionTask
+  readonly runs: readonly RunTraceSummary[]
+  readonly loading: boolean
+  readonly error: string | null
+  readonly onOpenRun: (runId: string) => void
+}) {
+  const filtered = facts.filter((fact) => fact.taskId === selectedTask.id)
   return (
     <aside className="evidence-panel">
-      <div className="panel-heading"><div><span className="micro-label">Mission Read Model</span><h2>任务状态事实</h2></div><StatusPill tone="live"><span className="pulse-dot" />真实数据</StatusPill></div>
-      <p className="panel-intro">这里仅展示当前 Mission API 返回的状态。<strong>{selectedTask.key}</strong> 的运行与证据账本尚未接入这个页面。</p>
+      <div className="panel-heading"><div><span className="micro-label">Mission + Run Ledger</span><h2>任务状态与运行</h2></div><StatusPill tone="live"><span className="pulse-dot" />真实数据</StatusPill></div>
+      <p className="panel-intro">当前状态来自 Mission API；<strong>{selectedTask.key}</strong> 的 Run 由项目运行账本按 Task ID 关联。</p>
       {filtered.length ? <ol className="evidence-spine">{filtered.map((fact) => <li key={fact.id} className={`evidence-fact evidence-fact--${fact.state}`}><span className="evidence-fact__sequence">{fact.sequence}</span><div className="evidence-fact__content"><div className="evidence-fact__meta"><span>{fact.kind}</span><time>{fact.time}</time></div><strong>{fact.title}</strong><code>{fact.detail}</code></div></li>)}</ol> : <div className="empty-evidence">Mission API 尚未返回任务状态。</div>}
-      <button className="quiet-action" disabled><Activity size={15} />运行记录 API 尚未接入</button>
+      <div className="task-run-register">
+        <header><strong>关联 Run</strong><code>{loading ? '读取中' : `${runs.length} 条`}</code></header>
+        {error ? <p className="task-run-register__empty">运行账本读取失败：{error}</p> : runs.length ? runs.slice(0, 3).map((run) => <button key={run.runId} onClick={() => onOpenRun(run.runId)}><span><strong>{run.agent.name}</strong><small>{run.status} · 第 {run.attempt} 次尝试</small></span><code>Hop {run.currentHop}/{run.maxHops}</code><ArrowRight size={13} /></button>) : <p className="task-run-register__empty">{loading ? '正在读取该任务的运行记录…' : '这个任务尚未产生 Run；被依赖阻塞或尚未被 Scheduler 领取时属于正常状态。'}</p>}
+      </div>
     </aside>
   )
 }
@@ -713,19 +738,45 @@ function TaskInspector({ task }: { readonly task: MissionTask }) {
   )
 }
 
-function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDelivery, onRequestDeliveryChanges }: {
+function MissionView({ mission, identity, busy, error, onNavigate, onOpenRun, onRefresh, onApproveDelivery, onRequestDeliveryChanges }: {
   readonly mission: MissionSnapshot | null
+  readonly identity: TestIdentity
   readonly busy: string | null
   readonly error: string | null
   readonly onNavigate: (view: View) => void
+  readonly onOpenRun: (runId: string) => void
   readonly onRefresh: () => void
   readonly onApproveDelivery: () => void
   readonly onRequestDeliveryChanges: (reason: string) => void
 }) {
-  const tasks = useMemo(() => mission ? mapMissionTasks(mission) : [], [mission])
+  const [runTraces, setRunTraces] = useState<readonly RunTraceSummary[]>([])
+  const [runTracesLoading, setRunTracesLoading] = useState(false)
+  const [runTracesError, setRunTracesError] = useState<string | null>(null)
+  const missionRuns = useMemo(() => mission ? runTraces.filter((run) => run.mission.id === mission.id) : [], [mission, runTraces])
+  const tasks = useMemo(() => mission ? mapMissionTasks(mission, missionRuns) : [], [mission, missionRuns])
   const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? '')
   const [deliveryFeedback, setDeliveryFeedback] = useState('')
   useEffect(() => { if (!tasks.some((task) => task.id === selectedTaskId)) setSelectedTaskId(tasks[0]?.id ?? '') }, [selectedTaskId, tasks])
+  useEffect(() => {
+    if (!mission) {
+      setRunTraces([])
+      setRunTracesError(null)
+      return
+    }
+    let cancelled = false
+    setRunTracesLoading(true)
+    setRunTracesError(null)
+    void missionApi.listRunTraces(identity, 100)
+      .then((runs) => { if (!cancelled) setRunTraces(runs) })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setRunTraces([])
+          setRunTracesError(caught instanceof Error ? caught.message : '运行账本读取失败')
+        }
+      })
+      .finally(() => { if (!cancelled) setRunTracesLoading(false) })
+    return () => { cancelled = true }
+  }, [identity, mission?.id, mission?.updatedAt])
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
   if (!mission) return <section className="product-empty-state"><span><Network size={26} /></span><div><span className="micro-label">尚无 Mission</span><h1>先从一次真实任务讨论开始</h1><p>进入协作室描述目标并选择关键消息。Planner 提交计划、你批准之后，任务 DAG 才会出现在这里。</p></div><button className="primary-action" onClick={() => onNavigate('team')}>进入协作室<ArrowRight size={15} /></button></section>
   if (!selectedTask) return <><section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><span>{mission.title}</span></div><h1>{mission.title}</h1><p>这个 Mission 已创建，但任务 DAG 尚未物化。</p></div><div className="page-actions"><StatusPill tone="active">{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button></div></section><MissionContract mission={mission} /><section className="mission-awaiting-state"><Network size={25} /><div><strong>{mission.status === 'awaiting_approval' ? '计划正在等待你的批准' : 'Planner 还没有提交可执行计划'}</strong><p>{mission.proposedPlan?.summary ?? '回到协作室查看 Planner 的规划进度。'}</p></div><button className="primary-action" onClick={() => onNavigate(mission.status === 'awaiting_approval' ? 'start' : 'team')}>{mission.status === 'awaiting_approval' ? '去工作台批准' : '查看协作室'}<ArrowRight size={14} /></button></section></>
@@ -747,7 +798,7 @@ function MissionView({ mission, busy, error, onNavigate, onRefresh, onApproveDel
           <div><button className="secondary-action" type="submit" disabled={Boolean(busy) || !deliveryFeedback.trim()}>{busy === 'request-delivery-changes' ? <LoaderCircle className="is-spinning" size={15} /> : <RotateCcw size={15} />}退回并创建修复任务</button><button className="primary-action" type="button" onClick={onApproveDelivery} disabled={Boolean(busy)}>{busy === 'approve-delivery' ? <LoaderCircle className="is-spinning" size={15} /> : <ShieldCheck size={15} />}批准此版本并完成 Mission</button></div>
         </form> : null}
       </section> : null}
-      <div className="mission-workspace"><section className="topology-panel"><div className="panel-heading panel-heading--topology"><div><span className="micro-label">已批准计划 · 版本 {mission.planVersion}</span><h2>任务依赖拓扑</h2></div><span className="topology-summary">点击节点查看任务详情</span></div><MissionGraph tasks={tasks} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} /></section><EvidenceSpine facts={liveFacts} selectedTask={selectedTask} /><TaskInspector task={selectedTask} /></div>
+      <div className="mission-workspace"><section className="topology-panel"><div className="panel-heading panel-heading--topology"><div><span className="micro-label">已批准计划 · 版本 {mission.planVersion}</span><h2>任务依赖拓扑</h2></div><span className="topology-summary">点击节点查看任务详情</span></div><MissionGraph tasks={tasks} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} /></section><EvidenceSpine facts={liveFacts} selectedTask={selectedTask} runs={missionRuns.filter((run) => run.task.id === selectedTask.id)} loading={runTracesLoading} error={runTracesError} onOpenRun={onOpenRun} /><TaskInspector task={selectedTask} /></div>
     </>
   )
 }
@@ -1410,6 +1461,7 @@ export function App() {
   const [runtimeBusy, setRuntimeBusy] = useState<string | null>(null)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const [mission, setMission] = useState<MissionSnapshot | null>(null)
+  const [targetTraceRunId, setTargetTraceRunId] = useState<string | null>(null)
   const [missionId, setMissionId] = useState(() =>
     window.localStorage.getItem('runguild:last-mission')
       ?? window.localStorage.getItem('mission-control:last-mission')
@@ -1423,6 +1475,7 @@ export function App() {
     setRuntimeConfiguration(null)
     setRuntimePanelOpen(false)
     setMission(null)
+    setTargetTraceRunId(null)
     setMissionId('')
     window.localStorage.removeItem('runguild:last-mission')
     window.localStorage.removeItem('mission-control:last-mission')
@@ -1662,11 +1715,11 @@ export function App() {
     if (view === 'team') return <TeamRoomView identity={identity} setup={setup} mission={mission} runtime={runtimeConfiguration} overview={overview} onNavigate={navigate} onMissionReady={acceptMissionFromPlanning} onOpenRuntime={openRuntimePanel} onEnsurePlanner={ensurePlannerWorker} />
     if (view === 'members') return <MembersView identity={identity} currentUserId={authentication?.user.id ?? identity.userId} currentRole={authentication?.projects.find((project) => project.id === identity.projectId)?.role ?? 'viewer'} />
     if (view === 'artifacts') return <ArtifactView identity={identity} missionId={mission?.id} />
-    if (view === 'trace') return <TraceView identity={identity} />
-    return <MissionView mission={mission} busy={busy} error={error} onNavigate={navigate} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} onRequestDeliveryChanges={(reason) => void run('request-delivery-changes', async () => { if (!mission?.finalDelivery) return; await missionApi.requestDeliveryChanges(identity, mission.id, mission.finalDelivery.artifactVersionId, reason); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
+    if (view === 'trace') return <TraceView identity={identity} initialRunId={targetTraceRunId} />
+    return <MissionView mission={mission} identity={identity} busy={busy} error={error} onNavigate={navigate} onOpenRun={(runId) => { setTargetTraceRunId(runId); navigate('trace') }} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} onRequestDeliveryChanges={(reason) => void run('request-delivery-changes', async () => { if (!mission?.finalDelivery) return; await missionApi.requestDeliveryChanges(identity, mission.id, mission.finalDelivery.artifactVersionId, reason); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
   // State is intentionally listed explicitly so API progress is reflected immediately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, connection, setup, overview, runtimeConfiguration, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview, openRuntimePanel, ensurePlannerWorker])
+  }, [view, connection, setup, overview, runtimeConfiguration, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview, openRuntimePanel, ensurePlannerWorker, targetTraceRunId])
 
   if (authentication === undefined || authenticationMode === undefined) return <AuthenticationChecking connection={connection} error={authenticationError} />
   if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />

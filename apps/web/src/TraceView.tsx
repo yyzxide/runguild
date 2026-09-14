@@ -11,6 +11,7 @@ import {
 
 export interface TraceViewProps {
   readonly identity: TestIdentity
+  readonly initialRunId?: string | null
 }
 
 const statusLabels: Readonly<Record<string, string>> = {
@@ -164,9 +165,9 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
   )
 }
 
-export function TraceView({ identity }: TraceViewProps) {
+export function TraceView({ identity, initialRunId = null }: TraceViewProps) {
   const [runs, setRuns] = useState<readonly RunTraceSummary[] | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(initialRunId)
   const [detail, setDetail] = useState<RunTraceDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -181,6 +182,7 @@ export function TraceView({ identity }: TraceViewProps) {
       setRuns(next)
       setSelectedId((current) => {
         if (current && next.some((run) => run.runId === current)) return current
+        if (initialRunId && next.some((run) => run.runId === initialRunId)) return initialRunId
         return next[0]?.runId ?? null
       })
       if (next.length === 0) setDetail(null)
@@ -190,7 +192,7 @@ export function TraceView({ identity }: TraceViewProps) {
     } finally {
       setLoading(false)
     }
-  }, [identity])
+  }, [identity, initialRunId])
 
   useEffect(() => { void loadRuns() }, [loadRuns])
 
