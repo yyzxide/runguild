@@ -333,6 +333,14 @@ export interface EvaluationTrialMetrics {
   readonly contextSnapshots: number
   readonly compactedContexts: number
   readonly estimatedContextTokens: number
+  readonly modelProvenance?: readonly {
+    readonly actorKind: 'execution_agent' | 'reviewer_agent'
+    readonly provider: string
+    readonly requestedModel: string
+    readonly endpoint: string | null
+    readonly returnedModel: string | null
+    readonly calls: number
+  }[]
 }
 
 export interface EvaluationTrial {

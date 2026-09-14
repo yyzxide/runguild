@@ -424,6 +424,12 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control REDIS_U
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control REDIS_URL=redis://localhost:6379 npm run worker:start
 ~~~
 
+For a bounded real-model single-Agent versus multi-Agent comparison, use the
+committed fixture materializer and live harness documented in
+[`docs/LIVE_EVALUATION_RUNBOOK_ZH.md`](docs/LIVE_EVALUATION_RUNBOOK_ZH.md).
+The exported Trial metrics include grouped execution-Agent and Reviewer model
+provenance; the harness never reads or serializes the API key.
+
 Run one Agent execution process after creating an Agent row. The process
 provisions the Task Worktree from the Project default branch. Repository and
 Worktree roots must be distinct; test commands are exact argument arrays, not

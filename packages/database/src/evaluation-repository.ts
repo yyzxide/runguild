@@ -4,6 +4,7 @@ import {
   EVALUATION_VARIANTS,
   type EvaluationExperimentId,
   type EvaluationExperimentStatus,
+  type EvaluationModelProvenance,
   type EvaluationScenarioDefinition,
   type EvaluationScenarioId,
   type EvaluationScenarioVersionId,
@@ -590,6 +591,7 @@ export class EvaluationRepository {
       if (!success && (!hasFailure || hasActive)) return null
 
       const aggregates = await this.metricAggregates(client, trial.mission_id)
+      const modelProvenance = await this.modelProvenance(client, trial.mission_id)
       const completedTasks = taskResult.rows.filter((task) => task.status === 'completed').length
       const endTimes = [
         missionRow.updated_at.getTime(),
@@ -614,6 +616,7 @@ export class EvaluationRepository {
         contextSnapshots: aggregates.contextSnapshots,
         compactedContexts: aggregates.compactedContexts,
         estimatedContextTokens: aggregates.estimatedContextTokens,
+        modelProvenance,
       }
       const updated = await client.query<TrialRow>(
         "UPDATE evaluation_trials SET status = 'completed', metrics = $2::jsonb, " +
@@ -706,6 +709,37 @@ export class EvaluationRepository {
       compactedContexts: row.compacted_contexts,
       estimatedContextTokens: row.estimated_context_tokens,
     }
+  }
+
+  private async modelProvenance(
+    client: PoolClient,
+    missionId: string,
+  ): Promise<readonly EvaluationModelProvenance[]> {
+    const result = await client.query<{
+      actor_kind: 'execution_agent' | 'reviewer_agent'
+      provider: string
+      requested_model: string
+      endpoint: string | null
+      returned_model: string | null
+      calls: number
+    }>(
+      "SELECT actor_kind, provider, requested_model, endpoint, returned_model, COUNT(*)::int AS calls FROM (" +
+      "SELECT 'execution_agent'::text AS actor_kind, provider, model AS requested_model, endpoint, returned_model " +
+      'FROM llm_calls WHERE mission_id = $1 UNION ALL ' +
+      "SELECT 'reviewer_agent'::text AS actor_kind, provider, model AS requested_model, endpoint, returned_model " +
+      'FROM reviewer_model_calls WHERE mission_id = $1' +
+      ') model_calls GROUP BY actor_kind, provider, requested_model, endpoint, returned_model ' +
+      'ORDER BY actor_kind, provider, requested_model, endpoint NULLS FIRST, returned_model NULLS FIRST',
+      [missionId],
+    )
+    return result.rows.map((row) => ({
+      actorKind: row.actor_kind,
+      provider: row.provider,
+      requestedModel: row.requested_model,
+      endpoint: row.endpoint,
+      returnedModel: row.returned_model,
+      calls: row.calls,
+    }))
   }
 
   private async refreshExperiment(experimentId: EvaluationExperimentId): Promise<void> {

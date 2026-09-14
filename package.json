@@ -20,6 +20,7 @@
     "integration:start": "node apps/worker/dist/integration-main.js",
     "evaluation:start": "node apps/worker/dist/evaluation-main.js",
     "evaluation:materialize-target": "node scripts/materialize-evaluation-target.mjs",
+    "evaluation:live": "node scripts/run-live-evaluation.mjs",
     "web:start": "npm run dev --workspace @runguild/web",
     "web:preview": "npm run preview --workspace @runguild/web",
     "typecheck": "tsc -b --pretty false",

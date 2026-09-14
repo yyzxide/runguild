@@ -25,11 +25,14 @@ const migrationUrls = [
   new URL('../migrations/0007_worktrees.sql', import.meta.url),
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../migrations/0010_conversations.sql', import.meta.url),
+  new URL('../migrations/0011_conversation_planning.sql', import.meta.url),
   new URL('../migrations/0014_reviewer_execution.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
   new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
   new URL('../migrations/0021_authentication.sql', import.meta.url),
   new URL('../migrations/0023_project_lifecycle.sql', import.meta.url),
+  new URL('../migrations/0030_model_provider_provenance.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -201,8 +204,13 @@ async function addMetricsFixture(database, trial) {
       "request_redacted, context_snapshot_id, input_tokens, output_tokens, cached_input_tokens, " +
       "estimated_cost_usd, started_at, finished_at) VALUES " +
       "($1, 'ws_eval', $2, $3, $4, 1, 'openai', 'model', 'succeeded', 'request', '{}', $5, " +
-      '100, 20, 10, $6, NOW(), NOW())',
+      "100, 20, 10, $6, NOW(), NOW()) RETURNING id",
       ['llm_eval_' + suffix, trial.missionId, task.id, runId, contextId, cost],
+    )
+    await database.query(
+      "UPDATE llm_calls SET endpoint = 'https://api.example.test/responses', returned_model = 'model-returned' " +
+      'WHERE id = $1',
+      ['llm_eval_' + suffix],
     )
     await database.query(
       'INSERT INTO tool_executions ' +
@@ -252,9 +260,10 @@ async function addMetricsFixture(database, trial) {
   )
   await database.query(
     'INSERT INTO reviewer_model_calls ' +
-    '(id, review_id, workspace_id, mission_id, task_id, attempt, status, provider, model, input_tokens, ' +
-    "output_tokens, cached_input_tokens, estimated_cost_usd, latency_ms) VALUES ($1, $2, 'ws_eval', " +
-    "$3, $4, 1, 'succeeded', 'openai', 'model', $5, $6, $7, $8, 10)",
+    '(id, review_id, workspace_id, mission_id, task_id, attempt, status, provider, model, endpoint, ' +
+    "returned_model, input_tokens, output_tokens, cached_input_tokens, estimated_cost_usd, latency_ms) VALUES ($1, $2, 'ws_eval', " +
+    "$3, $4, 1, 'succeeded', 'openai', 'model', 'https://api.example.test/responses', " +
+    "'review-model-returned', $5, $6, $7, $8, 10)",
     ['review_model_call_eval_' + suffix, reviewId, trial.missionId, firstTask.id,
       reviewerInput, reviewerOutput, reviewerCached, reviewerCost],
   )
@@ -341,6 +350,19 @@ test('paired trials materialize real Missions, freeze the Git baseline, collect 
     assert.equal(report.variants.find((item) => item.variant === 'multi_agent').meanInputTokens, 280)
     assert.equal(completed.trials.find((item) => item.variant === 'single_agent').metrics.modelCalls, 2)
     assert.equal(completed.trials.find((item) => item.variant === 'single_agent').metrics.cachedInputTokens, 30)
+    assert.deepEqual(
+      completed.trials.find((item) => item.variant === 'single_agent').metrics.modelProvenance,
+      [
+        {
+          actorKind: 'execution_agent', provider: 'openai', requestedModel: 'model',
+          endpoint: 'https://api.example.test/responses', returnedModel: 'model-returned', calls: 1,
+        },
+        {
+          actorKind: 'reviewer_agent', provider: 'openai', requestedModel: 'model',
+          endpoint: 'https://api.example.test/responses', returnedModel: 'review-model-returned', calls: 1,
+        },
+      ],
+    )
 
     const multiTrial = completed.trials.find((item) => item.variant === 'multi_agent')
     await database.query(

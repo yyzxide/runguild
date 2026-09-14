@@ -678,6 +678,11 @@ An Evaluation Scenario separates the benchmark definition from an execution:
    that minimum means the engineering comparison is repeatable, not
    statistically significant.
 
+Every newly collected Trial also groups model provenance by actor kind,
+provider, requested model, exact endpoint, and provider-returned model. This
+keeps Reviewer usage and routing visible in the report instead of requiring an
+operator to infer them from the aggregate token count.
+
 Scenario Version immutability prevents a benchmark from changing after Trials
 start. Trial materialization uses expiring leases and fencing tokens; a stale
 worker cannot attach a different Mission. Reports are projections and can be

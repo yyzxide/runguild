@@ -70,8 +70,12 @@ function TrialLane({ trial, maximumMs }: {
   if (!trial) return <div className="trial-lane trial-lane--missing"><span>未创建</span><i /><code>—</code></div>
   const metrics = trial.metrics
   const width = metrics ? Math.max(4, (metrics.wallTimeMs / Math.max(1, maximumMs)) * 100) : 4
+  const modelSummary = metrics?.modelProvenance?.map((item) =>
+    `${item.actorKind === 'reviewer_agent' ? 'Reviewer' : 'Agent'}: ${item.requestedModel}` +
+    `${item.returnedModel === null ? ' → 未知' : ` → ${item.returnedModel}`} (${item.calls})`,
+  ).join('\n')
   return (
-    <div className={`trial-lane${trial.variant === 'multi_agent' ? ' trial-lane--multi' : ''}`}>
+    <div className={`trial-lane${trial.variant === 'multi_agent' ? ' trial-lane--multi' : ''}`} title={modelSummary}>
       <span>{variantName(trial.variant)}</span>
       <i style={{ width: `${width}%` }} />
       <code>{metrics ? `${formatDuration(metrics.wallTimeMs)} · ${formatCost(metrics.estimatedCostUsd)}` : statusLabels[trial.status] ?? trial.status}</code>
