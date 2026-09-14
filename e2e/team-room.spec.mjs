@@ -46,4 +46,13 @@ test('a greeting stays a message and a task starts planning without a second man
   const pendingSubmissionKeys = await page.evaluate(() =>
     Object.keys(window.localStorage).filter((key) => key.startsWith('runguild:pending-submission:')))
   expect(pendingSubmissionKeys).toEqual([])
+
+  for (const [hash, heading] of [
+    ['#/artifacts', '活文档与冻结版本'],
+    ['#/evaluation', '单 Agent 与协作团队对照'],
+    ['#/trace', '项目运行账本'],
+  ]) {
+    await page.evaluate((nextHash) => { window.location.hash = nextHash }, hash)
+    await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+  }
 })

@@ -36,7 +36,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   guidedPlan,
@@ -56,9 +56,10 @@ import {
 import { MissionGraph } from './MissionGraph'
 import { MembersView } from './MembersView'
 import { type EvidenceFact, type MissionTask, type TaskStatus } from './data'
-import { EvaluationView } from './EvaluationView'
-import { ArtifactView } from './ArtifactView'
-import { TraceView } from './TraceView'
+
+const EvaluationView = lazy(async () => ({ default: (await import('./EvaluationView')).EvaluationView }))
+const ArtifactView = lazy(async () => ({ default: (await import('./ArtifactView')).ArtifactView }))
+const TraceView = lazy(async () => ({ default: (await import('./TraceView')).TraceView }))
 
 type View = 'start' | 'mission' | 'team' | 'members' | 'artifacts' | 'evaluation' | 'trace'
 type ConnectionState = 'checking' | 'online' | 'offline'
@@ -1672,5 +1673,5 @@ export function App() {
   if (!authentication.projects.length) return <NoProjectAccess session={authentication} authenticationMode={authenticationMode} onLogout={logout} />
   if (!identity.projectId) return <WorkspaceLauncher session={authentication} authenticationMode={authenticationMode} onOpen={changeProject} onCreate={createProject} onLifecycle={updateProjectLifecycle} onLogout={logout} />
 
-  return <div className="app-shell"><AppNavigation view={view} session={authentication} authenticationMode={authenticationMode} onNavigate={navigate} onLeaveWorkspace={() => changeProject('')} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
+  return <div className="app-shell"><AppNavigation view={view} session={authentication} authenticationMode={authenticationMode} onNavigate={navigate} onLeaveWorkspace={() => changeProject('')} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}><Suspense fallback={<section className="evaluation-state"><LoaderCircle className="is-spinning" size={22} /><strong>正在加载工作区模块</strong></section>}>{content}</Suspense></main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
 }

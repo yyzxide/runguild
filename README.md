@@ -567,4 +567,6 @@ on every push to `main` and every pull request instead of being skipped. The
 same job starts the real local-mode API and Vite Web application in Chromium;
 it verifies that a greeting remains an ordinary durable message while a task
 request atomically creates a Mission and starts planning without a second
-manual action.
+manual action. Artifact, Evaluation, and Trace are route-split production
+chunks and are also loaded by browser acceptance, keeping the main bundle below
+Vite's 500 kB warning threshold.
