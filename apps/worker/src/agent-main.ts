@@ -99,6 +99,33 @@ function protectedTestPathsSetting(): readonly string[] {
   return parsed
 }
 
+function testSandboxSetting(): {
+  readonly mode: 'trusted_process' | 'bubblewrap'
+  readonly network: 'none' | 'host'
+  readonly maxProcesses: number
+  readonly maxOpenFiles: number
+  readonly maxFileSizeMb: number
+} {
+  const raw = process.env.AGENT_TEST_SANDBOX_JSON
+    ?? '{"mode":"trusted_process","network":"host","maxProcesses":128,"maxOpenFiles":1024,"maxFileSizeMb":512}'
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new Error('AGENT_TEST_SANDBOX_JSON must be valid JSON', { cause: error })
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('AGENT_TEST_SANDBOX_JSON must be an object')
+  const value = parsed as Record<string, unknown>
+  if ((value['mode'] !== 'trusted_process' && value['mode'] !== 'bubblewrap')
+      || (value['network'] !== 'none' && value['network'] !== 'host')
+      || !Number.isInteger(value['maxProcesses'])
+      || !Number.isInteger(value['maxOpenFiles'])
+      || !Number.isInteger(value['maxFileSizeMb'])) {
+    throw new Error('AGENT_TEST_SANDBOX_JSON has invalid fields')
+  }
+  return value as ReturnType<typeof testSandboxSetting>
+}
+
 function worktreeSetupCommandsSetting(): readonly (readonly string[])[] {
   const raw = process.env.AGENT_WORKTREE_SETUP_COMMANDS_JSON ?? '[]'
   let parsed: unknown
@@ -146,6 +173,7 @@ const maxTestTimeoutMs = integerSetting('AGENT_MAX_TEST_TIMEOUT_MS', 120_000, 1_
 const worktreeSetupTimeoutMs = integerSetting('AGENT_WORKTREE_SETUP_TIMEOUT_MS', 300_000, 1_000, 900_000)
 const allowedTestCommands = testCommandsSetting()
 const protectedTestPaths = protectedTestPathsSetting()
+const testSandbox = testSandboxSetting()
 const worktreeSetupCommands = worktreeSetupCommandsSetting()
 const contextBuilder = new DeterministicContextBuilder({ tokenBudget: contextInputTokens })
 
@@ -273,6 +301,7 @@ async function createRuntime(
       root: assigned.worktree.worktreePath,
       allowedTestCommands,
       protectedTestPaths,
+      testSandbox,
       maxTestTimeoutMs,
       evidence: evidenceRecorder,
       worktrees,
@@ -354,6 +383,7 @@ const processor = new AgentInboxProcessor({
   createRuntime,
   allowedTestCommands,
   protectedTestPaths,
+  testSandbox,
   planner,
   reviewer,
 }, {

@@ -212,6 +212,7 @@ function RuntimeConfigPanel({
     worktreeSetupTimeoutMs: runtime.configuration.runtime.worktreeSetupTimeoutMs,
     testCommands: runtime.configuration.runtime.testCommands,
     protectedTestPaths: runtime.configuration.runtime.protectedTestPaths,
+    testSandbox: runtime.configuration.runtime.testSandbox,
     agentContextInputTokens: runtime.configuration.runtime.agentContextInputTokens,
     agentMaxTestTimeoutMs: runtime.configuration.runtime.agentMaxTestTimeoutMs,
     agentModels: runtime.configuration.agents.map((agent) => ({
@@ -330,6 +331,16 @@ function RuntimeConfigPanel({
                 <div className="manifest-step__heading"><span><Terminal size={18} /></span><div><strong>允许 Agent 执行的测试</strong><small>使用参数数组，不经过 Shell；这也是工具网关的命令白名单。</small></div></div>
                 <label className="runtime-field runtime-field--code"><span>测试命令 JSON</span><textarea rows={5} value={testCommandsJson} onChange={(event) => setTestCommandsJson(event.target.value)} spellCheck={false} /></label>
                 <label className="runtime-field runtime-field--code"><span>受保护验收路径 JSON</span><textarea rows={4} value={protectedTestPathsJson} onChange={(event) => setProtectedTestPathsJson(event.target.value)} spellCheck={false} placeholder={'["test/acceptance", "package.json"]'} /><small>填写 Git 已跟踪的测试、夹具和命令入口。Agent 无法修改；测试运行前后都会核对内容清单。</small></label>
+                <div className="runtime-field-grid">
+                  <label className="runtime-field"><span>测试隔离模式</span><select value={draft.testSandbox.mode} onChange={(event) => { const mode = event.target.value as 'trusted_process' | 'bubblewrap'; setDraft({ ...draft, testSandbox: { ...draft.testSandbox, mode, network: mode === 'bubblewrap' ? 'none' : 'host' } }) }}><option value="bubblewrap">Bubblewrap（Linux 沙箱）</option><option value="trusted_process">Trusted process（兼容模式）</option></select></label>
+                  <label className="runtime-field"><span>测试网络</span><select value={draft.testSandbox.network} disabled={draft.testSandbox.mode === 'trusted_process'} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, network: event.target.value as 'none' | 'host' } })}><option value="none">禁用网络</option><option value="host">主机网络</option></select></label>
+                </div>
+                <div className="runtime-limits">
+                  <label className="runtime-field"><span>最大进程数</span><input type="number" min={16} max={4_096} value={draft.testSandbox.maxProcesses} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, maxProcesses: Number(event.target.value) } })} /></label>
+                  <label className="runtime-field"><span>最大文件描述符</span><input type="number" min={16} max={65_536} value={draft.testSandbox.maxOpenFiles} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, maxOpenFiles: Number(event.target.value) } })} /></label>
+                  <label className="runtime-field"><span>单文件上限（MiB）</span><input type="number" min={16} max={16_384} value={draft.testSandbox.maxFileSizeMb} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, maxFileSizeMb: Number(event.target.value) } })} /></label>
+                </div>
+                <div className={`setup-policy${draft.testSandbox.mode === 'bubblewrap' ? ' setup-policy--sandboxed' : ''}`}><strong>{draft.testSandbox.mode === 'bubblewrap' ? 'Linux 隔离已选择' : 'Trusted-local 兼容模式'}</strong><span>{draft.testSandbox.mode === 'bubblewrap' ? `只挂载系统运行时与 Task Worktree；网络：${draft.testSandbox.network === 'none' ? '禁用' : '主机网络'}。环境不支持时 Worker 会拒绝启动，不会降级。` : '测试进程与 Worker 共享主机权限域；界面与证据会如实标记，不称为 OS 沙箱。'}</span></div>
                 <div className="runtime-limits">
                   <label className="runtime-field"><span>上下文输入 Token</span><input type="number" min={256} max={2_000_000} value={draft.agentContextInputTokens} onChange={(event) => setDraft({ ...draft, agentContextInputTokens: Number(event.target.value) })} /></label>
                   <label className="runtime-field"><span>单次测试超时（毫秒）</span><input type="number" min={1_000} max={900_000} value={draft.agentMaxTestTimeoutMs} onChange={(event) => setDraft({ ...draft, agentMaxTestTimeoutMs: Number(event.target.value) })} /></label>

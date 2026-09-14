@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { access, mkdir, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
@@ -145,6 +146,10 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
           const agent = configuration.agents.find((candidate) => candidate.id === command.agentId)
           if (!agent) missing.push('项目 Agent')
           else if (agent.modelProvider !== 'openai') missing.push('当前仅支持 openai 模型提供商')
+          if (configuration.runtime.testSandbox.mode === 'bubblewrap'
+              && (!existsSync('/usr/bin/bwrap') || !existsSync('/usr/bin/prlimit'))) {
+            missing.push('Bubblewrap 或 prlimit')
+          }
         }
         const key = workerKey(command, configuration)
         return {
@@ -259,6 +264,7 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
       AGENT_MAX_TEST_TIMEOUT_MS: String(configuration.runtime.agentMaxTestTimeoutMs),
       AGENT_TEST_COMMANDS_JSON: JSON.stringify(configuration.runtime.testCommands),
       AGENT_PROTECTED_TEST_PATHS_JSON: JSON.stringify(configuration.runtime.protectedTestPaths),
+      AGENT_TEST_SANDBOX_JSON: JSON.stringify(configuration.runtime.testSandbox),
       AGENT_WORKTREE_SETUP_COMMANDS_JSON: JSON.stringify(configuration.runtime.worktreeSetupCommands),
       AGENT_WORKTREE_SETUP_TIMEOUT_MS: String(configuration.runtime.worktreeSetupTimeoutMs),
     })

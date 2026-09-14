@@ -115,6 +115,10 @@ function fakeProjectRuntimeConfigs() {
       worktreeSetupTimeoutMs: 300_000,
       testCommands: [['npm', 'test']],
       protectedTestPaths: [],
+      testSandbox: {
+        mode: 'trusted_process', network: 'host',
+        maxProcesses: 128, maxOpenFiles: 1024, maxFileSizeMb: 512,
+      },
       agentContextInputTokens: 65_536,
       agentMaxTestTimeoutMs: 120_000,
     },
@@ -145,6 +149,7 @@ function fakeProjectRuntimeConfigs() {
             worktreeSetupTimeoutMs: input.worktreeSetupTimeoutMs,
             testCommands: input.testCommands,
             protectedTestPaths: input.protectedTestPaths,
+            testSandbox: input.testSandbox,
             agentContextInputTokens: input.agentContextInputTokens,
             agentMaxTestTimeoutMs: input.agentMaxTestTimeoutMs,
           },
@@ -747,6 +752,10 @@ test('mission API enforces actor identity and exposes command flow', async () =>
         worktreeSetupTimeoutMs: 240_000,
         testCommands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
         protectedTestPaths: ['apps/api/test', 'package.json'],
+        testSandbox: {
+          mode: 'bubblewrap', network: 'none',
+          maxProcesses: 64, maxOpenFiles: 512, maxFileSizeMb: 256,
+        },
         agentContextInputTokens: 80_000,
         agentMaxTestTimeoutMs: 180_000,
         agentModels: [{ agentId: 'planner_api', modelProvider: 'openai', modelName: 'gpt-new' }],
@@ -757,6 +766,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal(updatedRuntimeBody.configuration.agents[0].modelName, 'gpt-new')
     assert.deepEqual(updatedRuntimeBody.configuration.runtime.worktreeSetupCommands, [['npm', 'ci', '--ignore-scripts']])
     assert.deepEqual(updatedRuntimeBody.configuration.runtime.protectedTestPaths, ['apps/api/test', 'package.json'])
+    assert.equal(updatedRuntimeBody.configuration.runtime.testSandbox.mode, 'bubblewrap')
 
     const agentRuntimeConfig = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/runtime-config', {
       headers: { 'x-actor-id': 'planner_api', 'x-actor-kind': 'agent' },

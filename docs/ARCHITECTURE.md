@@ -548,7 +548,8 @@ text-only approval can never become a database Review decision.
 
 ## 8. Repository execution
 
-Each Builder task receives an isolated Git worktree and sandbox identity:
+Each Builder task receives an isolated Git worktree and an explicit test
+execution policy:
 
 ~~~text
 project repository
@@ -558,9 +559,15 @@ project repository
   +-- integration worktree
 ~~~
 
-File tools are path-scoped to the assigned worktree. Shell commands run with
-time, output, environment, and resource limits. Integration happens only after
-tests and review gates pass.
+File tools are path-scoped to the assigned worktree. `trusted_process` is the
+portable compatibility mode and is deliberately reported as sharing the Agent
+Worker's host permission domain. On Linux, `bubblewrap` is the fail-closed
+sandbox mode: it creates user/PID/IPC/UTS namespaces, optionally removes the
+network namespace, clears the environment, exposes only read-only system
+runtime directories plus the writable Task Worktree, and applies CPU, process,
+open-file, output-file, time, and captured-output limits. It never silently
+falls back to trusted execution. Integration happens only after tests and
+review gates pass.
 
 The Agent Worker normally resolves the Project's default branch in
 `REPOSITORY_ROOT`, derives a stable path and `agent/task-*` branch under

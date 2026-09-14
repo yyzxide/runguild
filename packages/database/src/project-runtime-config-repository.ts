@@ -24,6 +24,13 @@ export interface ProjectRuntimeConfiguration {
     readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
     readonly protectedTestPaths: readonly string[]
+    readonly testSandbox: {
+      readonly mode: 'trusted_process' | 'bubblewrap'
+      readonly network: 'none' | 'host'
+      readonly maxProcesses: number
+      readonly maxOpenFiles: number
+      readonly maxFileSizeMb: number
+    }
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
   }
@@ -48,6 +55,13 @@ export interface UpdateProjectRuntimeConfigurationInput {
   readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
   readonly protectedTestPaths: readonly string[]
+  readonly testSandbox: {
+    readonly mode: 'trusted_process' | 'bubblewrap'
+    readonly network: 'none' | 'host'
+    readonly maxProcesses: number
+    readonly maxOpenFiles: number
+    readonly maxFileSizeMb: number
+  }
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number
   readonly agentModels: readonly {
@@ -96,6 +110,23 @@ function validateInput(input: UpdateProjectRuntimeConfigurationInput): {
         || !path.trim() || path.length > 4_096 || path.includes('\0') || isAbsolute(path)
         || path.split(/[\\/]/).includes('..') || path === '.git' || path.startsWith('.git/'))) {
     throw new Error('Protected test paths must contain at most 200 safe relative paths')
+  }
+  const sandbox = input.testSandbox
+  if ((sandbox.mode !== 'trusted_process' && sandbox.mode !== 'bubblewrap')
+      || (sandbox.network !== 'none' && sandbox.network !== 'host')) {
+    throw new Error('Test sandbox mode or network mode is invalid')
+  }
+  if (sandbox.mode === 'trusted_process' && sandbox.network !== 'host') {
+    throw new Error('trusted_process mode cannot claim network isolation')
+  }
+  for (const [label, value, maximum] of [
+    ['process count', sandbox.maxProcesses, 4_096],
+    ['open file count', sandbox.maxOpenFiles, 65_536],
+    ['file size', sandbox.maxFileSizeMb, 16_384],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 16 || value > maximum) {
+      throw new Error(`Test sandbox ${label} must be an integer between 16 and ${maximum}`)
+    }
   }
   if (!Array.isArray(input.worktreeSetupCommands) || input.worktreeSetupCommands.length > 20
       || input.worktreeSetupCommands.some((command) => !Array.isArray(command)
@@ -147,6 +178,11 @@ export class ProjectRuntimeConfigRepository {
         readonly worktree_setup_timeout_ms: number | null
         readonly test_commands: readonly (readonly string[])[] | null
         readonly protected_test_paths: readonly string[] | null
+        readonly test_sandbox_mode: 'trusted_process' | 'bubblewrap' | null
+        readonly test_network_mode: 'none' | 'host' | null
+        readonly test_max_processes: number | null
+        readonly test_max_open_files: number | null
+        readonly test_max_file_size_mb: number | null
         readonly agent_context_input_tokens: number | null
         readonly agent_max_test_timeout_ms: number | null
         readonly conversation_id: string | null
@@ -155,6 +191,8 @@ export class ProjectRuntimeConfigRepository {
         'project.default_branch, config.worktree_root, config.worktree_setup_commands, ' +
         'config.worktree_setup_timeout_ms, config.test_commands, ' +
         'config.protected_test_paths, ' +
+        'config.test_sandbox_mode, config.test_network_mode, config.test_max_processes, ' +
+        'config.test_max_open_files, config.test_max_file_size_mb, ' +
         'config.agent_context_input_tokens, config.agent_max_test_timeout_ms, room.id AS conversation_id ' +
         'FROM projects project ' +
         'JOIN project_memberships actor ON actor.user_id = $3 ' +
@@ -201,6 +239,13 @@ export class ProjectRuntimeConfigRepository {
           worktreeSetupTimeoutMs: row.worktree_setup_timeout_ms ?? 300_000,
           testCommands: row.test_commands?.length ? row.test_commands : DEFAULT_TEST_COMMANDS,
           protectedTestPaths: row.protected_test_paths ?? DEFAULT_PROTECTED_TEST_PATHS,
+          testSandbox: {
+            mode: row.test_sandbox_mode ?? 'trusted_process',
+            network: row.test_network_mode ?? 'host',
+            maxProcesses: row.test_max_processes ?? 128,
+            maxOpenFiles: row.test_max_open_files ?? 1_024,
+            maxFileSizeMb: row.test_max_file_size_mb ?? 512,
+          },
           agentContextInputTokens: row.agent_context_input_tokens ?? 65_536,
           agentMaxTestTimeoutMs: row.agent_max_test_timeout_ms ?? 120_000,
         },
@@ -250,13 +295,20 @@ export class ProjectRuntimeConfigRepository {
       await client.query(
         'INSERT INTO project_runtime_configs ' +
         '(project_id, workspace_id, worktree_root, worktree_setup_commands, worktree_setup_timeout_ms, ' +
-        'test_commands, protected_test_paths, agent_context_input_tokens, agent_max_test_timeout_ms) ' +
-        'VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8, $9) ON CONFLICT (project_id) DO UPDATE SET ' +
+        'test_commands, protected_test_paths, test_sandbox_mode, test_network_mode, test_max_processes, ' +
+        'test_max_open_files, test_max_file_size_mb, agent_context_input_tokens, agent_max_test_timeout_ms) ' +
+        'VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13, $14) ' +
+        'ON CONFLICT (project_id) DO UPDATE SET ' +
         'worktree_root = EXCLUDED.worktree_root, ' +
         'worktree_setup_commands = EXCLUDED.worktree_setup_commands, ' +
         'worktree_setup_timeout_ms = EXCLUDED.worktree_setup_timeout_ms, ' +
         'test_commands = EXCLUDED.test_commands, ' +
         'protected_test_paths = EXCLUDED.protected_test_paths, ' +
+        'test_sandbox_mode = EXCLUDED.test_sandbox_mode, ' +
+        'test_network_mode = EXCLUDED.test_network_mode, ' +
+        'test_max_processes = EXCLUDED.test_max_processes, ' +
+        'test_max_open_files = EXCLUDED.test_max_open_files, ' +
+        'test_max_file_size_mb = EXCLUDED.test_max_file_size_mb, ' +
         'agent_context_input_tokens = EXCLUDED.agent_context_input_tokens, ' +
         'agent_max_test_timeout_ms = EXCLUDED.agent_max_test_timeout_ms, updated_at = NOW()',
         [
@@ -267,6 +319,11 @@ export class ProjectRuntimeConfigRepository {
           input.worktreeSetupTimeoutMs,
           canonicalJson(input.testCommands),
           canonicalJson([...new Set(input.protectedTestPaths.map((path) => path.trim()))].sort()),
+          input.testSandbox.mode,
+          input.testSandbox.network,
+          input.testSandbox.maxProcesses,
+          input.testSandbox.maxOpenFiles,
+          input.testSandbox.maxFileSizeMb,
           input.agentContextInputTokens,
           input.agentMaxTestTimeoutMs,
         ],

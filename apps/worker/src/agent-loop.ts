@@ -65,6 +65,10 @@ export interface AgentInboxProcessorDependencies {
   ) => Promise<RuntimeRunner>
   readonly allowedTestCommands?: readonly (readonly string[])[]
   readonly protectedTestPaths?: readonly string[]
+  readonly testSandbox?: {
+    readonly mode: 'trusted_process' | 'bubblewrap'
+    readonly network: 'none' | 'host'
+  }
   readonly planner?: PlanningProcessor
   readonly reviewer?: ReviewProcessor
 }
@@ -137,6 +141,9 @@ export function executionMessages(
   context: AgentExecutionContext,
   allowedTestCommands: readonly (readonly string[])[] = [],
   protectedTestPaths: readonly string[] = [],
+  testSandbox: { readonly mode: 'trusted_process' | 'bubblewrap'; readonly network: 'none' | 'host' } = {
+    mode: 'trusted_process', network: 'host',
+  },
 ): readonly ModelMessage[] {
   // Frozen contexts created before the Conversation Plane shipped do not have
   // this field. Treat them as an empty team-room transcript during replay.
@@ -215,6 +222,7 @@ export function executionMessages(
         '- test.run accepts only these exact argv arrays: ' + JSON.stringify(allowedTestCommands) + '.\n' +
         '- Acceptance test paths are control-plane protected and must not be modified: ' +
           JSON.stringify(protectedTestPaths) + '.\n' +
+        '- test.run isolation is ' + testSandbox.mode + ' with ' + testSandbox.network + ' network access.\n' +
         '- Never add Shell operators such as &&, ||, ;, pipes, redirection, or extra environment-probe commands to argv.\n' +
         '- repo.search paths are literal existing relative files or directories; globs are unsupported. Omit paths to search the whole Worktree.\n' +
         '- Batch independent reads/searches in one response.' + implementationPolicy + '\n' +
@@ -371,6 +379,7 @@ export class AgentInboxProcessor {
           context,
           this.dependencies.allowedTestCommands,
           this.dependencies.protectedTestPaths,
+          this.dependencies.testSandbox,
         ),
         skills: (context.skills ?? []).map((skill) => ({
           skillId: skill.skillId,
@@ -392,6 +401,7 @@ export class AgentInboxProcessor {
             context,
             this.dependencies.allowedTestCommands,
             this.dependencies.protectedTestPaths,
+            this.dependencies.testSandbox,
           ),
           skills: (context.skills ?? []).map((skill) => ({
             skillId: skill.skillId,

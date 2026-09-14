@@ -52,6 +52,7 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 | 0025 | `0025_agent_run_hop_budget.sql` | 调整 Agent Run hop 预算并为验收收尾保留有界空间。 |
 | 0026 | `0026_flash_agent_hop_budget.sql` | 为 Flash 类模型增加可配置的默认执行 hop 预算。 |
 | 0027 | `0027_protected_test_paths.sql` | 持久化项目级受保护验收路径，供 Agent Worker 冻结测试内容清单并拒绝篡改。 |
+| 0028 | `0028_test_sandbox_config.sql` | 持久化显式测试执行模式、网络策略和进程/文件资源限制；兼容模式不能伪称网络隔离。 |
 
 ## 为什么不能跳过 Migration
 

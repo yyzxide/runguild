@@ -20,6 +20,7 @@ const modelProtocolEventsMigrationUrl = new URL('../migrations/0024_model_protoc
 const agentRunHopBudgetMigrationUrl = new URL('../migrations/0025_agent_run_hop_budget.sql', import.meta.url)
 const flashAgentHopBudgetMigrationUrl = new URL('../migrations/0026_flash_agent_hop_budget.sql', import.meta.url)
 const protectedTestPathsMigrationUrl = new URL('../migrations/0027_protected_test_paths.sql', import.meta.url)
+const testSandboxConfigMigrationUrl = new URL('../migrations/0028_test_sandbox_config.sql', import.meta.url)
 const migrationRunnerUrl = new URL('../src/migrate.ts', import.meta.url)
 const projectRuntimeConfigMigrationUrl = new URL('../migrations/0013_project_runtime_config.sql', import.meta.url)
 const reviewerExecutionMigrationUrl = new URL('../migrations/0014_reviewer_execution.sql', import.meta.url)
@@ -252,6 +253,17 @@ test('Project Runtime Configuration persists a protected acceptance-test path li
   assert.match(sql, /protected_test_paths JSONB NOT NULL DEFAULT '\[\]'/)
   assert.match(sql, /jsonb_typeof\(protected_test_paths\) = 'array'/)
   assert.match(runner, /0027_protected_test_paths\.sql/)
+})
+
+test('Project Runtime Configuration distinguishes trusted process and Linux sandbox execution', async () => {
+  const sql = await readFile(testSandboxConfigMigrationUrl, 'utf8')
+  const runner = await readFile(migrationRunnerUrl, 'utf8')
+
+  assert.match(sql, /test_sandbox_mode IN \('trusted_process', 'bubblewrap'\)/)
+  assert.match(sql, /test_network_mode IN \('none', 'host'\)/)
+  assert.match(sql, /test_max_processes BETWEEN 16 AND 4096/)
+  assert.match(sql, /trusted_process_network_check/)
+  assert.match(runner, /0028_test_sandbox_config\.sql/)
 })
 
 test('Project Runtime Configuration persists safe launch inputs without model secrets', async () => {

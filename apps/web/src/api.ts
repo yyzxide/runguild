@@ -396,6 +396,13 @@ export interface ProjectRuntimeConfiguration {
     readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
     readonly protectedTestPaths: readonly string[]
+    readonly testSandbox: {
+      readonly mode: 'trusted_process' | 'bubblewrap'
+      readonly network: 'none' | 'host'
+      readonly maxProcesses: number
+      readonly maxOpenFiles: number
+      readonly maxFileSizeMb: number
+    }
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
   }
@@ -448,6 +455,13 @@ export interface UpdateProjectRuntimeConfiguration {
   readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
   readonly protectedTestPaths: readonly string[]
+  readonly testSandbox: {
+    readonly mode: 'trusted_process' | 'bubblewrap'
+    readonly network: 'none' | 'host'
+    readonly maxProcesses: number
+    readonly maxOpenFiles: number
+    readonly maxFileSizeMb: number
+  }
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number
   readonly agentModels: readonly {

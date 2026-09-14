@@ -426,6 +426,7 @@ AGENT_WORKTREE_SETUP_COMMANDS_JSON='[["npm","ci","--ignore-scripts","--no-audit"
 AGENT_WORKTREE_SETUP_TIMEOUT_MS=300000 \
 AGENT_TEST_COMMANDS_JSON='[["npm","test"],["npm","run","typecheck"]]' \
 AGENT_PROTECTED_TEST_PATHS_JSON='["packages/database/test","packages/workspace-tools/test","package.json"]' \
+AGENT_TEST_SANDBOX_JSON='{"mode":"bubblewrap","network":"none","maxProcesses":128,"maxOpenFiles":1024,"maxFileSizeMb":512}' \
 npm run agent:start
 ~~~
 

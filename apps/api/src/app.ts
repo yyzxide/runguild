@@ -423,6 +423,13 @@ const updateProjectRuntimeConfigSchema = z.object({
   worktreeSetupTimeoutMs: z.number().int().min(1_000).max(900_000),
   testCommands: z.array(z.array(z.string().min(1).max(1_000)).min(1).max(30)).min(1).max(50),
   protectedTestPaths: z.array(z.string().trim().min(1).max(4_096)).max(200),
+  testSandbox: z.object({
+    mode: z.enum(['trusted_process', 'bubblewrap']),
+    network: z.enum(['none', 'host']),
+    maxProcesses: z.number().int().min(16).max(4_096),
+    maxOpenFiles: z.number().int().min(16).max(65_536),
+    maxFileSizeMb: z.number().int().min(16).max(16_384),
+  }),
   agentContextInputTokens: z.number().int().min(256).max(2_000_000),
   agentMaxTestTimeoutMs: z.number().int().min(1_000).max(900_000),
   agentModels: z.array(z.object({

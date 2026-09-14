@@ -32,6 +32,7 @@ const migrationUrls = [
   new URL('../migrations/0025_agent_run_hop_budget.sql', import.meta.url),
   new URL('../migrations/0026_flash_agent_hop_budget.sql', import.meta.url),
   new URL('../migrations/0027_protected_test_paths.sql', import.meta.url),
+  new URL('../migrations/0028_test_sandbox_config.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {

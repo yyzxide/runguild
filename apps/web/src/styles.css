@@ -972,15 +972,18 @@ code, kbd { font-family: var(--mono); }
 .runtime-field { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
 .runtime-field--wide { min-width: 0; }
 .runtime-field > span, .agent-model-list label > span { color: #525e72; font-size: 12px; font-weight: 700; }
-.runtime-field input, .runtime-field textarea, .agent-model-list input { width: 100%; border: 1px solid #ccd2dc; border-radius: 9px; color: var(--ink); background: #fafbfc; font-size: 14px; }
-.runtime-field input, .agent-model-list input { height: 40px; padding: 0 11px; }
+.runtime-field input, .runtime-field textarea, .runtime-field select, .agent-model-list input { width: 100%; border: 1px solid #ccd2dc; border-radius: 9px; color: var(--ink); background: #fafbfc; font-size: 14px; }
+.runtime-field input, .runtime-field select, .agent-model-list input { height: 40px; padding: 0 11px; }
 .runtime-field textarea { min-height: 118px; padding: 11px 12px; resize: vertical; font: 13px/1.55 var(--mono); tab-size: 2; }
-.runtime-field input:hover, .runtime-field textarea:hover, .agent-model-list input:hover { border-color: #aeb7c6; background: #fff; }
+.runtime-field input:hover, .runtime-field textarea:hover, .runtime-field select:hover, .agent-model-list input:hover { border-color: #aeb7c6; background: #fff; }
+.runtime-field > small { color: #7b8598; font-size: 10px; line-height: 1.5; }
 .runtime-field--code { margin-bottom: 13px; }
 .runtime-limits { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
 .setup-policy { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: 4px; padding: 10px 12px; border: 1px solid #d9def4; border-radius: 9px; color: #526075; background: #f5f6ff; }
 .setup-policy strong { color: #3442a1; font-size: 11px; }
 .setup-policy span { font-size: 11px; line-height: 1.45; }
+.setup-policy--sandboxed { border-color: #bce0d8; background: var(--teal-soft); }
+.setup-policy--sandboxed strong { color: #176d5d; }
 .setup-history { margin-top: 14px; overflow: hidden; border: 1px solid #dde1e8; border-radius: 10px; background: #fafbfc; }
 .setup-history > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; border-bottom: 1px solid #e2e5eb; }
 .setup-history > header strong { font-size: 11px; }

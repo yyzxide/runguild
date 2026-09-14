@@ -225,8 +225,10 @@ Worktree 根目录、准备命令、测试白名单和受保护验收路径。�
 4. **Worktree 准备命令**：新 Worktree 没有 `node_modules`，Node 项目通常需要一个经过审查的精确 argv，例如 `npm ci --ignore-scripts --no-audit --no-fund`。
 5. **测试白名单**：每项都是精确 argv，不是 Shell 文本，例如 `npm run typecheck`、`npm test`。
 6. **受保护验收路径**：填写 Git 已跟踪的测试、夹具与命令入口，例如 `test/acceptance`、`package.json`。Agent 不能修改这些路径；测试前后会校验内容清单。若命令是 `npm test`，至少保护 `package.json` 与真正决定通过/失败的测试目录。
-7. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
-8. **Token 和超时**：先保留默认值，真实运行暴露问题后再调整。
+7. **测试隔离**：Linux 本地作品演示优先选择 `Bubblewrap + 禁用网络`。需要连接外部测试数据库时可显式选择主机网络。`Trusted process` 只用于兼容，它与 Worker 共用主机权限域，系统不会把它标成 OS 沙箱。
+8. **资源限制**：为测试配置最大进程数、文件描述符和单文件大小；墙钟超时仍由“单次测试超时”控制。Bubblewrap 或 `prlimit` 缺失时 Agent Worker 会拒绝启动，不会静默降级。
+9. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
+10. **Token 和超时**：先保留默认值，真实运行暴露问题后再调整。
 
 API Key 只来自 API 进程环境，不进入 PostgreSQL，也不会返回浏览器。
 
