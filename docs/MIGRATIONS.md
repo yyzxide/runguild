@@ -53,6 +53,7 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 | 0026 | `0026_flash_agent_hop_budget.sql` | 为 Flash 类模型增加可配置的默认执行 hop 预算。 |
 | 0027 | `0027_protected_test_paths.sql` | 持久化项目级受保护验收路径，供 Agent Worker 冻结测试内容清单并拒绝篡改。 |
 | 0028 | `0028_test_sandbox_config.sql` | 持久化显式测试执行模式、网络策略和进程/文件资源限制；兼容模式不能伪称网络隔离。 |
+| 0029 | `0029_evaluation_unknown_pricing.sql` | 把底层调用价格缺失的历史 Evaluation Trial 成本修正为 `null`，避免未知价格被解释为零成本。 |
 
 ## 为什么不能跳过 Migration
 

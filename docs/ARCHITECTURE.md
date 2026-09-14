@@ -666,7 +666,11 @@ An Evaluation Scenario separates the benchmark definition from an execution:
    execution-Agent plus Reviewer model calls and tokens, estimated cost, Tool
    failures, review churn, and context statistics from durable facts;
 7. the report exposes per-variant aggregates and paired deltas (`multi -
-   single`) only for repetitions where both results exist.
+   single`) only for repetitions where both results exist. Cost stays unknown
+   when any included call lacks pricing, and the report exposes price coverage;
+8. the report labels fewer than three complete pairs as exploratory. Reaching
+   that minimum means the engineering comparison is repeatable, not
+   statistically significant.
 
 Scenario Version immutability prevents a benchmark from changing after Trials
 start. Trial materialization uses expiring leases and fencing tokens; a stale

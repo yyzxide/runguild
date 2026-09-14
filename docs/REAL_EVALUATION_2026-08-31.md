@@ -48,14 +48,18 @@ The paired report therefore recorded a multi-minus-single success delta of
 comparison: the single-Agent Trial includes the wait while its missing Review
 assignment was diagnosed and the platform recovery was deployed.
 
-`estimatedCostUsd=0` is not proof of zero cost. This compatible provider has no
-configured pricing data, so cost rows are currently unavailable. The Trial
-aggregate frozen by this first run also predates the per-attempt Reviewer call
+The historical Trial originally recorded `estimatedCostUsd=0`; that was not
+proof of zero cost. This compatible provider had no configured pricing data.
+The collector and report now preserve unavailable prices as `null`, suppress
+cost deltas unless every paired Trial is priced, and migration `0029` repairs
+historical Trial metrics when their underlying call ledger contains a missing
+price. The Trial aggregate from this first run also predates the per-attempt Reviewer call
 ledger and therefore omits its Reviewer usage (`26,345` input and `722` output
 tokens). Migration `0018_reviewer_model_calls.sql` and the collector were added
 after this diagnosis: future Trials merge Reviewer and ordinary Agent usage,
-while this historical Trial is intentionally not rewritten. Provider pricing
-still must be configured before cost comparisons are used as project evidence.
+while historical token totals are intentionally not reconstructed. Provider
+pricing still must be configured before cost comparisons are used as project
+evidence.
 
 ## What the run exposed
 

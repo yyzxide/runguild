@@ -104,7 +104,7 @@ export interface EvaluationTrialMetrics {
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cachedInputTokens: number
-  readonly estimatedCostUsd: number
+  readonly estimatedCostUsd: number | null
   readonly toolCalls: number
   readonly toolFailures: number
   readonly reviewChangesRequested: number
@@ -139,12 +139,21 @@ export interface EvaluationVariantAggregate {
   readonly successRate: number
   readonly meanWallTimeMs: number
   readonly medianWallTimeMs: number
-  readonly meanCostUsd: number
-  readonly totalCostUsd: number
+  readonly pricedTrials: number
+  readonly meanCostUsd: number | null
+  readonly totalCostUsd: number | null
   readonly meanInputTokens: number
   readonly meanOutputTokens: number
   readonly meanReworkAttempts: number
 }
+
+export const MINIMUM_EVIDENCE_PAIRED_TRIALS = 3
+export type EvaluationEvidenceLevel = 'exploratory' | 'repeatable'
+export type EvaluationLimitation =
+  | 'experiment_not_completed'
+  | 'insufficient_paired_trials'
+  | 'incomplete_cost_coverage'
+  | 'statistical_significance_not_established'
 
 export interface EvaluationExperimentReport {
   readonly experimentId: EvaluationExperimentId
@@ -154,8 +163,12 @@ export interface EvaluationExperimentReport {
   readonly repetitions: number
   readonly variants: readonly EvaluationVariantAggregate[]
   readonly pairedTrials: number
+  readonly pairedCostTrials: number
   readonly pairedSuccessDelta: number
-  readonly pairedMeanCostDeltaUsd: number
+  readonly pairedMeanCostDeltaUsd: number | null
   readonly pairedMeanWallTimeDeltaMs: number
+  readonly evidenceLevel: EvaluationEvidenceLevel
+  readonly minimumEvidencePairedTrials: number
+  readonly limitations: readonly EvaluationLimitation[]
   readonly trials: readonly EvaluationTrial[]
 }

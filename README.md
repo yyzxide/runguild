@@ -173,7 +173,9 @@ The control-plane foundation is executable:
   tasks inside one Trial to integrate sequentially without contaminating the
   project branch or another Trial;
 - aggregate and paired reports for success, wall time, estimated cost, tokens,
-  rework, Tool failures, review churn, and context compaction;
+  rework, Tool failures, review churn, and context compaction; unavailable
+  provider prices remain `null` instead of becoming fake zero-cost evidence,
+  and fewer than three complete pairs are labelled exploratory;
 - a completed real-model paired system run, documented in
   [`docs/REAL_EVALUATION_2026-08-31.md`](docs/REAL_EVALUATION_2026-08-31.md),
   which preserved isolated Trial refs and exposed concrete retry, Review

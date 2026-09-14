@@ -200,6 +200,11 @@ Expected flow:
 - Benchmark Trials start from isolated refs at the same frozen Git commit.
 - Reports show success, wall time, cost, tokens, attempts, Tool failures,
   review churn, context usage, and paired multi-minus-single deltas.
+- Missing provider prices remain unknown throughout collection and reporting;
+  cost deltas require complete price coverage for every included pair.
+- Fewer than three complete pairs are labelled exploratory. Crossing that
+  minimum creates a repeatable engineering comparison, not a claim of
+  statistical significance.
 - Scores are derived from execution ledgers rather than Agent-authored output.
 - The Chinese operator Lab lists only the current Project's immutable Scenario
   Versions and Experiments, creates paired runs from an exact Version, and

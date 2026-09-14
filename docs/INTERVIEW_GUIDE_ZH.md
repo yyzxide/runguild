@@ -190,7 +190,7 @@ RunGuild 使用同一个冻结 Git baseline、同一个 Scenario Version 和配�
 - 修复后单独重跑 multi-Agent reliability Trial，Researcher 和 Builder 都在第一次尝试完成，Trial `success=true`；
 - 该验证不是“多 Agent 一定优于单 Agent”的统计证据。
 
-必须诚实说明限制：首次实验只有一次 repetition，并且运行中部署了恢复修复；compatible provider 没有价格配置，所以 `estimatedCostUsd=0` 不代表免费。详细记录见 [REAL_EVALUATION_2026-08-31.md](REAL_EVALUATION_2026-08-31.md)。
+必须诚实说明限制：首次实验只有一次 repetition，并且运行中部署了恢复修复；compatible provider 当时没有价格配置。现在账本与报告会把这种成本保留为 `null`，不会再把未知价格显示成免费；不足三组完整配对也会明确标为探索性运行。详细记录见 [REAL_EVALUATION_2026-08-31.md](REAL_EVALUATION_2026-08-31.md)。
 
 这个结果反而体现了 Evaluation 的价值：它不是为了做一张好看的成功率图，而是用真实执行暴露系统缺口。
 

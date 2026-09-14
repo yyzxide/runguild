@@ -66,7 +66,9 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
   const totalInput = detail.llmCalls.reduce((sum, call) => sum + (call.inputTokens ?? 0), 0)
   const totalOutput = detail.llmCalls.reduce((sum, call) => sum + (call.outputTokens ?? 0), 0)
   const totalCached = detail.llmCalls.reduce((sum, call) => sum + (call.cachedInputTokens ?? 0), 0)
-  const totalCost = detail.llmCalls.reduce((sum, call) => sum + (call.estimatedCostUsd ?? 0), 0)
+  const totalCost = detail.llmCalls.some((call) => call.estimatedCostUsd === null)
+    ? null
+    : detail.llmCalls.reduce((sum, call) => sum + (call.estimatedCostUsd ?? 0), 0)
   const context = detail.contextSummary
   return (
     <>

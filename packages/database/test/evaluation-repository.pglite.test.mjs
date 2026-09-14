@@ -327,14 +327,48 @@ test('paired trials materialize real Missions, freeze the Git baseline, collect 
     assert.equal(completed.status, 'completed')
     const report = buildEvaluationReport(completed)
     assert.equal(report.pairedTrials, 1)
+    assert.equal(report.pairedCostTrials, 1)
     assert.equal(report.pairedSuccessDelta, 0)
     assert.ok(Math.abs(report.pairedMeanCostDeltaUsd - 0.03) < 0.000001)
+    assert.equal(report.evidenceLevel, 'exploratory')
+    assert.equal(report.minimumEvidencePairedTrials, 3)
+    assert.equal(report.limitations.includes('insufficient_paired_trials'), true)
+    assert.equal(report.limitations.includes('statistical_significance_not_established'), true)
     assert.equal(report.variants.find((item) => item.variant === 'single_agent').meanReworkAttempts, 1)
+    assert.equal(report.variants.find((item) => item.variant === 'single_agent').pricedTrials, 1)
     assert.equal(report.variants.find((item) => item.variant === 'single_agent').meanInputTokens, 150)
     assert.equal(report.variants.find((item) => item.variant === 'single_agent').meanOutputTokens, 30)
     assert.equal(report.variants.find((item) => item.variant === 'multi_agent').meanInputTokens, 280)
     assert.equal(completed.trials.find((item) => item.variant === 'single_agent').metrics.modelCalls, 2)
     assert.equal(completed.trials.find((item) => item.variant === 'single_agent').metrics.cachedInputTokens, 30)
+
+    const multiTrial = completed.trials.find((item) => item.variant === 'multi_agent')
+    await database.query(
+      'UPDATE llm_calls SET estimated_cost_usd = NULL WHERE mission_id = $1',
+      [multiTrial.missionId],
+    )
+    await database.query(
+      "UPDATE evaluation_trials SET status = 'running', metrics = NULL WHERE id = $1",
+      [multiTrial.id],
+    )
+    await database.query(
+      "UPDATE evaluation_experiments SET status = 'running' WHERE id = $1",
+      [created.id],
+    )
+    const pricingTick = await coordinator.tick({
+      materializationLimit: 10,
+      collectionLimit: 10,
+      leaseSeconds: 30,
+    })
+    assert.equal(pricingTick.collected, 1)
+    const unpriced = await repository.getExperiment('ws_eval', 'project_eval', created.id)
+    const unpricedReport = buildEvaluationReport(unpriced)
+    assert.equal(unpriced.trials.find((item) => item.variant === 'multi_agent').metrics.estimatedCostUsd, null)
+    assert.equal(unpricedReport.pairedCostTrials, 0)
+    assert.equal(unpricedReport.pairedMeanCostDeltaUsd, null)
+    assert.equal(unpricedReport.variants.find((item) => item.variant === 'multi_agent').pricedTrials, 0)
+    assert.equal(unpricedReport.variants.find((item) => item.variant === 'multi_agent').meanCostUsd, null)
+    assert.equal(unpricedReport.limitations.includes('incomplete_cost_coverage'), true)
   } finally {
     await database.close()
   }

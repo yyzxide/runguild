@@ -375,7 +375,17 @@ changing the checked-out project branch or another Trial.
 Terminal Trial metrics are computed by the server from Task, Run, LLM Call,
 Tool Execution, Review, and Context Snapshot rows. A caller cannot submit a
 self-reported score. Paired report deltas use `multi_agent - single_agent` and
-include only repetitions where both Trial metrics are present.
+include only repetitions where both Trial metrics are present. If any model
+call in a Trial lacks a configured price, `estimatedCostUsd` is `null`; a paired
+cost delta is emitted only when every complete pair has prices on both sides.
+The report exposes price-covered pair counts separately from complete pair
+counts.
+
+Reports with fewer than three complete pairs, or an unfinished Experiment, are
+labelled `exploratory`. Three complete pairs are only the minimum for a
+repeatable engineering comparison. The report always carries the limitation
+that statistical significance has not been established; callers must not
+translate this operational gate into a statistical claim.
 
 ## 12. Versioning
 

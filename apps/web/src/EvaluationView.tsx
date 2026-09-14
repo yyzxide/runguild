@@ -41,8 +41,8 @@ function formatDuration(milliseconds: number): string {
   return `${minutes}分${String(rest).padStart(2, '0')}秒`
 }
 
-function formatCost(value: number): string {
-  return `$${value.toFixed(4)}`
+function formatCost(value: number | null): string {
+  return value === null ? '价格未知' : `$${value.toFixed(4)}`
 }
 
 function variantName(variant: EvaluationVariant): string {
@@ -95,7 +95,7 @@ export function EvaluationView({ identity }: EvaluationViewProps) {
   const [createError, setCreateError] = useState<string | null>(null)
   const [scenarioVersionId, setScenarioVersionId] = useState('')
   const [experimentName, setExperimentName] = useState('单 Agent / 多 Agent 配对实验')
-  const [repetitions, setRepetitions] = useState(1)
+  const [repetitions, setRepetitions] = useState(3)
 
   const loadIndex = useCallback(async () => {
     setLoading(true)
@@ -184,8 +184,11 @@ export function EvaluationView({ identity }: EvaluationViewProps) {
 
   const deltaHeadline = report && report.pairedTrials > 0
     ? `多 Agent 平均${report.pairedMeanWallTimeDeltaMs <= 0 ? '快' : '慢'} ` +
-      `${formatDuration(Math.abs(report.pairedMeanWallTimeDeltaMs))}，每个 Mission ` +
-      `${report.pairedMeanCostDeltaUsd <= 0 ? '少花' : '多花'} ${formatCost(Math.abs(report.pairedMeanCostDeltaUsd))}。`
+      `${formatDuration(Math.abs(report.pairedMeanWallTimeDeltaMs))}` +
+      (report.pairedMeanCostDeltaUsd === null
+        ? '；成本无法比较（模型价格未完整配置）。'
+        : `，每个 Mission ${report.pairedMeanCostDeltaUsd <= 0 ? '少花' : '多花'} ` +
+          `${formatCost(Math.abs(report.pairedMeanCostDeltaUsd))}。`)
     : '等待同一 repetition 的单 Agent 与多 Agent Trial 都形成终态指标。'
 
   return (
@@ -211,7 +214,7 @@ export function EvaluationView({ identity }: EvaluationViewProps) {
             <label><span>实验名称</span><input value={experimentName} maxLength={200} onChange={(event) => setExperimentName(event.target.value)} /></label>
             <label><span>配对次数</span><input type="number" min={1} max={100} value={repetitions} onChange={(event) => setRepetitions(Math.min(100, Math.max(1, Number(event.target.value) || 1)))} /></label>
           </div>
-          <footer><p>创建后 Trial 进入排队；需启动 Evaluation、Scheduler、对应 Agent 与 Integration Worker 才会执行。</p>{createError ? <span>{createError}</span> : null}<button className="primary-action" disabled={createBusy || !scenarioVersionId || !experimentName.trim()} onClick={() => void createExperiment()}>{createBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Plus size={15} />}创建并排队</button></footer>
+          <footer><p>至少 3 组完整配对才标记为可重复的工程对照；这仍不等于统计显著。创建后需启动 Evaluation、Scheduler、对应 Agent 与 Integration Worker。</p>{createError ? <span>{createError}</span> : null}<button className="primary-action" disabled={createBusy || !scenarioVersionId || !experimentName.trim()} onClick={() => void createExperiment()}>{createBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Plus size={15} />}创建并排队</button></footer>
         </section>
       ) : null}
 
@@ -230,9 +233,9 @@ export function EvaluationView({ identity }: EvaluationViewProps) {
 
           <main className="evaluation-report">
             {reportLoading ? <section className="evaluation-state"><LoaderCircle className="is-spinning" size={20} /><strong>正在重建报告投影</strong></section> : reportError ? <section className="evaluation-state evaluation-state--error"><CircleAlert size={20} /><strong>报告加载失败</strong><p>{reportError}</p></section> : report && selected ? <>
-              <section className="evaluation-thesis"><div className="evaluation-thesis__copy"><span className="micro-label">配对结果 · 多 Agent 减单 Agent</span><h2>{deltaHeadline}</h2><p>{report.pairedTrials}/{report.repetitions} 组形成完整配对。当前状态：{statusLabels[report.status] ?? report.status}。所有数字来自持久化账本，不采用 Agent 自述。</p></div><div className="delta-seal"><span>成功率差值</span><strong>{report.pairedTrials > 0 ? `${report.pairedSuccessDelta >= 0 ? '+' : ''}${Math.round(report.pairedSuccessDelta * 100)}` : '—'}</strong><small>个百分点</small></div></section>
+              <section className="evaluation-thesis"><div className="evaluation-thesis__copy"><span className="micro-label">配对结果 · 多 Agent 减单 Agent</span><h2>{deltaHeadline}</h2><p>{report.pairedTrials}/{report.repetitions} 组形成完整配对，{report.pairedCostTrials}/{report.pairedTrials} 组具备完整价格。当前状态：{statusLabels[report.status] ?? report.status}；证据级别：{report.evidenceLevel === 'repeatable' ? '可重复工程对照' : '探索性运行'}。至少需要 {report.minimumEvidencePairedTrials} 组完整配对，且任何结果都不代表统计显著。所有数字来自持久化账本，不采用 Agent 自述。</p></div><div className="delta-seal"><span>成功率差值</span><strong>{report.pairedTrials > 0 ? `${report.pairedSuccessDelta >= 0 ? '+' : ''}${Math.round(report.pairedSuccessDelta * 100)}` : '—'}</strong><small>个百分点</small></div></section>
 
-              <section className="strategy-comparison"><div className="comparison-header comparison-grid"><span>策略</span><span>成功率</span><span>平均时间</span><span>平均成本</span><span>平均返工</span></div>{(['single_agent', 'multi_agent'] as const).map((variant) => { const aggregate = variant === 'single_agent' ? single : multi; return <div className={`comparison-row comparison-grid${variant === 'multi_agent' ? ' comparison-row--winner' : ''}`} key={variant}><div><span className={`strategy-mark strategy-mark--${variant === 'single_agent' ? 'single' : 'multi'}`}>{variant === 'single_agent' ? '1' : 'N'}</span><strong>{variantName(variant)}</strong></div><strong>{aggregate && aggregate.completedTrials > 0 ? `${Math.round(aggregate.successRate * 100)}%` : '—'}</strong><code>{aggregate && aggregate.completedTrials > 0 ? formatDuration(aggregate.meanWallTimeMs) : '—'}</code><code>{aggregate && aggregate.completedTrials > 0 ? formatCost(aggregate.meanCostUsd) : '—'}</code><code>{aggregate && aggregate.completedTrials > 0 ? aggregate.meanReworkAttempts.toFixed(1) : '—'}</code></div> })}</section>
+              <section className="strategy-comparison"><div className="comparison-header comparison-grid"><span>策略</span><span>成功率</span><span>平均时间</span><span>平均成本</span><span>平均返工</span></div>{(['single_agent', 'multi_agent'] as const).map((variant) => { const aggregate = variant === 'single_agent' ? single : multi; return <div className={`comparison-row comparison-grid${variant === 'multi_agent' ? ' comparison-row--winner' : ''}`} key={variant}><div><span className={`strategy-mark strategy-mark--${variant === 'single_agent' ? 'single' : 'multi'}`}>{variant === 'single_agent' ? '1' : 'N'}</span><strong>{variantName(variant)}</strong></div><strong>{aggregate && aggregate.completedTrials > 0 ? `${Math.round(aggregate.successRate * 100)}%` : '—'}</strong><code>{aggregate && aggregate.completedTrials > 0 ? formatDuration(aggregate.meanWallTimeMs) : '—'}</code><code title={aggregate && aggregate.pricedTrials < aggregate.completedTrials ? `${aggregate.pricedTrials}/${aggregate.completedTrials} 个 Trial 有价格` : undefined}>{aggregate && aggregate.completedTrials > 0 ? formatCost(aggregate.meanCostUsd) : '—'}</code><code>{aggregate && aggregate.completedTrials > 0 ? aggregate.meanReworkAttempts.toFixed(1) : '—'}</code></div> })}</section>
 
               <section className="paired-trials"><div className="panel-heading"><div><span className="micro-label">同版本 · 同 seed</span><h2>配对 Trial</h2></div><code>基线 {selected.baselineCommit.slice(0, 10)}</code></div><div className="trial-list">{pairs.map((pair) => { const delta = pair.single?.metrics && pair.multi?.metrics ? pair.multi.metrics.wallTimeMs - pair.single.metrics.wallTimeMs : null; return <article className="trial-row" key={pair.repetition}><div className="trial-row__label"><span>配对 {String(pair.repetition).padStart(2, '0')}</span><code>seed {(pair.single ?? pair.multi)?.seed.slice(0, 12) ?? '—'}</code></div><TrialLane trial={pair.single} maximumMs={maximumWallTime} /><TrialLane trial={pair.multi} maximumMs={maximumWallTime} /><div className="trial-delta"><ArrowDownRight size={15} /><strong>{delta === null ? '等待配对' : `${delta >= 0 ? '+' : '−'}${formatDuration(Math.abs(delta))}`}</strong></div><div className="trial-missions"><code>{pair.single?.missionId ? '单 Agent Mission 已创建' : '单 Agent Mission 未创建'}</code><code>{pair.multi?.missionId ? '多 Agent Mission 已创建' : '多 Agent Mission 未创建'}</code></div></article> })}</div></section>
             </> : <section className="evaluation-state"><strong>选择一个实验查看真实报告</strong></section>}

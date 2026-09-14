@@ -634,7 +634,7 @@ export class EvaluationRepository {
     readonly inputTokens: number
     readonly outputTokens: number
     readonly cachedInputTokens: number
-    readonly estimatedCostUsd: number
+    readonly estimatedCostUsd: number | null
     readonly toolCalls: number
     readonly toolFailures: number
     readonly reviewChangesRequested: number
@@ -649,7 +649,7 @@ export class EvaluationRepository {
       input_tokens: number
       output_tokens: number
       cached_input_tokens: number
-      estimated_cost_usd: string | number
+      estimated_cost_usd: string | number | null
       tool_calls: number
       tool_failures: number
       review_changes_requested: number
@@ -671,9 +671,14 @@ export class EvaluationRepository {
       '((SELECT COALESCE(SUM(l.cached_input_tokens), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
       ' (SELECT COALESCE(SUM(review_call.cached_input_tokens), 0) FROM reviewer_model_calls review_call ' +
       '  WHERE review_call.mission_id = $1))::int AS cached_input_tokens, ' +
-      '((SELECT COALESCE(SUM(l.estimated_cost_usd), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
-      ' (SELECT COALESCE(SUM(review_call.estimated_cost_usd), 0) FROM reviewer_model_calls review_call ' +
-      '  WHERE review_call.mission_id = $1)) AS estimated_cost_usd, ' +
+      '(CASE WHEN ' +
+      ' EXISTS (SELECT 1 FROM llm_calls l WHERE l.mission_id = $1 AND l.estimated_cost_usd IS NULL) OR ' +
+      ' EXISTS (SELECT 1 FROM reviewer_model_calls review_call ' +
+      '         WHERE review_call.mission_id = $1 AND review_call.estimated_cost_usd IS NULL) ' +
+      ' THEN NULL ELSE ' +
+      '  ((SELECT COALESCE(SUM(l.estimated_cost_usd), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      '   (SELECT COALESCE(SUM(review_call.estimated_cost_usd), 0) FROM reviewer_model_calls review_call ' +
+      '    WHERE review_call.mission_id = $1)) END) AS estimated_cost_usd, ' +
       '(SELECT COUNT(*)::int FROM tool_executions x WHERE x.mission_id = $1) AS tool_calls, ' +
       "(SELECT COUNT(*)::int FROM tool_executions x WHERE x.mission_id = $1 AND x.status = 'failed') AS tool_failures, " +
       "(SELECT COUNT(*)::int FROM reviews r WHERE r.mission_id = $1 AND r.status = 'changes_requested') " +
@@ -693,7 +698,7 @@ export class EvaluationRepository {
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,
       cachedInputTokens: row.cached_input_tokens,
-      estimatedCostUsd: Number(row.estimated_cost_usd),
+      estimatedCostUsd: row.estimated_cost_usd === null ? null : Number(row.estimated_cost_usd),
       toolCalls: row.tool_calls,
       toolFailures: row.tool_failures,
       reviewChangesRequested: row.review_changes_requested,
