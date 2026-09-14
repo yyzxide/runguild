@@ -44,6 +44,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Install RunGuild system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+
       - name: Install exact dependencies
         run: npm ci
 

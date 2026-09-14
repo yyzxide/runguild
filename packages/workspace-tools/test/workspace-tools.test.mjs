@@ -33,6 +33,8 @@ async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'mission-workspace-tools-'))
   await writeFile(join(root, 'sample.txt'), 'alpha\nsecond line\n', 'utf8')
   await execute('git', ['init', root])
+  await execute('git', ['-C', root, 'config', 'user.name', 'RunGuild Test'])
+  await execute('git', ['-C', root, 'config', 'user.email', 'runguild-test@example.invalid'])
   await execute('git', ['-C', root, 'checkout', '-b', 'main'])
   await execute('git', ['-C', root, 'add', 'sample.txt'])
   await execute('git', [
