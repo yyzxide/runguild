@@ -8,8 +8,10 @@ missions, execute dependency-aware task graphs, collaborate on shared
 artifacts, and finish through evidence-based review.
 
 The dated [delivery status](docs/DELIVERY_STATUS_2026-09-14.md) maps the current
-implementation and CI evidence to the earlier audit findings. It also keeps the
-remaining real-model experiment separate from deterministic platform claims.
+implementation, CI, browser acceptance, and real-model evidence to the earlier
+audit findings. The new [18-Trial report](docs/REAL_EVALUATION_2026-09-14.md)
+keeps measured results and limitations separate from deterministic platform
+claims.
 
 This repository is intentionally implemented independently. Cumora is used as
 a study reference for durable agent runtime, inbox/wake, typed actions,
@@ -182,11 +184,16 @@ The control-plane foundation is executable:
   rework, Tool failures, review churn, and context compaction; unavailable
   provider prices remain `null` instead of becoming fake zero-cost evidence,
   and fewer than three complete pairs are labelled exploratory;
-- a completed real-model paired system run, documented in
-  [`docs/REAL_EVALUATION_2026-08-31.md`](docs/REAL_EVALUATION_2026-08-31.md),
-  which preserved isolated Trial refs and exposed concrete retry, Review
-  assignment, hop-budget, and pricing-ledger gaps instead of hiding them with
-  mocks;
+- an evidence-grade real-model evaluation across local bug repair, API
+  implementation, and a cross-module policy change: 18/18 post-fix Trials
+  completed from frozen baselines, with exact requested/returned model and
+  endpoint provenance, protected-test integrity, redacted machine-readable
+  Run Traces, and explicit cost/statistical limitations; a separate live probe
+  recorded a real model patch denied by the protected-path policy before the
+  Trial recovered and completed. The current report is
+  [`docs/REAL_EVALUATION_2026-09-14.md`](docs/REAL_EVALUATION_2026-09-14.md),
+  while the earlier fault-finding run remains in
+  [`docs/REAL_EVALUATION_2026-08-31.md`](docs/REAL_EVALUATION_2026-08-31.md);
 - a responsive React operator workspace whose home page derives one next action
   from real API, Workspace, Conversation, Plan, and Mission state; it restores
   the real Project repository/branch, configured Agent models, project-scoped
