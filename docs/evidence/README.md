@@ -12,6 +12,7 @@ provider provenance, and the redacted Run Traces used by the report.
 | --- | --- | ---: | --- | --- |
 | `local-bug` | `98d24b62f7c424d17862e86c8b3261e533319ea1` | 3 | 6/6 Trials successful | [`2026-09-14-local-bug-deepseek-flash.json`](2026-09-14-local-bug-deepseek-flash.json) |
 | `api-implementation` | `5ef82571e1888dbdfe634f4f0359d9cab73b09a3` | 3 | 6/6 Trials successful | [`2026-09-14-api-implementation-deepseek-flash.json`](2026-09-14-api-implementation-deepseek-flash.json) |
+| `cross-module` | `0fb3fcf2f160313ca20edebb80c9d2ed2e5c6e58` | 3 | 6/6 Trials successful | [`2026-09-14-cross-module-deepseek-flash.json`](2026-09-14-cross-module-deepseek-flash.json) |
 
 ### `local-bug`
 
@@ -53,3 +54,21 @@ efficient Agent trajectory.
   byte-for-byte unchanged.
 - File SHA-256:
   `1f74ae6c0bcdc0eb01671660882b9bcab9fbe0f03e792d6a39b0c10bf662f26e`.
+
+### `cross-module`
+
+- Experiment: `evaluation_experiment_ebeb4062-04f8-4b03-9223-9d1673ca6c31`
+- Frozen target baseline: `d590a07cc5798b049b0fc9916c755aec11e43e84`
+- Requested model: `deepseek-v4-flash`; all 140 recorded model calls returned
+  `deepseek-flash` from `https://api.deepseek.com/responses`.
+- Single-Agent and multi-Agent variants both succeeded in all three paired
+  repetitions. Multi-Agent used about 2.85 times the mean input tokens and was
+  `9.261 s` slower on the paired mean. This small sample is retained as a cost
+  and coordination warning, not generalized into a strategy ranking.
+- Provider pricing was unavailable, so cost remains `null` and is not presented
+  as zero.
+- The source target stayed clean on `main`; all six isolated Trial refs changed
+  only `src/config.mjs` and `src/report.mjs`, and the protected
+  `test/acceptance.test.mjs` remained byte-for-byte unchanged.
+- File SHA-256:
+  `ffeaa59e819fd36ec745822df4de014917b14b375efa7a495353286da6624813`.
