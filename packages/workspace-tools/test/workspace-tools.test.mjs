@@ -364,6 +364,7 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
       { command: setup.command, timeoutMs: 10_000 },
       { request: request('test.run', { command: setup.command, timeoutMs: 10_000 }, 'call_dirty_tests') },
     )
+    assert.notEqual(setup.evidence[0].draft.contentHash, setup.evidence[2].draft.contentHash)
     assert.equal(setup.evidence[2].draft.metadata.clean, false)
     assert.equal(setup.evidence[2].draft.metadata.stable, true)
 

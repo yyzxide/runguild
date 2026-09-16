@@ -20,6 +20,7 @@ const migrationUrls = [
   new URL('../migrations/0007_worktrees.sql', import.meta.url),
   new URL('../migrations/0008_context.sql', import.meta.url),
   new URL('../migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../migrations/0016_submission_evidence.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
 ]
 
@@ -222,4 +223,31 @@ test('a durable Run control request also creates exactly one Agent wake', async 
   } finally {
     await database.close()
   }
+})
+
+
+test('previous attempts cannot satisfy a failed current attempt or unlock dependents', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const pool = poolAdapter(database)
+    const evidence = new EvidenceRepository(pool)
+    const verifier = new DatabaseCompletionVerifier(pool)
+    await evidence.recordToolEvidence({ workspaceId: 'ws_gate', missionId: 'mission_gate', taskId: 'task_gate',
+      runId: 'run_gate', agentId: 'agent_gate', toolCallId: 'old-pass', kind: 'test_run', uri: 'test://old',
+      contentHash: 'old-pass', metadata: { passed: true, command: ['npm', 'test'] } })
+    await database.exec("UPDATE agent_runs SET status = 'failed' WHERE id = 'run_gate'; " +
+      "UPDATE tasks SET attempt_count = 2 WHERE id = 'task_gate'; " +
+      "INSERT INTO agent_runs (id,workspace_id,mission_id,task_id,agent_id,attempt,status) VALUES " +
+      "('run_new','ws_gate','mission_gate','task_gate','agent_gate',2,'running');")
+    const input = { workspaceId: 'ws_gate', missionId: 'mission_gate', taskId: 'task_gate', runId: 'run_new',
+      agentId: 'agent_gate', toolCallId: 'new-fail', kind: 'test_run', uri: 'test://new', contentHash: 'new-fail',
+      metadata: { passed: false, command: ['npm', 'test'] } }
+    await evidence.recordToolEvidence(input)
+    const run = runContext('task_gate', 'run_new', 2)
+    assert.equal((await verifier.verify({ run, summary: 'done', evidence: [] })).accepted, false)
+    assert.equal((await database.query("SELECT status FROM tasks WHERE id = 'task_child'")).rows[0].status, 'blocked')
+    await evidence.recordToolEvidence({ ...input, toolCallId: 'new-pass', contentHash: 'new-pass', metadata: { passed: true, command: ['npm', 'test'] } })
+    assert.equal((await verifier.verify({ run, summary: 'done', evidence: [] })).accepted, true)
+  } finally { await database.close() }
 })

@@ -191,7 +191,7 @@ export function executionMessages(
         'The previously approved Task commit conflicted with current base commit ' +
           context.integrationRecovery.baseCommit + '.',
         'The Worktree contains a pending Git merge and may contain conflict markers. Inspect repo.status and the affected files, ' +
-          'resolve every conflict while preserving both the current base and the Task intent, then run verification and call repo.commit.',
+          'resolve every conflict while preserving both the current base and the Task intent, then call repo.commit and run verification on that clean commit.',
         'The old Submission was superseded. Create and submit a new Artifact Version so the resolution receives independent Review.',
         'Durable Integration error: ' + JSON.stringify(context.integrationRecovery.error),
       ]
@@ -207,7 +207,7 @@ export function executionMessages(
       content:
         'You are the ' + context.agentRole + ' Agent for an isolated software mission. ' +
         'Inspect facts with tools, make bounded changes, run allowlisted verification, and report evidence. ' +
-        'Before requesting done, call repo.commit even when no code changed so the Worktree can be verified and finalized. ' +
+        'Before requesting done, call repo.commit even when no code changed, then run test.run on that clean commit. Any later code edit requires a new commit and new passing tests. ' +
         'Never invent command results or claim a file changed without a successful tool result.\n\n' +
         'Execution policy:\n' +
         '- test.run accepts only these exact argv arrays: ' + JSON.stringify(allowedTestCommands) + '.\n' +

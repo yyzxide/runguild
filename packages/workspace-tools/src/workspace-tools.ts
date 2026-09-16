@@ -905,7 +905,12 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
             taskId: context.request.taskId,
             headCommit: commitHash,
           })
+          const unchangedEvidence = await options.evidence.record(context, {
+            kind: 'file_diff', uri: 'git-commit://' + commitHash,
+            contentHash: hash(''), metadata: { commit: commitHash, treeHash: tree.stdout.trim(), unchanged: true },
+          })
           return {
+            evidence: unchangedEvidence,
             output: {
               committed: false,
               commit: commitHash,
@@ -1012,7 +1017,6 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
       })
       const after = await gitTestSnapshot(boundary.root, context.abortSignal)
       const passed = result.exitCode === 0 && !result.timedOut
-      const contentHash = hash(result.stdout + '\n---stderr---\n' + result.stderr)
       const stable = before.stateHash === after.stateHash
       const evidenceMetadata = {
         command: input.command,
@@ -1025,6 +1029,11 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         stable,
         stateHash: after.stateHash,
       }
+      // Identical console output on different commits is different evidence.
+      // Include call identity so a later rerun is not deduplicated to an older result.
+      const contentHash = hash(JSON.stringify({
+        toolCallId: context.request.id, ...evidenceMetadata, stdout: result.stdout, stderr: result.stderr,
+      }))
       const testEvidence = await options.evidence.record(context, {
         kind: 'test_run',
         uri: 'test-run://' + context.request.id + '#' + contentHash,

@@ -1,3 +1,4 @@
+import { hasMissingTaskEvidence } from './evidence-gate.js'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -624,30 +625,7 @@ export class TaskRepository {
         return { completed: false, reason: 'not_completable' }
       }
 
-      const missingEvidence = await client.query<{ missing: boolean }>(
-        'SELECT EXISTS (' +
-        '  SELECT 1 FROM task_acceptance_criteria c ' +
-        '  WHERE c.task_id = $1 AND c.required ' +
-        '  AND (' +
-        '    (cardinality(c.required_evidence_kinds) = 0 AND NOT EXISTS (' +
-        '      SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
-        "      AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
-        '      AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        '    )) ' +
-        '    OR EXISTS (' +
-        '      SELECT 1 FROM unnest(c.required_evidence_kinds) required_kind ' +
-        '      WHERE NOT EXISTS (' +
-        '        SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
-        '        AND e.kind = required_kind ' +
-        "        AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
-        '        AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        '      )' +
-        '    )' +
-        '  )' +
-        ') AS missing',
-        [input.taskId],
-      )
-      if (missingEvidence.rows[0]?.missing) {
+      if (await hasMissingTaskEvidence(client, input.taskId)) {
         return { completed: false, reason: 'missing_evidence' }
       }
 

@@ -33,6 +33,8 @@ Conversation
 6. Yjs convergence and immutable artifact versions solve different problems.
 7. Every model call, tool call, transition, and cost is traceable.
 
+Latest correctness fixes: [2026-09-16 completion and integration audit follow-up](docs/FIXES_2026-09-16.md).
+
 ## Current status
 
 The control-plane foundation is executable:

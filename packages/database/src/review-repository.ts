@@ -98,7 +98,13 @@ function selectSubmissionEvidence(
   const [worktreeTreeHash] = treeHashes
 
   return rows.filter((item) => {
-    if (item.run_id === input.submittingRunId) return true
+    // Current-run tests need the same code binding as reused tests. A model
+    // may run tests, edit again and only then commit within a single Run.
+    if (item.run_id === input.submittingRunId
+        && !['test_run', 'command_result'].includes(item.kind)) return true
+    if (input.worktreeHeadCommit === null && item.run_id === input.submittingRunId) {
+      return item.metadata.passed === true
+    }
     if (item.kind === 'artifact_version' && item.content_hash === input.artifactContentHash) return true
     if (input.worktreeHeadCommit !== null
         && item.kind === 'file_diff'

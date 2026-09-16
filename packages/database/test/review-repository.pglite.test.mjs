@@ -702,3 +702,29 @@ test('Mission-room Reviewer receives durable work after Task review and resumes 
     await database.close()
   }
 })
+
+for (const scenario of ['old-head', 'dirty', 'newer-failure', 'exact-pass']) {
+  test('Review completion checks final code evidence: ' + scenario, async () => {
+    const database = new PGlite()
+    try {
+      await setup(database)
+      const pool = poolAdapter(database)
+      const repository = new ReviewRepository(pool)
+      const head = 'b'.repeat(40), base = 'a'.repeat(40), tree = 'c'.repeat(40)
+      await database.exec("INSERT INTO task_acceptance_criteria (id,task_id,criterion_key,description,required,required_evidence_kinds) VALUES ('criterion_final','task_review','test','final tests',true,ARRAY['test_run']);")
+      await database.query("INSERT INTO task_worktrees (task_id,workspace_id,mission_id,project_id,repository_path,worktree_path,branch_name,base_ref,base_commit,head_commit,status) VALUES ('task_review','ws_review','mission_review','project_review','/repo','/trees/task','agent/task','main',$1,$2,'committed')", [base, head])
+      await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,kind,uri,content_hash,metadata) VALUES ('commit_final','ws_review','mission_review','task_review','run_builder','file_diff','git://final','diff_final',$1::jsonb)", [JSON.stringify({commit: head, treeHash:tree})])
+      const metadata = {passed:true,clean:scenario !== 'dirty',stable:true,headCommit:scenario === 'old-head' ? base : head,treeHash:tree,command:['npm','test']}
+      await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,acceptance_criterion_id,kind,uri,content_hash,metadata,created_at) VALUES ('test_final','ws_review','mission_review','task_review','run_builder','criterion_final','test_run','test://final','test_final',$1::jsonb,NOW()-INTERVAL '1 minute')", [JSON.stringify(metadata)])
+      if (scenario === 'newer-failure') {
+        await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,kind,uri,content_hash,metadata) VALUES ('test_failed','ws_review','mission_review','task_review','run_builder','test_run','test://failed','failed_final',$1::jsonb)", [JSON.stringify({...metadata,passed:false})])
+      }
+      const submission = await submit(repository)
+      const selected = (await database.query('SELECT evidence_id FROM task_submission_evidence WHERE submission_id=$1',[submission.id])).rows.map(x=>x.evidence_id)
+      assert.equal(selected.includes('test_final'), scenario !== 'old-head' && scenario !== 'dirty')
+      const result = await repository.reviewSubmission({ reviewId:'review_final',workspaceId:'ws_review',submissionId:submission.id,
+        reviewer:{kind:'user',id:'user_reviewer'},decision:'approved',summary:'audit',findings:[],correlationId:'final_audit' })
+      assert.deepEqual(result.taskCompletion, {completed:false,reason:scenario === 'exact-pass' ? 'missing_integration' : 'missing_evidence'})
+    } finally { await database.close() }
+  })
+}
