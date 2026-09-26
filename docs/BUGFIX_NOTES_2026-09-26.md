@@ -25,6 +25,7 @@
 | B06 | 并发测试实际验证了身份拒绝 | 源码确认，真实 PostgreSQL 回归 | 并发测试是否命中竞争条件 |
 | B07 | 页面仅凭 Task completed 就把所有验收项标为通过 | 源码确认，数据库与界面回归 | 展示状态与实际证据一致性 |
 | B08 | 网页启动的 Integration 丢失项目测试与准备命令 | 收尾时复现，有修复前后日志 | 配置传递、默认值、测试固化错误行为 |
+| B09 | Goal 实跑的检查通过，但独立反例发现验收漏项 | 测试产物与 oracle 的覆盖缺口，有反例输出 | Review 局限、外部验收、反例驱动测试 |
 | D01–D05 | 预算暂停、Goal 重试、启动协调、评审反馈、终验约束 | 开发边界保护或能力补齐 | 幂等、持久上下文、故障恢复 |
 
 ## B01：消息保存成功，接收方却没有收到运行中提醒
@@ -177,6 +178,20 @@
 - 原始输出：[修复前](verification/2026-09-26/integration-env-before.txt)、[修复后](verification/2026-09-26/integration-env-after.txt)。命令均为 `node apps/api/test/local-worker-supervisor.test.mjs`，修复后先执行 `npm run typecheck` 更新 dist。
 
 **追问准备**：为什么单独启动 CLI 正常，网页启动却失败？为什么测试通过不代表配置正确？修改代码后，已运行的 API 和子进程是否自动得到新环境？最后一题的答案是需要重启相关进程。
+
+## B09：三次 Review 和现有测试通过，仍然漏掉一个原始条件
+
+**触发与证据**：工程收尾的第二次真实 Goal 要求字符串数组规范化，并明确稀疏位置必须抛 `TypeError`。生成代码使用 `i in values` 检查索引。仓库 13 项测试、宿主 oracle 原有 8 组检查和三次独立 Review 均通过，API 最终记录 Mission `completed`。随后独立复核用一个 `new Array(1)`，仅给它设置局部自定义原型上的字符串索引，复现函数错误地返回继承来的标签。
+
+**根因**：`in` 同时检查自有属性和原型链，不能证明数组拥有该位置；`Object.hasOwn(input, 0)` 在反例里为 `false`。原有测试只覆盖通常的稀疏数组，没有构造继承数字属性的情况。Reviewer 把此情况当作范围外，但它实际属于原始“稀疏位置须拒绝”条件。外部 oracle 放在 Agent 仓库之外，保证的是测试未被 Agent 改写，并不能保证测试集合充分。
+
+**处理边界**：这是小型验收 fixture 的生成产物缺陷和 oracle 覆盖缺口，不是 RunGuild 平台自身实现了 `normalizeLabels`，也不是租约或数据库门禁失效。保留第二轮原始 `passed` 摘要，并同时保存推翻“全部条件满足”的后续反例；增强宿主检查后重新验证，不手改模型产物冒充 Agent 成功。
+
+- 原始记录：[第二轮摘要](verification/2026-09-26/goal-smoke/attempt-02-summary.json)、[独立复核](verification/2026-09-26/goal-smoke/attempt-02-independent-review.json)。
+- 反例：[断言失败](verification/2026-09-26/goal-smoke/attempt-02-counterexample-failure.txt)、[具体输入状态](verification/2026-09-26/goal-smoke/attempt-02-counterexamples.json)。
+- 验收入口：[goal-smoke-fixture.mjs](../scripts/goal-smoke-fixture.mjs)。完整收尾记录会区分原始检查通过、后续反例和加强检查后的结果。
+
+**追问准备**：独立模型 Review 和独立确定性检查分别保证什么？为什么测试在仓库外仍可能漏验？如何保留一条被后续证据推翻的成功记录，而不修改历史输出？
 
 ## 更早的证据门禁与集成修复
 

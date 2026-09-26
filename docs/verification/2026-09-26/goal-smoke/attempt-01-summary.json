@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "runId": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1",
+  "startedAt": "2026-09-26T12:46:18.026Z",
+  "status": "failed",
+  "evidenceKind": "real-model-production-api-and-workers-smoke",
+  "limitations": [
+    "No browser UI is exercised.",
+    "One bounded run is not comparative performance evidence.",
+    "The host oracle is specific to this fixture; Worktrees are not an OS sandbox."
+  ],
+  "approvals": [
+    {
+      "type": "plan",
+      "at": "2026-09-26T12:46:34.385Z",
+      "version": 1,
+      "basis": "Operator explicitly invoked --run for this fixed contract; bounded role/dependency/independent-review checks passed.",
+      "actorId": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_operator"
+    }
+  ],
+  "cleanupErrors": [],
+  "captureErrors": [],
+  "outputDir": "/tmp/runguild-goal-real-20260926-01",
+  "tokenLimit": 500000,
+  "timeoutMs": 1200000,
+  "model": "deepseek-v4-flash",
+  "provider": "openai-compatible Responses API",
+  "endpoint": "https://api.deepseek.com/",
+  "source": {
+    "commit": "ddcd95a860b96e9c3532a33e965f53a9946d4d5a",
+    "diffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "workingTreeSha256": "f6744c66ccddef1d101c936b839503b9c762d9a07f4c170e64b0795134e52718",
+    "dirty": false
+  },
+  "target": {
+    "baselineCommit": "26feedcec53fc3d4d12b1513cf8a99c04981be33",
+    "deliveryBranch": "goal-smoke-delivery"
+  },
+  "scope": {
+    "workspaceId": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_ws",
+    "projectId": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_project",
+    "userId": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_operator"
+  },
+  "missionId": "mission_21d49c7e-4212-48ff-a3a0-fe5054e4da40",
+  "planningRequestId": "planning_0d4de113-1725-4e0a-83c2-245f69b16fd2",
+  "budgetPause": {
+    "waits": [
+      {
+        "mission_id": "mission_21d49c7e-4212-48ff-a3a0-fe5054e4da40",
+        "workspace_id": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_ws",
+        "kind": "conversation.plan_requested",
+        "operation_id": "planning_0d4de113-1725-4e0a-83c2-245f69b16fd2",
+        "agent_id": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_project:agent:planner",
+        "run_id": null,
+        "payload": {
+          "type": "conversation.plan_requested",
+          "missionId": "mission_21d49c7e-4212-48ff-a3a0-fe5054e4da40",
+          "requestId": "planning_0d4de113-1725-4e0a-83c2-245f69b16fd2",
+          "schemaVersion": 1,
+          "conversationId": "goal_smoke_8bbc12a16b834d90bcb3c591e92fa3a1_project:conversation:team"
+        },
+        "created_at": "2026-09-26T12:46:22.896Z"
+      }
+    ],
+    "planning": {
+      "attempt": 0,
+      "status": "queued"
+    },
+    "modelCalls": 0
+  },
+  "budgetResume": {
+    "tokenLimit": 500000,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "remainingTokens": 500000,
+    "inFlightCalls": 0,
+    "unknownUsageCalls": 0,
+    "unpricedCalls": 0,
+    "estimatedCostUsd": 0,
+    "status": "available"
+  },
+  "error": "Error: Configured token limit exhausted; run stopped without increasing it\n    at run (file:///home/sid/runguild/scripts/goal-smoke.mjs:408:56)\n    at async file:///home/sid/runguild/scripts/goal-smoke.mjs:42:3",
+  "targetBundleSha256": "66f9fdae93fc28b374be356e14ae166a74d132c10363cdb326a74d2ef6d21fb2",
+  "finishedAt": "2026-09-26T12:47:56.000Z",
+  "durationMs": 97974
+}

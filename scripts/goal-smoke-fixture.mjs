@@ -7,7 +7,7 @@ export const GOAL_SMOKE_GOAL = 'Implement normalizeLabels(values) in src/labels.
 
 export const GOAL_SMOKE_CRITERIA = Object.freeze([
   'normalizeLabels is a named export from src/labels.mjs and returns an array.',
-  'Only arrays of strings are accepted. Non-arrays and any non-string array element, including a sparse slot, cause TypeError.',
+  'Only arrays of strings are accepted. Non-arrays and any non-string array element cause TypeError. Every numeric index from 0 through length - 1 must be an own property; a missing own slot causes TypeError even when the prototype provides a string at that index, including for frozen arrays.',
   'Strings are trimmed and lowercased; empty and whitespace-only strings are discarded.',
   'Duplicates after normalization are removed, preserving the first occurrence order.',
   'Input arrays are not mutated, frozen arrays are supported, and the returned array is a new array.',
@@ -20,6 +20,7 @@ export const GOAL_SMOKE_CONTRACT = Object.freeze({
   constraints: Object.freeze([
     'Use the existing dependency-free ESM repository and the Node built-in test runner.',
     'Keep the named export and file path stable. Do not add npm dependencies.',
+    'Research notes must accurately distinguish array-hole behavior. For ordinary holes with no inherited indexed property, for...of and array spread yield undefined, while map, forEach, and filter skip the absent indices without invoking their callbacks. Explain inherited indexed properties separately rather than treating all iteration methods as hole-skipping.',
   ]),
 })
 
@@ -100,6 +101,7 @@ const CHECK_NAMES = Object.freeze([
   'reject non-array inputs with TypeError',
   'reject non-string elements with TypeError',
   'reject sparse arrays with TypeError',
+  'reject inherited strings masking missing own slots, including frozen arrays',
 ])
 
 // This program is passed directly to the host Node process. It is never written
@@ -110,6 +112,7 @@ import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 
 const checks = []
+const expectedCheckNames = ${JSON.stringify(CHECK_NAMES)}
 function check(name, run) {
   try {
     run()
@@ -158,10 +161,28 @@ try {
     sparse.length = 3
     assert.throws(() => normalizeLabels(sparse), TypeError)
   })
+  check('reject inherited strings masking missing own slots, including frozen arrays', () => {
+    for (const frozen of [false, true]) {
+      const input = new Array(1)
+      const prototype = Object.create(Array.prototype)
+      Object.defineProperty(prototype, '0', { value: ' Inherited ', enumerable: true })
+      Object.setPrototypeOf(input, prototype)
+      if (frozen) Object.freeze(input)
+      assert.equal(Array.isArray(input), true)
+      assert.equal(Object.hasOwn(input, 0), false)
+      assert.equal(0 in input, true)
+      assert.throws(() => normalizeLabels(input), TypeError,
+        'A missing own slot must be rejected even when a prototype supplies a string; frozen=' + frozen)
+    }
+  })
 } catch (error) {
   checks.push({ name: 'load implementation', passed: false, error: String(error?.stack ?? error) })
 }
-const report = { passed: checks.length === 8 && checks.every((check) => check.passed), checks }
+const report = {
+  passed: checks.length === expectedCheckNames.length
+    && checks.every((check, index) => check.passed && check.name === expectedCheckNames[index]),
+  checks,
+}
 writeFileSync(3, JSON.stringify(report))
 process.exitCode = report.passed ? 0 : 1
 `

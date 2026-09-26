@@ -1,0 +1,24 @@
+> runguild-goal-smoke@1.0.0 test
+> node --test
+
+✔ normalizes an empty array (2.077719ms)
+✔ returns a new array for valid input (0.369743ms)
+✔ returns a fresh empty array for an empty input (1.032573ms)
+✔ throws TypeError for non-array input (0.709018ms)
+✔ throws TypeError for arrays containing non-string elements (0.526411ms)
+✔ throws TypeError for sparse arrays (0.288669ms)
+✔ trims and lowercases each string (0.228123ms)
+✔ drops empty and whitespace-only entries (0.290732ms)
+✔ dedupes normalized duplicates keeping first-occurrence order (0.372909ms)
+✔ does not mutate the input array (3.81012ms)
+✔ supports frozen input arrays (0.371005ms)
+✔ throws TypeError for frozen sparse arrays (0.323244ms)
+✔ normalizes a realistic mixed list (0.251689ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 88.66583

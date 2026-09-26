@@ -1,0 +1,18 @@
+{
+  "goal": "Implement normalizeLabels(values) in src/labels.mjs. Accept only arrays of strings; throw TypeError for non-arrays or arrays containing any non-string. Trim and lowercase each string, discard empty results, and remove duplicates while preserving first-occurrence order. Return a new array without modifying the input. Add regression tests and verify the completed implementation.",
+  "acceptanceCriteria": [
+    "normalizeLabels is a named export from src/labels.mjs and returns an array.",
+    "Only arrays of strings are accepted. Non-arrays and any non-string array element, including a sparse slot, cause TypeError.",
+    "Strings are trimmed and lowercased; empty and whitespace-only strings are discarded.",
+    "Duplicates after normalization are removed, preserving the first occurrence order.",
+    "Input arrays are not mutated, frozen arrays are supported, and the returned array is a new array.",
+    "Regression tests cover valid inputs, invalid inputs, normalization, deduplication, ordering, and input preservation; npm test passes."
+  ],
+  "constraints": [
+    "Use the existing dependency-free ESM repository and the Node built-in test runner.",
+    "Keep the named export and file path stable. Do not add npm dependencies.",
+    "Use exactly two original tasks: researcher first inspects this repository and writes concise implementation and edge-case notes to docs/analysis.md; then builder implements the function and regression tests using those notes. The builder task must depend on the researcher task.",
+    "Require independent review for both original tasks. Do not create the system final verification task yourself. The research task must not implement the production function.",
+    "Keep the existing tests, add focused regression tests, and run npm test; no installation is needed."
+  ]
+}
