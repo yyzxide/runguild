@@ -1,0 +1,27 @@
+> runguild-goal-smoke@1.0.0 test
+> node --test
+
+✔ normalizes an empty array (1.541881ms)
+✔ keeps the named export and returns a fresh array (4.370054ms)
+✔ trims and lowercases each string (0.232041ms)
+✔ discards empty and whitespace-only results (0.215781ms)
+✔ removes duplicates after normalization preserving first-occurrence order (0.234987ms)
+✔ ignores non-index own properties (0.140517ms)
+✔ does not mutate the input array (0.277978ms)
+✔ supports frozen dense arrays without mutation (0.165295ms)
+✔ throws TypeError for non-array inputs (0.570875ms)
+✔ throws TypeError for arrays containing non-string elements (0.421892ms)
+✔ throws TypeError for sparse arrays with ordinary holes (0.274822ms)
+✔ throws TypeError when a hole is created by delete (0.169482ms)
+✔ throws TypeError for a hole whose prototype provides a string (0.203657ms)
+✔ throws TypeError for frozen sparse arrays (0.170434ms)
+✔ throws TypeError even when a valid prefix precedes a bad index (0.131009ms)
+✔ validates before producing any output for invalid later indices (0.260756ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 86.086092

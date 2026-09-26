@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "runId": "goal_smoke_bd501cb3484f4be7b433c32343284f25",
+  "startedAt": "2026-09-26T12:56:04.723Z",
+  "status": "passed",
+  "evidenceKind": "real-model-production-api-and-workers-smoke",
+  "limitations": [
+    "No browser UI is exercised.",
+    "One bounded run is not comparative performance evidence.",
+    "The host oracle is specific to this fixture; Worktrees are not an OS sandbox."
+  ],
+  "approvals": [
+    {
+      "type": "plan",
+      "at": "2026-09-26T12:56:19.406Z",
+      "version": 1,
+      "basis": "Operator explicitly invoked --run for this fixed contract; bounded role/dependency/independent-review checks passed.",
+      "actorId": "goal_smoke_bd501cb3484f4be7b433c32343284f25_operator"
+    },
+    {
+      "type": "delivery",
+      "at": "2026-09-26T12:58:26.084Z",
+      "artifactVersionId": "artifact_version_a1e8e53d-1963-40fc-b98b-b1821fb77306",
+      "commit": "eb789a00bcc066c0cd6b03e8ee5240c36f79e9b6",
+      "basis": "Explicit operator smoke policy: completed Goal verification, independent Review/Integration, host oracle and npm test all passed.",
+      "actorId": "goal_smoke_bd501cb3484f4be7b433c32343284f25_operator"
+    }
+  ],
+  "cleanupErrors": [],
+  "captureErrors": [],
+  "outputDir": "/tmp/runguild-goal-real-20260926-03",
+  "tokenLimit": 1500000,
+  "timeoutMs": 1200000,
+  "model": "deepseek-v4-flash",
+  "provider": "openai-compatible Responses API",
+  "endpoint": "https://api.deepseek.com/",
+  "source": {
+    "commit": "f008931ef5de4ca07832eddd9b3b97037bbcf504",
+    "diffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "workingTreeSha256": "2effdc3e4e3a5af8f3777806a9de38745c7bac11ae1b0be33853f59321cc94c4",
+    "dirty": false
+  },
+  "target": {
+    "baselineCommit": "de9e5d56cc5dddfb17ad3f9950aebf01f97ff6ae",
+    "deliveryBranch": "goal-smoke-delivery",
+    "finalCommit": "eb789a00bcc066c0cd6b03e8ee5240c36f79e9b6"
+  },
+  "scope": {
+    "workspaceId": "goal_smoke_bd501cb3484f4be7b433c32343284f25_ws",
+    "projectId": "goal_smoke_bd501cb3484f4be7b433c32343284f25_project",
+    "userId": "goal_smoke_bd501cb3484f4be7b433c32343284f25_operator"
+  },
+  "missionId": "mission_63f3b0b7-8dd3-4051-94ad-6b9a35ca41f3",
+  "planningRequestId": "planning_4da33db7-ab60-4dfb-883e-27ec5e6369c2",
+  "budgetPause": {
+    "waits": [
+      {
+        "mission_id": "mission_63f3b0b7-8dd3-4051-94ad-6b9a35ca41f3",
+        "workspace_id": "goal_smoke_bd501cb3484f4be7b433c32343284f25_ws",
+        "kind": "conversation.plan_requested",
+        "operation_id": "planning_4da33db7-ab60-4dfb-883e-27ec5e6369c2",
+        "agent_id": "goal_smoke_bd501cb3484f4be7b433c32343284f25_project:agent:planner",
+        "run_id": null,
+        "payload": {
+          "type": "conversation.plan_requested",
+          "missionId": "mission_63f3b0b7-8dd3-4051-94ad-6b9a35ca41f3",
+          "requestId": "planning_4da33db7-ab60-4dfb-883e-27ec5e6369c2",
+          "schemaVersion": 1,
+          "conversationId": "goal_smoke_bd501cb3484f4be7b433c32343284f25_project:conversation:team"
+        },
+        "created_at": "2026-09-26T12:56:08.898Z"
+      }
+    ],
+    "planning": {
+      "attempt": 0,
+      "status": "queued"
+    },
+    "modelCalls": 0
+  },
+  "budgetResume": {
+    "tokenLimit": 1500000,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "totalTokens": 0,
+    "remainingTokens": 1500000,
+    "inFlightCalls": 0,
+    "unknownUsageCalls": 0,
+    "unpricedCalls": 0,
+    "estimatedCostUsd": 0,
+    "status": "available"
+  },
+  "oracle": {
+    "passed": true,
+    "checks": [
+      {
+        "name": "named function export",
+        "passed": true
+      },
+      {
+        "name": "empty array returns a new array",
+        "passed": true
+      },
+      {
+        "name": "trim, lowercase, and discard blanks",
+        "passed": true
+      },
+      {
+        "name": "deduplicate normalized labels in first occurrence order",
+        "passed": true
+      },
+      {
+        "name": "preserve input array and support frozen input",
+        "passed": true
+      },
+      {
+        "name": "reject non-array inputs with TypeError",
+        "passed": true
+      },
+      {
+        "name": "reject non-string elements with TypeError",
+        "passed": true
+      },
+      {
+        "name": "reject sparse arrays with TypeError",
+        "passed": true
+      },
+      {
+        "name": "reject inherited strings masking missing own slots, including frozen arrays",
+        "passed": true
+      }
+    ],
+    "exitCode": 0,
+    "signal": null,
+    "timedOut": false,
+    "outputLimitExceeded": false,
+    "stdout": "",
+    "stderr": ""
+  },
+  "budget": {
+    "tokenLimit": 1500000,
+    "inputTokens": 935740,
+    "outputTokens": 24066,
+    "totalTokens": 959806,
+    "remainingTokens": 540194,
+    "inFlightCalls": 0,
+    "unknownUsageCalls": 0,
+    "unpricedCalls": 56,
+    "estimatedCostUsd": null,
+    "status": "available"
+  },
+  "targetBundleSha256": "9afbb55bdf712261ea68d735423b3c5c084df905fd889df4ca28bdec55f2f16a",
+  "finishedAt": "2026-09-26T12:58:28.754Z",
+  "durationMs": 144031
+}

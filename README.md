@@ -79,6 +79,9 @@ not yet evaluate this complete Goal workflow or use the unified Mission budget l
 
 Correctness records: [completion and integration fixes](docs/FIXES_2026-09-16.md)
 and [Goal, budget, PostgreSQL, and cross-task messaging fixes](docs/BUGFIX_NOTES_2026-09-26.md).
+The [engineering closeout record](docs/ENGINEERING_CLOSEOUT_2026-09-26.md)
+preserves a clean-checkout regression, bounded real-model Goal runs, an acceptance
+counterexample, and commands for reproducing the verification.
 
 ## Current status
 

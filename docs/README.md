@@ -19,6 +19,7 @@ RunGuild 的文档分为产品与架构事实、个人操作、验证记录和�
 | [FIXES_2026-09-16.md](FIXES_2026-09-16.md) | 验收与集成维护者 | 已有证据门禁和集成验证修复的历史记录 |
 | [INTERVIEW_GUIDE_ZH.md](INTERVIEW_GUIDE_ZH.md) | 项目讲解者 | 如何解释流程、并发、隔离、安全、恢复、Evaluation 和边界 |
 | [BUGFIX_NOTES_2026-09-26.md](BUGFIX_NOTES_2026-09-26.md) | 排障与面试准备 | 已修 Bug 的现象、根因、修复、回归输出与追问；区分开发保护和历史事故 |
+| [ENGINEERING_CLOSEOUT_2026-09-26.md](ENGINEERING_CLOSEOUT_2026-09-26.md) | 开发与复现人员 | 固定版本、干净检出回归、真实 Goal 验证及被独立反例推翻的检查结果 |
 | [verification/2026-09-26/README.md](verification/2026-09-26/README.md) | 回归与复盘人员 | Goal、PostgreSQL、消息路由各阶段原始测试输出和验证范围 |
 | [../apps/web/DESIGN.md](../apps/web/DESIGN.md) | 前端维护者 | 中文操作台的视觉、真实数据和安全交互原则 |
 
@@ -87,6 +88,6 @@ USER_GUIDE_ZH 的状态表
 
 带日期的审计、实验、Bug 笔记及原始日志保留当时事实，不用新功能改写旧结果。
 例如历史 PostgreSQL 跳过项不代表当前 `npm test` 仍跳过，旧 Evaluation
-实验也不代表新增 Goal 终验已完成真实模型端到端验证。
+实验也不代表新增 Goal 终验已完成真实模型端到端验证；新增 Goal 的独立实跑及后续反例，以 [2026-09-26 工程收尾记录](ENGINEERING_CLOSEOUT_2026-09-26.md) 为准。
 
 核心 Mission 闭环、个人电脑运行和面试讲解已经有对应文档。仓库目前没有自动生成的 OpenAPI 文档，README 中的路由表仍需要随 API 手工同步。如果将来 API 被外部客户端正式使用，应从路由 Schema 生成机器可校验的 API contract，而不是继续扩大手写列表。

@@ -189,7 +189,7 @@
 
 - 原始记录：[第二轮摘要](verification/2026-09-26/goal-smoke/attempt-02-summary.json)、[独立复核](verification/2026-09-26/goal-smoke/attempt-02-independent-review.json)。
 - 反例：[断言失败](verification/2026-09-26/goal-smoke/attempt-02-counterexample-failure.txt)、[具体输入状态](verification/2026-09-26/goal-smoke/attempt-02-counterexamples.json)。
-- 验收入口：[goal-smoke-fixture.mjs](../scripts/goal-smoke-fixture.mjs)。完整收尾记录会区分原始检查通过、后续反例和加强检查后的结果。
+- 验收入口：[goal-smoke-fixture.mjs](../scripts/goal-smoke-fixture.mjs)。[完整收尾记录](ENGINEERING_CLOSEOUT_2026-09-26.md)区分原始检查通过、后续反例和第三轮功能结果通过 9 组加强检查；研究笔记仍有事实错误，另附人工勘误，不把所有生成内容描述为正确。
 
 **追问准备**：独立模型 Review 和独立确定性检查分别保证什么？为什么测试在仓库外仍可能漏验？如何保留一条被后续证据推翻的成功记录，而不修改历史输出？
 
