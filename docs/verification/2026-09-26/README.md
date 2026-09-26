@@ -44,3 +44,14 @@ SHA-256 用于检查后续复制是否改变输出内容，不用于证明业务
 | [integration-env-after.txt](integration-env-after.txt) | 修复后先 `npm run typecheck`，9 通过、0 失败、0 跳过 | `9560a822e02b6e759a38e81d0986bd32897b2d95dfe519378bf2833d7663ec83` |
 
 这是子进程环境传递回归，不是一次完整真实模型运行；详见 [B08](../../BUGFIX_NOTES_2026-09-26.md#b08构建任务按项目配置测试集成却用了默认命令)。前述六份历史输出保持原样。
+
+## 固定版本的干净检出回归
+
+源码提交 `4ccc68a`，分支 `codex/goal-closeout-20260926`。从本地仓库 clone 到新目录 `/tmp/runguild-closeout-clean-W7mpp0`，没有复制 `.env`、`node_modules` 或 `dist`；执行 `npm ci --prefer-offline --no-audit --no-fund`，再清除 `DATABASE_URL`、`TEST_DATABASE_URL` 和 `OPENAI_API_KEY` 环境变量执行 `npm test`。Node 为 24.15.0，npm 为 11.12.1。
+
+| 文件 | 结果 | SHA-256 |
+|---|---|---|
+| [clean-install.txt](clean-install.txt) | 按 lock 安装 172 个包成功 | `548efe55b9c817e64e6c979257aa970079614aa5a1d52d578e7d5c7c44c2a6a0` |
+| [clean-full-suite.txt](clean-full-suite.txt) | 构建成功，276 通过、0 失败、0 跳过；包含临时 PostgreSQL 17 集成套件 | `78f8fb43e25a28eb39c174bc826fa4c0117f59219c1ce242540ba3569f72fcc2` |
+
+测试阶段约 199 秒，不是性能指标。构建保留已有的包体积与无效动态导入提示，未影响退出码。上述提交包含 B08 回归，比前一份 275 项记录多一项。后续提交 `ddcd95a` 仅添加真实模型验证入口 `scripts/goal-smoke.mjs`，没有改变业务源代码或本次测试用例。

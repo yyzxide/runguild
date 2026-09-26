@@ -118,6 +118,10 @@ async function run(outputDir) {
       })
     }
     child.process.on('error', error => { child.error = error.message })
+    child.closed = new Promise(done => child.process.once('close', () => {
+      child.didClose = true
+      done()
+    }))
     children.push(child)
     return child
   }
@@ -196,7 +200,8 @@ async function run(outputDir) {
         }
       } catch (error) { if (error.code !== 'ESRCH') summary.cleanupErrors.push(error.message) }
     }
-    await delay(1_500)
+    const allClosed = Promise.all(children.map(child => child.closed))
+    await Promise.race([allClosed, delay(1_500, undefined, { ref: false })])
     for (const child of children) {
       try {
         if (child.process.pid) {
@@ -204,6 +209,10 @@ async function run(outputDir) {
           else if (child.process.exitCode === null) child.process.kill('SIGKILL')
         }
       } catch (error) { if (error.code !== 'ESRCH') summary.cleanupErrors.push(error.message) }
+    }
+    await Promise.race([allClosed, delay(5_000, undefined, { ref: false })])
+    for (const child of children) {
+      if (!child.didClose) summary.cleanupErrors.push(child.name + ' did not close after termination')
       if (savedOutput) {
         try {
           await save('process-' + child.name + '.json', {
