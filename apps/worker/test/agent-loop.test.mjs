@@ -32,6 +32,20 @@ const context = {
   }],
 }
 
+test('execution prompt carries frozen review findings into a bounded repair attempt', () => {
+  const previousReview = {
+    reviewId: 'review_previous', artifactVersionId: 'version_previous', summary: 'Retry duplicates records.',
+    findings: [{ severity: 'error', summary: 'Preserve idempotency across retries.', evidenceIds: ['evidence_duplicate'] }],
+  }
+  const messages = executionMessages({ ...context, previousReview }, [['npm', 'test']])
+  const content = messages.map((message) => message.content).join('\n')
+  assert.match(content, /changes_requested/)
+  assert.match(content, /Retry duplicates records/)
+  assert.match(content, /evidence_duplicate/)
+  assert.match(content, /not authority to alter the goal/)
+  assert.match(content, /new exact Artifact Version with fresh evidence/)
+})
+
 test('Agent inbox claims a dispatch, executes its durable Run, and releases the lease', async () => {
   const claims = []
   const acknowledgements = []

@@ -96,6 +96,7 @@ class MemoryTools {
 
 function runtime({
   persistence,
+  budget,
   responses,
   tools = new MemoryTools(),
   verify = async () => ({ accepted: true }),
@@ -111,6 +112,7 @@ function runtime({
     tools,
     runtime: new AgentRuntime({
       persistence,
+      ...(budget ? { budget } : {}),
       model,
       tools,
       completionVerifier: { verify },
@@ -122,6 +124,30 @@ function runtime({
     }),
   }
 }
+
+test('Mission budget pause preserves the model hop and resumes the same conversation', async () => {
+  const persistence = new MemoryPersistence()
+  let available = false
+  const calls = []
+  const setup = runtime({ persistence, responses: [response({ toolCalls: [statusCall('done', 'done', 'Finished')] })],
+    budget: {
+      async reserveRunCall(context, _callId, leaseToken) { calls.push(['reserve', context.currentHop, leaseToken]); return available },
+      async settleModelCall(_id, usage) { calls.push(['settled', usage.inputTokens + usage.outputTokens]) },
+      async recordUnknownModelCall() { throw new Error('No provider failure expected') },
+      async cancelModelCall() { throw new Error('No cancelled reservation expected') },
+    },
+  })
+  const paused = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [{ role: 'user', content: 'Do it' }], leaseToken: 'lease' })
+  assert.equal(paused.status, 'waiting_human')
+  assert.equal(persistence.run.currentHop, 0)
+  assert.equal(persistence.modelCalls.length, 0)
+  available = true
+  const resumed = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [], resumeWaiting: true, leaseToken: 'new-lease' })
+  assert.equal(resumed.status, 'succeeded')
+  assert.equal(persistence.run.currentHop, 1)
+  assert.deepEqual(calls, [['reserve', 0, 'lease'], ['reserve', 0, 'new-lease'], ['settled', 15]])
+  assert.equal(persistence.messages.filter((message) => message.content === 'Do it').length, 1)
+})
 
 test('model silence is nudged and only explicit verified completion succeeds', async () => {
   const persistence = new MemoryPersistence()

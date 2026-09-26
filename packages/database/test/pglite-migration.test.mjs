@@ -31,6 +31,8 @@ const migrationUrls = [
   new URL('../migrations/0024_model_protocol_events.sql', import.meta.url),
   new URL('../migrations/0025_agent_run_hop_budget.sql', import.meta.url),
   new URL('../migrations/0026_flash_agent_hop_budget.sql', import.meta.url),
+  new URL('../migrations/0027_mission_budget.sql', import.meta.url),
+  new URL('../migrations/0028_goal_verification.sql', import.meta.url),
 ]
 
 async function applyMigrations(database) {
@@ -51,6 +53,8 @@ test('core migration executes on an in-process PostgreSQL engine', async () => {
     const tables = new Set(result.rows.map((row) => row.table_name))
     for (const required of [
       'missions',
+      'mission_model_calls',
+      'mission_budget_waits',
       'tasks',
       'task_dependencies',
       'agent_runs',

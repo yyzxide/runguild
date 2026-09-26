@@ -38,6 +38,7 @@ interface FrozenExecutionContext {
   readonly taskTitle: string
   readonly taskDescription: string
   readonly reviewRequired?: boolean
+  readonly previousReview?: AgentExecutionContext['previousReview']
   readonly acceptanceCriteria: AgentExecutionContext['acceptanceCriteria']
   readonly missionArtifacts?: readonly MissionArtifactSummary[]
   readonly skills: readonly AgentSkillContext[]
@@ -77,6 +78,16 @@ export interface AgentExecutionContext {
   readonly taskTitle: string
   readonly taskDescription: string
   readonly reviewRequired: boolean
+  readonly previousReview?: {
+    readonly reviewId: string
+    readonly artifactVersionId: string
+    readonly summary: string
+    readonly findings: readonly {
+      readonly severity: 'info' | 'warning' | 'error'
+      readonly summary: string
+      readonly evidenceIds: readonly string[]
+    }[]
+  }
   readonly acceptanceCriteria: readonly {
     readonly key: string
     readonly description: string
@@ -108,6 +119,8 @@ function isFrozen(value: unknown): value is FrozenExecutionContext {
     && typeof item['taskTitle'] === 'string'
     && typeof item['taskDescription'] === 'string'
     && (item['reviewRequired'] === undefined || typeof item['reviewRequired'] === 'boolean')
+    && (item['previousReview'] === undefined
+      || (typeof item['previousReview'] === 'object' && item['previousReview'] !== null))
     && Array.isArray(item['acceptanceCriteria'])
     && (item['missionArtifacts'] === undefined || Array.isArray(item['missionArtifacts']))
     && Array.isArray(item['skills'])
@@ -144,13 +157,14 @@ export class ExecutionContextRepository {
         task_title: string
         task_description: string
         review_required: boolean
+        attempt: number
         conversation_id: string | null
         context_snapshot: Readonly<Record<string, unknown>>
       }>(
         'SELECT r.workspace_id, r.mission_id, r.task_id, r.context_snapshot, m.project_id, m.conversation_id, ' +
         'a.role AS agent_role, a.model_provider, a.model_name, m.title AS mission_title, ' +
         'm.goal AS mission_goal, m.constraints, m.created_by AS mission_created_by, ' +
-        "t.title AS task_title, t.description AS task_description, t.review_required, " +
+        "t.title AS task_title, t.description AS task_description, t.review_required, r.attempt, " +
         'tw.reconciliation_base_commit, tw.last_error AS worktree_last_error, ' +
         "CASE WHEN et.id IS NULL THEN p.default_branch " +
         "ELSE 'evaluation/trial-' || et.id END AS default_branch, " +
@@ -173,6 +187,37 @@ export class ExecutionContextRepository {
       if (isFrozen(storedContext)) {
         frozen = storedContext
       } else {
+        const feedback = await client.query<{
+          readonly id: string
+          readonly artifact_version_id: string
+          readonly summary: string
+          readonly findings: unknown
+        }>(
+          'SELECT review.id, submission.artifact_version_id, LEFT(review.summary, 4000) AS summary, review.findings ' +
+          'FROM reviews review JOIN task_submissions submission ON submission.id = review.submission_id ' +
+          'JOIN agent_runs producer ON producer.id = submission.run_id ' +
+          'WHERE review.task_id = $1 AND review.mission_id = $2 AND producer.task_id = $1 ' +
+          "AND review.status = 'changes_requested' AND producer.attempt < $3 " +
+          'ORDER BY producer.attempt DESC, review.completed_at DESC, review.id DESC LIMIT 1',
+          [row.task_id, row.mission_id, row.attempt],
+        )
+        const previous = feedback.rows[0]
+        const previousReview: AgentExecutionContext['previousReview'] = previous ? {
+          reviewId: previous.id,
+          artifactVersionId: previous.artifact_version_id,
+          summary: previous.summary,
+          findings: (Array.isArray(previous.findings) ? previous.findings : []).slice(0, 20).flatMap((value: unknown) => {
+            if (!value || typeof value !== 'object') return []
+            const item = value as Record<string, unknown>
+            if (!['info', 'warning', 'error'].includes(String(item['severity'])) || typeof item['summary'] !== 'string') return []
+            return [{
+              severity: item['severity'] as 'info' | 'warning' | 'error',
+              summary: item['summary'].slice(0, 1_000),
+              evidenceIds: (Array.isArray(item['evidenceIds']) ? item['evidenceIds'] : [])
+                .filter((id: unknown): id is string => typeof id === 'string' && id.length <= 200).slice(0, 20),
+            }]
+          }),
+        } : undefined
         const criteria = await client.query<{
           criterion_key: string
           description: string
@@ -269,6 +314,7 @@ export class ExecutionContextRepository {
           taskTitle: row.task_title,
           taskDescription: row.task_description,
           reviewRequired: row.review_required,
+          ...(previousReview === undefined ? {} : { previousReview }),
           acceptanceCriteria: criteria.rows.map((criterion) => ({
             key: criterion.criterion_key,
             description: criterion.description,
@@ -341,6 +387,7 @@ export class ExecutionContextRepository {
         taskTitle: frozen.taskTitle,
         taskDescription: frozen.taskDescription,
         reviewRequired: frozen.reviewRequired ?? false,
+        ...(frozen.previousReview === undefined ? {} : { previousReview: frozen.previousReview }),
         acceptanceCriteria: frozen.acceptanceCriteria,
         missionArtifacts: frozen.missionArtifacts ?? [],
         skills: frozen.skills,

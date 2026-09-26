@@ -1,0 +1,66 @@
+
+> runguild@0.0.1 test:integration
+> npm run build && node scripts/test.mjs --postgres
+
+
+> runguild@0.0.1 build
+> tsc -b && npm run bundle --workspace @runguild/web
+
+
+> @runguild/web@0.0.1 bundle
+> vite build
+
+vite v8.2.2 building client environment for production...
+transforming...
+✓ 1973 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                          0.61 kB │ gzip:   0.42 kB
+dist/assets/ibm-plex-mono-vietnamese-400-normal-DDuiU_S-.woff            5.62 kB
+dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-DMdlQ8Kv.woff          5.82 kB
+dist/assets/ibm-plex-mono-vietnamese-400-normal-BulugwFq.woff2           5.86 kB
+dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-xuaO2J-f.woff2         6.91 kB
+dist/assets/ibm-plex-mono-cyrillic-400-normal-CEL4l2ZJ.woff              7.20 kB
+dist/assets/ibm-plex-mono-cyrillic-400-normal-BSMlKf0J.woff2             8.35 kB
+dist/assets/manrope-vietnamese-wght-normal-usUDDRr7.woff2                8.52 kB
+dist/assets/bricolage-grotesque-vietnamese-wght-normal-BUzh504Q.woff2    8.60 kB
+dist/assets/manrope-greek-wght-normal-DL7QRZyv.woff2                     9.44 kB
+dist/assets/ibm-plex-mono-latin-ext-400-normal-D3D2R8hC.woff            11.76 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff                13.14 kB
+dist/assets/ibm-plex-mono-latin-ext-400-normal-BmRBH3aV.woff2           13.34 kB
+dist/assets/manrope-cyrillic-wght-normal-Dvxsihut.woff2                 14.50 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2               14.70 kB
+dist/assets/manrope-latin-ext-wght-normal-Ch3YOpNY.woff2                15.12 kB
+dist/assets/bricolage-grotesque-latin-ext-wght-normal-CcLUaPy7.woff2    18.66 kB
+dist/assets/manrope-latin-wght-normal-DHIcAJRg.woff2                    24.83 kB
+dist/assets/bricolage-grotesque-latin-wght-normal-DLoelf7F.woff2        41.34 kB
+dist/assets/index-CwP43W7v.css                                         154.26 kB │ gzip:  30.65 kB
+dist/assets/index-BU__BsQN.js                                          546.70 kB │ gzip: 166.10 kB │ map: 2,009.44 kB
+
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/api.ts is dynamically imported by src/goal-execution.ts but also statically imported by src/App.tsx, src/ArtifactView.tsx, src/EvaluationView.tsx, src/GoalView.tsx, src/MembersView.tsx, ..., dynamic import will not move module into another chunk.
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 772ms
+Using disposable PostgreSQL 17; its test data is removed when this command finishes.
+✔ PostgreSQL integration suite requires a dedicated _test database name (1.042591ms)
+▶ PostgreSQL coordination integration
+  ✔ a different agent cannot consume another agent's dispatch (171.599073ms)
+  ✔ competing connections consume the same authorized dispatch only once (197.807569ms)
+  ✔ expired lease times out the run and makes work ready again (193.813883ms)
+  ✔ durable inbox deduplicates payload and advances by cursor (167.697939ms)
+  ✔ outbox rows are exclusively claimed and explicitly published (160.643391ms)
+  ✔ workspace provisioning commits one complete Project and Agent team (201.789409ms)
+  ✔ completing a task unlocks its dependent (146.567951ms)
+✔ PostgreSQL coordination integration (1892.707707ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2009.069866

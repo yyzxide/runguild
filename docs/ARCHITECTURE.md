@@ -19,7 +19,7 @@ truth.
 ~~~text
 React Web
   |-- Team Room + Agent routing rail
-  |-- Mission dependency cockpit + Evidence Spine
+  |-- Goal / Mission progress, dependencies, evidence, and budget
   |-- collaborative Artifact and immutable Version surface
   |-- paired Evaluation Lab
   |-- Run trace waterfall
@@ -72,9 +72,11 @@ read models. It never runs a long model turn inside an HTTP request.
 
 ### Scheduler
 
-Finds runnable work from durable state. Redis wake events reduce latency, but
-periodic scanning guarantees eventual progress. It decides what can run, not
-what the model should say. The process may serve multiple Projects, but Agent
+Finds runnable work from durable state. Redis wake events reduce latency;
+periodic scanning can rediscover eligible work after a missed wake. Progress
+still requires available Workers, completed dependencies, and open gates. It
+decides what can run, not what the model should say. The process may serve
+multiple Projects, but Agent
 selection requires active role eligibility plus Conversation membership in the
 Task's exact Project; Workspace-level role matching alone is insufficient.
 
@@ -152,10 +154,20 @@ room has explicit Workspace-scoped members; messages have a stable sequence,
 structured entity references, replies, mentions, and per-Agent delivery rows.
 If a mentioned Agent owns an active Run in the referenced Mission, the same
 transaction creates a Steering control, Inbox wake, and Outbox event. If no
-matching Run exists, delivery remains `context_pending`. The next Run freezes
-recent Mission-room messages into its execution context and advances those
-delivery rows to `context_loaded`. Redis may reduce wake latency, but it is not
-message truth.
+matching Run exists, delivery remains `context_pending`. A later Run freezes
+up to 30 recent Mission-room messages into its execution context and advances
+the included delivery rows to `context_loaded`; this bounded context is not a
+guarantee that every older pending message will be consumed. Redis may reduce
+wake latency, but it is not message truth.
+
+For Agent messages, Task and Run entity references record the sender's
+execution scope; the Run must belong to the author and match its supplied
+Run identity. These references do not restrict the recipient to that Task.
+Mentions can therefore steer teammates working on other Tasks in the same Mission.
+Human messages with a Task reference retain their narrower active-Run target.
+Self-mentions record `context_loaded` for the sending Run without waking it.
+`steered` records a queued control, not confirmation that the Agent has read,
+answered, or completed the request.
 
 Before a Mission exists, a human can select an ordered subset of Conversation
 messages and promote them into a planning request. One transaction validates
@@ -163,10 +175,25 @@ membership and source-message scope, creates the Mission with immutable source
 identifiers, stores the Planning Request, appends domain events, and writes the
 Planner Inbox plus Outbox wake. The Planner model is invoked asynchronously by
 the Agent worker under a fenced lease. Its exact input, structured DAG output,
-usage, and retry state are durable; a crash after the model call resumes from
-the stored plan without paying for the model twice. The Planner can propose the
+usage, and retry state are durable; after a validated plan has been persisted,
+recovery reuses it without another model call. A crash before that persistence
+can still leave usage unknown or require a new call. The Planner can propose the
 plan and report back to the room, but only a human can approve and materialize
 the DAG.
+
+`/goal` is a Web command that uses this existing Conversation/Mission path. It
+captures the original goal, constraints, acceptance criteria, and optional
+Mission token limit. Current Web creation also enables `goalVerification` when
+promoting selected messages or creating a Mission from the first ordinary
+request. API callers opt in explicitly; omission defaults to false, and
+existing Missions are not retrofitted. The flag adds a system-owned final
+verification Task before plan approval, not another execution engine.
+
+Goal plan validation reserves room for that Task before the Planner result is
+frozen. A malformed fresh response consumes the normal model-attempt budget.
+An already stored invalid Goal plan, or a deterministic repository refusal of
+the proposal, terminates the Planning Request with a visible error rather than
+replaying the same unusable plan indefinitely.
 
 The current Planner contract represents independent approval as
 `reviewRequired=true` on the producing Task. It must not generate a downstream
@@ -242,11 +269,33 @@ to removed actions are rejected before the Tool Gateway. If verification fails,
 the Run terminates and a later durable Task attempt resumes the same Worktree
 instead of consuming the delivery budget on unbounded repair.
 
+Mission token limits are a separate, shared soft budget. Planner, execution
+Agent, and Reviewer calls reserve admission under the Mission row lock and
+settle into `mission_model_calls`. Execution calls present the Worker's exact
+active Task lease token before admission. Valid returned input/output tokens
+are charged even when the model response is invalid; cached input is already
+part of input tokens and is not added a second time. A request known not to
+have started is cancelled; missing usage or an abandoned in-flight call is
+recorded as unknown. Migration `0027_mission_budget.sql` backfills observable
+history and records unknown usage for older attempts whose detail is missing.
+
+`null` removes the limit; `0` stops new model admissions. With a finite limit,
+exhausted or unknown usage blocks further calls. Already admitted calls may
+finish and exceed the limit, so this is not an exact provider-side token cap.
+A blocked execution atomically records its budget waiter, sets Run and Task to
+`waiting_human`, and releases the exact Task lease without consuming a hop.
+Planner and Reviewer record waiters before consuming a new attempt. Increasing
+or removing a limit, or settling late usage that makes the budget available,
+creates durable Inbox/Outbox wakes for those budget waiters. Resuming an
+execution reacquires ownership and moves both Run and Task to `running`;
+unrelated human approvals remain separate gates.
+
 ## 4. Source-of-truth boundaries
 
 | Concern | Durable truth | Acceleration only |
 |---|---|---|
 | Mission and Task state | PostgreSQL | Redis wake |
+| Mission token admission, measured/unknown usage, and budget waits | PostgreSQL `mission_model_calls` and `mission_budget_waits` | Web budget projection |
 | Conversation messages, membership, and mention delivery | PostgreSQL | Web polling / future stream |
 | Inbox and read cursor | PostgreSQL | SSE or WebSocket |
 | Task ownership and lease | PostgreSQL | Worker memory |
@@ -340,6 +389,17 @@ truth.
 
 ## 5. Mission execution flow
 
+For a Mission with `goalVerification=true`, proposal normalization appends the
+reserved `runguild-goal-verification` Task to 1–99 original Tasks. It depends
+on all original Tasks, runs as a Builder, and requires independent review.
+Every original Mission acceptance criterion becomes a required final criterion
+with `artifact_version`, `test_run`, and `command_result` Evidence. If none were
+specified, the generated criterion checks the original goal and constraints.
+Approval revalidates the exact generated Task and records `verificationTaskId`.
+The Planner cannot alter the reserved Task or make original work depend on it.
+Migration `0028_goal_verification.sql` stores the opt-in flag and current
+verification Task pointer on the Mission.
+
 1. Plan approval atomically changes Mission to running and creates ready Task
    records for dependency-free nodes.
 2. Scheduler selects ready tasks and publishes wake hints.
@@ -372,11 +432,38 @@ truth.
    the terminal Task state directly.
 12. Completing a task unlocks dependents in the same transaction. The
    integration worker then removes the clean Worktree and merged branch.
-13. Once every Task completes, the Mission exposes the latest independently
-   approved Artifact Version as the final-delivery candidate (or the latest
-   Mission Version when no Task review was required). A Workspace human must
-   approve that exact id; a stale id is rejected, and only then does the Mission
-   become `completed`.
+13. In Goal mode, the final Builder inspects the merged result, runs configured
+   verification, and may repair gaps within the approved scope before submitting
+   its final Version for independent review. A clean verification-only result
+   uses `repo.commit` to record the unchanged baseline; no artificial file edit
+   or `file_diff` is required. Failed prerequisites keep this Task blocked.
+14. Once every Task completes, a Goal's final-delivery candidate must come from
+   the current `verificationTaskId`, its current attempt, and an approved
+   Submission and Review. Other Missions retain the existing preference for an
+   approved Version, falling back to the latest Mission Version. A Workspace
+   human must approve that exact id; a stale id is rejected, and only then does
+   the Mission become `completed`.
+15. Human delivery feedback creates a new review-gated Builder Task and returns
+   the Mission to `running`. In Goal mode, this Task also retains every original
+   goal criterion, and `verificationTaskId` advances to it. Previous approved
+   Versions cannot satisfy this new delivery gate.
+
+Review-requested changes reuse the bounded Task-attempt mechanism. A later Run
+freezes the previous change-request summary, findings, and evidence references
+into its execution context so restart preserves the repair instructions. The
+Goal flow does not rewrite the approved DAG or guarantee eventual success:
+failed prerequisites, exhausted attempts, missing verification configuration,
+budget waits, or out-of-scope decisions can require human action. The independent
+Reviewer evaluates frozen submitted material; it is not a separate executor
+that reruns the original business acceptance checks.
+
+The Web progress view reads the Mission snapshot rather than inferring success
+from Agent prose. Each Task includes its latest Run and observed/configured
+model source, attempts, valid evidence per criterion, current-attempt Review
+identity, and Worktree integration state. Evidence completeness uses the same
+predicate as the completion gate, but means evidence is present, not that a
+Reviewer approved it. Mission budget is read as a separate ledger snapshot and
+is not one atomic snapshot with every progress field.
 
 ## 6. Yjs and immutable versions
 
@@ -501,6 +588,11 @@ execution row advances. Evaluation aggregation sums ordinary `llm_calls` and
 these Reviewer call rows; a migration conservatively backfills the latest
 observable call from pre-ledger Review executions without rewriting already
 frozen Trial metrics.
+
+The Mission budget view separately uses the unified `mission_model_calls`
+ledger, including Planner calls. It reports unknown usage and unpriced calls;
+`estimatedCostUsd` is null when any settled/unknown call lacks a price. The
+existing Evaluation collector has not been replaced by this budget projection.
 
 Planner and Reviewer model requests require a structured Tool Call and disable
 parallel Tool Calls because each control-plane transition accepts exactly one
@@ -663,6 +755,10 @@ report lookup even when both Projects belong to the same Workspace. Trial
 errors and lifecycle timestamps are returned as bounded operational facts so a
 failed harness can be diagnosed without reading raw model content.
 
+These Trials still materialize their frozen plans directly. They do not invoke
+the Conversation Planner or enable Goal verification and Mission token limits
+automatically, so they are not end-to-end `/goal` evaluations.
+
 ## 10. Current model execution
 
 The production provider is OpenAI Responses. Every successful response id is
@@ -751,10 +847,12 @@ or wait for explicit human action.
 load durable Run + transcript
   -> apply pending Steering / Cancel
   -> reconcile assistant Tool Calls without Tool Results
+  -> reserve Mission model budget under the exact Task lease, or pause durably
   -> atomically increment bounded hop
   -> build and persist the exact token-budgeted Context Snapshot
   -> write running LLM ledger record
   -> call provider
+  -> settle Mission usage, or record unknown usage
   -> write redacted response + usage
   -> persist assistant message
   -> reserve Tool idempotency key + fencing lease

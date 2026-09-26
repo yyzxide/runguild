@@ -22,6 +22,12 @@ import type { MissionStatus, ReviewStatus, RunStatus, TaskStatus } from './state
 import type { ToolAction, TypedSideEffect } from './tools.js'
 
 export interface DomainEventPayloads {
+  'mission.budget_changed': {
+    readonly previousTokenLimit: number | null
+    readonly tokenLimit: number | null
+    readonly measuredTokens: number
+    readonly unknownUsageCalls: number
+  }
   'conversation.planning_requested': {
     readonly conversationId: ConversationId
     readonly requestId: ConversationPlanningRequestId

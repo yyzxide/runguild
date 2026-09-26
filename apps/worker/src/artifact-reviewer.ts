@@ -8,6 +8,7 @@ import type {
   AgentId,
   ArtifactReviewRequestedInboxPayload,
   CorrelationId,
+  RuntimeModelBudget,
   ModelAdapter,
   ModelMessage,
   ModelToolDefinition,
@@ -138,6 +139,7 @@ type ReviewExecutions = Pick<
 type Reviews = Pick<ReviewRepository, 'reviewSubmission'>
 
 export interface ArtifactReviewerDependencies {
+  readonly budget?: Pick<RuntimeModelBudget, 'settleModelCall' | 'recordUnknownModelCall' | 'cancelModelCall'>
   readonly executions: ReviewExecutions
   readonly reviews: Reviews
   readonly modelFor: (provider: string, model: string) => ModelAdapter
@@ -193,11 +195,13 @@ export class ArtifactReviewer {
       reviewerAgentId,
       leaseSeconds: this.leaseSeconds,
     })
-    if (claimed.kind === 'terminal' || claimed.kind === 'not_ready') return 'processed'
+    if (claimed.kind === 'terminal' || claimed.kind === 'not_ready' || claimed.kind === 'budget_blocked') return 'processed'
     if (claimed.kind === 'busy') return 'deferred'
 
     const work = claimed.work
     let decision = work.storedDecision
+    let modelStarted = false
+    let modelSettled = false
     const abortController = new AbortController()
     const abortFromWorker = () => abortController.abort(
       abortSignal?.reason ?? new Error('Reviewer Worker ownership was lost'),
@@ -223,9 +227,11 @@ export class ArtifactReviewer {
     }, Math.max(5_000, Math.floor(this.leaseSeconds * 1_000 / 3)))
     try {
       if (decision === undefined) {
+        if (work.budgetCallId && !this.dependencies.budget) throw new Error('Mission model budget service is not configured')
         const messages = reviewMessages(work.materials)
         const model = this.dependencies.modelFor(work.modelProvider, work.modelName)
         const startedAt = Date.now()
+        modelStarted = true
         const response = await model.complete({
           messages,
           tools: [REVIEW_DECISION_TOOL_DEFINITION],
@@ -234,6 +240,8 @@ export class ArtifactReviewer {
           reasoningEffort: 'none',
           abortSignal: abortController.signal,
         })
+        if (work.budgetCallId) await this.dependencies.budget?.settleModelCall(work.budgetCallId, response.usage)
+        modelSettled = true
         const latencyMs = Math.max(0, Date.now() - startedAt)
         const promptSnapshot = { schemaVersion: 1, messages, tools: [REVIEW_DECISION_TOOL_DEFINITION] }
         const responseSnapshot = {
@@ -305,6 +313,10 @@ export class ArtifactReviewer {
       })
       return 'processed'
     } catch (error) {
+      if (work.budgetCallId && !modelSettled) {
+        if (modelStarted) await this.dependencies.budget?.recordUnknownModelCall(work.budgetCallId)
+        else await this.dependencies.budget?.cancelModelCall(work.budgetCallId)
+      }
       const failed = await this.dependencies.executions.fail({
         reviewId: work.reviewId,
         reviewerAgentId,

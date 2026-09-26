@@ -29,6 +29,7 @@ function work(storedPlan) {
       createdAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
     },
     leaseToken: 'lease', missionTitle: 'Mission', missionGoal: 'Goal', missionConstraints: [],
+    missionAcceptanceCriteria: ['错误行可预览'],
     conversationTitle: 'Team room',
     sourceMessages: [{
       id: 'message', authorKind: 'user', authorId: 'user', authorName: 'Developer',
@@ -46,6 +47,76 @@ test('Planner tool schema exposes only executable roles and Agent-producible evi
     .properties.tasks.items.properties.acceptanceCriteria.items.properties.evidenceKinds.items.enum
   assert.deepEqual(evidenceKinds, EVIDENCE_KINDS.filter((kind) => kind !== 'human_attestation'))
   assert.deepEqual(definition.inputSchema.properties.tasks.items.properties.role.enum, ['builder'])
+  assert.equal(definition.inputSchema.properties.tasks.maxItems, 100)
+  assert.equal(missionPlanToolDefinition(['builder'], true).inputSchema.properties.tasks.maxItems, 99)
+})
+
+test('Goal-specific invalid model plans are never frozen and invalid stored plans stop replay', async () => {
+  const invalidPlans = [
+    { ...plan, tasks: Array.from({ length: 100 }, (_, index) => ({ ...plan.tasks[0], key: 'task-' + index })) },
+    { ...plan, tasks: [{ ...plan.tasks[0], key: 'runguild-goal-verification' }] },
+  ]
+  for (const invalid of invalidPlans) {
+    for (const stored of [false, true]) {
+      let failure
+      let visibleMessage
+      const planner = new ConversationPlanner({
+        planning: {
+          async claim() { return { kind: 'work', work: { ...work(stored ? invalid : undefined), missionGoalVerification: true } } },
+          async completeModel() { assert.fail('A Goal-invalid plan must not be persisted') },
+          async markAwaitingApproval() { assert.fail('A Goal-invalid plan must not await approval') },
+          async fail(input) { failure = input; return { retryable: !input.terminal, request: {} } },
+        },
+        missions: { async proposePlan() { assert.fail('Invalid Goal plans must be caught before proposing') } },
+        conversations: { async postMessage(input) { visibleMessage = input.body; return { reused: false, message: { id: 'message' } } } },
+        modelFor() {
+          assert.equal(stored, false)
+          return { provider: 'test', model: 'test', async complete() {
+            return { content: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call', action: 'mission.propose_plan', input: invalid }],
+              usage: { inputTokens: 10, outputTokens: 10 } }
+          } }
+        },
+      })
+      const process = () => planner.process({ schemaVersion: 1, type: 'conversation.plan_requested', requestId: 'planning',
+        conversationId: 'conversation', missionId: 'mission' }, 'planner')
+      if (stored) {
+        await process()
+        assert.equal(failure.terminal, true)
+        assert.match(visibleMessage, /Stored Goal plan cannot be proposed/)
+        assert.match(visibleMessage, /1–99/)
+      } else {
+        await assert.rejects(process, /1–99/)
+        assert.equal(failure.terminal, undefined)
+      }
+    }
+  }
+})
+
+test('a deterministic repository rejection stops replay and exposes its validation detail', async () => {
+  let failure
+  let visibleMessage
+  const planner = new ConversationPlanner({
+    planning: {
+      async claim() { return { kind: 'work', work: work(plan) } },
+      async fail(input) { failure = input; return { retryable: !input.terminal, request: {} } },
+    },
+    missions: { async proposePlan() { return { proposed: false, reason: 'invalid_plan', errors: [{ path: 'tasks', message: 'Reserved key is invalid.' }] } } },
+    conversations: { async postMessage(input) { visibleMessage = input.body; return { reused: false, message: { id: 'message' } } } },
+    modelFor() { assert.fail('Do not repeat the model for a stored plan') },
+  })
+  await planner.process({ schemaVersion: 1, type: 'conversation.plan_requested', requestId: 'planning',
+    conversationId: 'conversation', missionId: 'mission' }, 'planner')
+  assert.equal(failure.terminal, true)
+  assert.match(visibleMessage, /Reserved key is invalid/)
+})
+
+test('Planner receives user acceptance criteria and must cover them with Task evidence', () => {
+  const messages = planningMessages(work())
+  assert.match(messages[0].content, /Cover every Mission acceptance criterion/)
+  assert.match(messages[1].content, /Mission acceptance criteria: \["错误行可预览"\]/)
+  const goalMessages = planningMessages({ ...work(), missionGoalVerification: true })
+  assert.match(goalMessages[0].content, /at most 99 original tasks/)
+  assert.match(goalMessages[0].content, /reserved runguild-goal-verification/)
 })
 
 test('Conversation Planner converts one durable model tool call into a human-approval proposal', async () => {

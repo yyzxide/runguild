@@ -1,20 +1,8 @@
 import type { PoolClient } from 'pg'
 
-/** Evaluate completion against the current attempt or an exact committed tree. */
-export async function hasMissingTaskEvidence(client: PoolClient, taskId: string): Promise<boolean> {
-  const result = await client.query<{ missing: boolean }>(`
-    SELECT EXISTS (
-      SELECT 1 FROM task_acceptance_criteria c
-      JOIN tasks t ON t.id = c.task_id
-      LEFT JOIN task_worktrees w ON w.task_id = t.id
-      WHERE c.task_id = $1 AND c.required AND EXISTS (
-        SELECT 1 FROM unnest(CASE WHEN cardinality(c.required_evidence_kinds) = 0
-          THEN ARRAY[NULL::text] ELSE c.required_evidence_kinds END) AS required_kind
-        WHERE NOT EXISTS (
-          SELECT 1 FROM evidence e JOIN agent_runs producer ON producer.id = e.run_id
-          WHERE e.acceptance_criterion_id = c.id AND e.task_id = t.id
+/** Shared by completion gates and read-only progress. Aliases: c, t, w, e, producer. */
+export const validTaskEvidencePredicate = `e.acceptance_criterion_id = c.id AND e.task_id = t.id
             AND producer.task_id = t.id AND producer.mission_id = t.mission_id
-            AND (required_kind IS NULL OR e.kind = required_kind)
             AND (e.expires_at IS NULL OR e.expires_at > NOW())
             AND (
               (e.kind NOT IN ('test_run', 'command_result') AND (
@@ -55,7 +43,22 @@ export async function hasMissingTaskEvidence(client: PoolClient, taskId: string)
               JOIN agent_runs sr ON sr.id = s.run_id
               WHERE se.evidence_id = e.id AND s.task_id = t.id AND sr.attempt = t.attempt_count
                 AND s.status IN ('submitted', 'in_review', 'approved')
-            ))
+            ))`
+
+/** Evaluate completion against the current attempt or an exact committed tree. */
+export async function hasMissingTaskEvidence(client: PoolClient, taskId: string): Promise<boolean> {
+  const result = await client.query<{ missing: boolean }>(`
+    SELECT EXISTS (
+      SELECT 1 FROM task_acceptance_criteria c
+      JOIN tasks t ON t.id = c.task_id
+      LEFT JOIN task_worktrees w ON w.task_id = t.id
+      WHERE c.task_id = $1 AND c.required AND EXISTS (
+        SELECT 1 FROM unnest(CASE WHEN cardinality(c.required_evidence_kinds) = 0
+          THEN ARRAY[NULL::text] ELSE c.required_evidence_kinds END) AS required_kind
+        WHERE NOT EXISTS (
+          SELECT 1 FROM evidence e JOIN agent_runs producer ON producer.id = e.run_id
+          WHERE (required_kind IS NULL OR e.kind = required_kind)
+            AND ${validTaskEvidencePredicate}
         )
       )
     ) AS missing`, [taskId])

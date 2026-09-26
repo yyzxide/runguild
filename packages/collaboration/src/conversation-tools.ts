@@ -61,7 +61,7 @@ export function createConversationToolHandlers(
 export const CONVERSATION_TOOL_DEFINITIONS = [
   {
     action: 'conversation.reply' as const,
-    description: 'Post a durable progress update or coordination request to the Mission team room. Mention Agents only when they need to act.',
+    description: 'Post a durable progress update or coordination request to the Mission team room. Mentions route to each Agent\'s active Run in this Mission, including other Tasks. If none exists, the message stays pending for future context. Mention Agents only when they need to act; delivery does not confirm they have read or answered.',
     inputSchema: {
       type: 'object',
       required: ['conversationId', 'body'],

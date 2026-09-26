@@ -1,6 +1,7 @@
 import type { IsoTimestamp, ToolCallId } from './ids.js'
 import type { ModelContextMetadata } from './context.js'
 import type { ToolAction, ToolActionInputs } from './tools.js'
+import type { RuntimeRunContext } from './runtime.js'
 
 export type ModelMessageRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -44,10 +45,32 @@ export interface ModelRequest {
 }
 
 export interface ModelUsage {
+  /** False means the provider did not return trustworthy token usage. */
+  readonly usageReported?: boolean
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cachedInputTokens?: number
   readonly estimatedCostUsd?: number
+}
+
+export interface MissionBudgetSnapshot {
+  readonly tokenLimit: number | null
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly totalTokens: number
+  readonly remainingTokens: number | null
+  readonly inFlightCalls: number
+  readonly unknownUsageCalls: number
+  readonly estimatedCostUsd: number | null
+  readonly unpricedCalls: number
+  readonly status: 'unlimited' | 'available' | 'exhausted' | 'usage_unknown'
+}
+
+export interface RuntimeModelBudget {
+  reserveRunCall(run: RuntimeRunContext, callId: string, leaseToken?: string): Promise<boolean>
+  settleModelCall(callId: string, usage: ModelUsage): Promise<void>
+  recordUnknownModelCall(callId: string): Promise<void>
+  cancelModelCall(callId: string): Promise<void>
 }
 
 export interface ModelProtocolError {

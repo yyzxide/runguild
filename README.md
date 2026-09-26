@@ -23,6 +23,50 @@ Conversation
   -> immutable deliverable
 ~~~
 
+## Goal entry
+
+In the Team Room, enter `/goal <desired outcome>` and optionally add one acceptance
+criterion or constraint per line. This creates a new Mission even when another
+goal is active; ordinary messages stay with the selected Mission, and selected
+Agent recipients receive mention delivery. The first ordinary task message also
+retains automatic planning. The Goal page brings
+plan approval, task assignments and dependencies, actual acceptance evidence,
+independent review, integration, and delivery preview into one workflow.
+
+`/goal` is a Web command that creates an ordinary Mission through the existing
+message and planning APIs; it does not introduce a separate Goal service or API.
+The current Web enables `goalVerification` for all three creation paths:
+explicit `/goal`, the first task message when no Mission or planning request is
+active, and promotion of selected historical messages. Existing Missions and
+API callers that omit this option retain the original workflow.
+
+Plans with verification enabled include a visible final verification task.
+The system appends it to 1–99 original tasks before human plan approval.
+After the original tasks complete and required integrations finish, it checks
+the merged result against the original acceptance
+criteria, repairs gaps within scope, and submits a fresh artifact for independent
+review. A Builder performs this task; the Reviewer examines its frozen submission
+and evidence. Review corrections carry into bounded Task retries. Final delivery
+is tied to the current verification Task's approved submission, and a human
+request for changes preserves the original criteria in the repair task. Plans
+and final delivery still require human approval; general replanning of an
+executing DAG is not implemented. This is not a platform-controlled external
+acceptance suite or a guarantee of complete business correctness.
+
+An optional Mission token limit covers planning, execution, and review. The Goal
+page shows recorded usage and allows changing or clearing the limit. Exhaustion
+pauses further model calls and preserves work for continuation. This is a soft
+limit: calls already in flight can exceed it. Missing provider usage is shown as
+unknown and pauses limited Missions; increasing a limit cannot clear unknown usage.
+A limit of `0` stops admission of new model calls. Leaving the creation budget
+blank sets no limit; use the Goal page's remove-limit button or API `null` to
+remove an existing limit. Raising an exhausted limit above recorded spend resumes
+budget waiters without approving unrelated human decisions. Removing the limit
+allows continuation even if unknown usage remains recorded.
+Historical usage may be incomplete, and monetary/time limits are not enforced.
+The existing Evaluation reports still use their own metrics collector and do
+not yet evaluate this complete Goal workflow or use the unified Mission budget ledger.
+
 ## Core principles
 
 1. PostgreSQL stores facts; Redis and WebSocket only announce facts.
@@ -33,26 +77,31 @@ Conversation
 6. Yjs convergence and immutable artifact versions solve different problems.
 7. Every model call, tool call, transition, and cost is traceable.
 
-Latest correctness fixes: [2026-09-16 completion and integration audit follow-up](docs/FIXES_2026-09-16.md).
+Correctness records: [completion and integration fixes](docs/FIXES_2026-09-16.md)
+and [Goal, budget, PostgreSQL, and cross-task messaging fixes](docs/BUGFIX_NOTES_2026-09-26.md).
 
 ## Current status
 
 The control-plane foundation is executable:
 
 - Mission creation, plan proposal, human approval, and DAG materialization;
+- optional final Goal verification and scoped repair, plus a shared Mission
+  token budget covering Planner, execution, and Reviewer calls;
 - durable project and group Conversations with explicit human/Agent membership,
   ordered messages, replies, structured Mission/Task/Run/Artifact references,
   mention delivery state, and idempotent REST commands;
 - `@Agent` routing that turns a message into a durable Steering request for an
-  active Mission Run, or records it for deterministic loading into the Agent's
-  next frozen Run context;
+  active Mission Run, including teammates on different Tasks, or marks it
+  pending. A new Run freezes up to 30 recent Mission messages; durable storage
+  alone does not guarantee every pending request is read or answered;
 - pre-Mission selected-message promotion: a human can freeze one to fifty
   Conversation messages as source facts, atomically create a Mission and
   durable Planner request, and wake the room's active Planner Agent;
 - a crash-safe Planner phase with a fenced lease, bounded model retry budget,
   durable prompt/response/usage snapshots, validated structured DAG output,
   idempotent Mission proposal, a room summary, and an explicit human approval
-  handoff;
+  handoff; Goal-specific validation precedes plan freezing, and deterministic
+  rejection of a stored plan stops replay while preserving diagnostic material;
 - Agent-native `conversation.reply`, so progress and hand-off requests use the
   same typed Tool Gateway and auditable side-effect protocol as code and
   Artifact changes;
@@ -209,10 +258,13 @@ The control-plane foundation is executable:
   token;
 - an exact-version final-delivery gate: after every Task is complete, a
   Workspace human approves the selected immutable Artifact Version before the
-  Mission can move from `reviewing` to `completed`;
+  Mission can move from `reviewing` to `completed`; verification-enabled Missions
+  select the approved result of their current verification Task;
 - a real Team Room with message selection and Planner-to-Mission progress,
-  explicit Agent recipient selection and delivery routing, plus a live Mission
-  dependency cockpit; the Trace surface reads the real project-scoped Run
+  `/goal` creation, explicit Agent recipient selection and delivery routing,
+  plus a Goal page with real per-criterion evidence, current Run and Review,
+  integration state, budget controls, next actions, and an expandable DAG;
+  the Trace surface reads the real project-scoped Run
   ledger with redacted/摘要 data, while the Evaluation Lab lists immutable
   Scenario Versions and project-scoped Experiments, creates paired Trials, and
   rebuilds reports from real persisted metrics; the Artifact surface queries
@@ -222,8 +274,8 @@ The control-plane foundation is executable:
 
 The local suite covers protocol, migrations, Conversation routing, Mission
 orchestration, runtime recovery, tools, Yjs collaboration, review, worktrees,
-authentication, and API contracts. The external PostgreSQL integration test
-remains opt-in. Reviewer usage accounting, project-scoped Workers, real
+authentication, and API contracts. `npm test` includes real PostgreSQL integration
+through an isolated temporary database by default. Reviewer usage accounting, project-scoped Workers, real
 Artifact/Evaluation/Trace projections, cross-instance Artifact fan-out, and
 persistent browser authentication are implemented. The next priority is to
 repeat bounded real-model Missions and paired experiments on a personal
@@ -258,12 +310,15 @@ packages/
 - [Protocol contract](docs/PROTOCOL.md)
 - [个人电脑使用手册](docs/USER_GUIDE_ZH.md)
 - [面试准备与项目讲解](docs/INTERVIEW_GUIDE_ZH.md)
+- [Bug 修复与验证记录](docs/BUGFIX_NOTES_2026-09-26.md)
 - [Database Migration 清单](docs/MIGRATIONS.md)
 - [Environment and machine migration](docs/ENVIRONMENT.md)
 - [Real-model Evaluation run](docs/REAL_EVALUATION_2026-08-31.md)
 - [Web design direction](apps/web/DESIGN.md)
 
 ## Local checks
+
+Use Node.js 22.12.0 or newer, matching the locked Vite toolchain requirement.
 
 ~~~bash
 npm run typecheck
@@ -275,12 +330,16 @@ For the first local Web run, start the control plane with the development-only
 idempotent bootstrap enabled, then open the Web workspace:
 
 ~~~bash
-docker compose up -d postgres redis
-npm run build
+npm ci
 cp .env.example .env
 # Edit .env. Set ENABLE_LOCAL_RUNTIME_CONTROL=true to enable Web process
 # controls, and set OPENAI_API_KEY before starting an Agent Worker.
+docker compose up -d postgres redis
+# Wait for both services to become healthy: docker compose ps
+npm run build
+node --env-file=.env packages/database/dist/cli.js
 npm run api:local
+# In a second terminal:
 npm run web:start
 ~~~
 
@@ -335,9 +394,11 @@ account, assign an Owner/Operator/Viewer role, change that role, or remove the
 member. Membership changes are audited, synchronized to the Project Room, and
 revoke the affected user's active sessions so the next login receives the new
 scope. The final Owner cannot be downgraded or removed.
-Select durable
-messages for the Planner, approve the proposed DAG, and then inspect or switch
-Missions from the same page. An Agent's `active` status means its configuration
+Create a Mission with a first task message, `/goal`, or selected historical
+messages; approve the proposed DAG and then inspect or switch Missions from the
+same page. The Goal page can start the required Workers after approval when
+local control is enabled and configured; external Workers must already be online.
+An Agent's `active` status means its configuration
 is enabled; Worker online/stale/stopped state comes from separately persisted
 process heartbeats. The home page refreshes those heartbeats every five seconds
 and turns a missing Scheduler or Agent Worker into the next corrective action.
@@ -508,6 +569,8 @@ GET  /api/v1/workspaces/:workspaceId/conversation-planning-requests/:requestId
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan/approve
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/delivery/approve
+POST /api/v1/workspaces/:workspaceId/missions/:missionId/delivery/request-changes
+POST /api/v1/workspaces/:workspaceId/missions/:missionId/budget
 POST /api/v1/workspaces/:workspaceId/reviews/:reviewId/retry
 GET  /api/v1/workspaces/:workspaceId/missions/:missionId
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/tasks/:taskId/retry
@@ -544,15 +607,24 @@ Bearer token are not authentication. The header-only adapter remains available
 only through an explicit in-process test option and is not enabled by the
 server entrypoint.
 
-PostgreSQL integration tests are opt-in:
+`npm test` includes the real PostgreSQL integration suite. By default, the test
+runner starts a disposable `postgres:17-alpine` Docker container on a random
+loopback port, applies all migrations to its dedicated `runguild_test` database,
+and removes the container and its temporary data when the command finishes.
+Docker must be running; an unavailable database fails the command instead of
+silently skipping tests. The first run may need to download the image.
 
 ~~~bash
-docker compose up -d postgres
-DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control npm run db:migrate
-docker compose exec postgres createdb -U mission mission_control_test
-TEST_DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control_test npm run test:integration
+npm test                       # Full suite, including real PostgreSQL
+npm run test:integration        # Only the real PostgreSQL suite
+npm run test:without-postgres   # Explicitly reduced suite; no external PostgreSQL
 ~~~
 
-The external integration suite truncates its fixtures between cases and
-therefore refuses to run unless `current_database()` ends in `_test`. Never
-point `TEST_DATABASE_URL` at the development or production RunGuild database.
+To use an existing dedicated test database, set `TEST_DATABASE_URL` explicitly
+when running either full or integration tests. The runner then uses that database
+and does not manage a container. It does not use `DATABASE_URL` or load `.env`.
+The integration suite truncates its fixtures between cases and therefore checks
+both the connection URL and `current_database()` for a name ending in `_test`
+before applying migrations or clearing fixtures. Give each concurrent test run
+its own database. Never point `TEST_DATABASE_URL` at a development or production
+RunGuild database.

@@ -50,6 +50,7 @@ import {
   type ConversationRepository,
   type ConversationPlanningRepository,
   type MissionRepository,
+  type MissionBudgetRepository,
   type DevelopmentSetupRepository,
   type ProjectMembershipRepository,
   type ProjectLifecycleRepository,
@@ -124,6 +125,7 @@ type ArtifactService = Pick<
 
 export interface ApiDependencies {
   readonly missions: MissionService
+  readonly missionBudgets?: Pick<MissionBudgetRepository, 'getSnapshot' | 'setTokenLimit'>
   readonly projectMemberships?: ProjectMembershipService
   readonly projectLifecycle?: ProjectLifecycleService
   readonly projectProvisioning?: ProjectProvisioningService
@@ -219,6 +221,12 @@ const createMissionSchema = z.object({
   goal: z.string().min(1).max(20_000),
   constraints: z.array(z.string().max(2_000)).max(100).default([]),
   acceptanceCriteria: z.array(z.string().max(2_000)).max(100).default([]),
+  goalVerification: z.boolean().optional(),
+  budgetTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+})
+
+const missionBudgetSchema = z.object({
+  tokenLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
 })
 
 const retryTaskSchema = z.object({
@@ -256,6 +264,10 @@ const createConversationPlanningSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, 'Source messages must be unique'),
   title: z.string().min(1).max(200),
   goal: z.string().min(1).max(20_000).optional(),
+  constraints: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  goalVerification: z.boolean().optional(),
+  budgetTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().optional(),
   plannerAgentId: idSchema.optional(),
 })
 
@@ -1150,6 +1162,10 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       sourceMessageIds: body.data.sourceMessageIds as MessageId[],
       title: body.data.title,
       ...(body.data.goal === undefined ? {} : { goal: body.data.goal }),
+      ...(body.data.constraints === undefined ? {} : { constraints: body.data.constraints }),
+      ...(body.data.acceptanceCriteria === undefined ? {} : { acceptanceCriteria: body.data.acceptanceCriteria }),
+      ...(body.data.goalVerification === undefined ? {} : { goalVerification: body.data.goalVerification }),
+      ...(body.data.budgetTokens === undefined ? {} : { budgetTokens: body.data.budgetTokens }),
       ...(body.data.plannerAgentId === undefined
         ? {}
         : { plannerAgentId: body.data.plannerAgentId as AgentId }),
@@ -1195,6 +1211,8 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       goal: body.data.goal,
       constraints: body.data.constraints,
       acceptanceCriteria: body.data.acceptanceCriteria,
+      ...(body.data.goalVerification === undefined ? {} : { goalVerification: body.data.goalVerification }),
+      ...(body.data.budgetTokens === undefined ? {} : { budgetTokens: body.data.budgetTokens }),
       actor: actorRef,
       correlationId: correlationId(req),
     })
@@ -1314,7 +1332,40 @@ export function createApiApp(dependencies: ApiDependencies, options: CreateApiAp
       res.status(404).json({ error: { code: 'mission_not_found' } })
       return
     }
-    res.json(mission)
+    const budget = await dependencies.missionBudgets?.getSnapshot({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      missionId: idSchema.parse(req.params.missionId) as MissionId,
+    })
+    res.json({ ...mission, ...(budget ? { budget } : {}) })
+  }))
+
+  app.post('/api/v1/workspaces/:workspaceId/missions/:missionId/budget', route(async (req, res) => {
+    const actorRef = requestActor(req, res)
+    if (!actorRef) return
+    if (actorRef.kind !== 'user') {
+      res.status(403).json({ error: { code: 'human_budget_change_required' } })
+      return
+    }
+    const body = missionBudgetSchema.safeParse(req.body)
+    if (!body.success) {
+      invalidBody(res, body.error)
+      return
+    }
+    if (!dependencies.missionBudgets) {
+      res.status(503).json({ error: { code: 'mission_budgets_unavailable' } })
+      return
+    }
+    const budget = await dependencies.missionBudgets.setTokenLimit({
+      workspaceId: idSchema.parse(req.params.workspaceId) as WorkspaceId,
+      missionId: idSchema.parse(req.params.missionId) as MissionId,
+      tokenLimit: body.data.tokenLimit,
+      actorId: actorRef.id,
+    })
+    if (!budget) {
+      res.status(404).json({ error: { code: 'mission_not_found' } })
+      return
+    }
+    res.json(budget)
   }))
 
   app.post('/api/v1/workspaces/:workspaceId/missions/:missionId/tasks/:taskId/retry', route(async (req, res) => {

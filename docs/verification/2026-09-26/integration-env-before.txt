@@ -1,0 +1,31 @@
+✔ local supervisor exposes readiness without exposing API credentials (1.928004ms)
+✔ local supervisor injects persisted Worktree setup argv and credentials into the Agent child environment (0.429737ms)
+✖ local Integration uses project verification and preparation argv without model credentials or unrelated defaults (0.35759ms)
+✔ local supervisor refuses duplicate and non-owned process control (0.408316ms)
+✔ local supervisor checks Integration activity in the exact Project scope (0.358942ms)
+✔ local supervisor checks Agent activity in the exact Project scope (0.267929ms)
+✔ ensureWorkspaceRoots creates missing Worktree root with 0700 permissions (8.698771ms)
+✔ ensureWorkspaceRoots rejects an existing non-directory Worktree root (4.764823ms)
+✔ ensureWorkspaceRoots validates repository path before creating Worktree root (1.459534ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 8
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 26.825367
+
+✖ failing tests:
+
+test at apps/api/test/local-worker-supervisor.test.mjs:61:1
+✖ local Integration uses project verification and preparation argv without model credentials or unrelated defaults (0.35759ms)
+  SyntaxError: "undefined" is not valid JSON
+      at JSON.parse (<anonymous>)
+      at TestContext.<anonymous> (file:///home/sid/runguild/apps/api/test/local-worker-supervisor.test.mjs:71:25)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)

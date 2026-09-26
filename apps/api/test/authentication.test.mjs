@@ -300,6 +300,13 @@ test('API ignores spoofed actor headers and enforces Origin, CSRF, Workspace and
       })
       assert.equal(readOnly.status, 403)
       assert.equal((await readOnly.json()).error.code, 'read_only_role')
+      const readOnlyBudget = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/mission/budget', {
+        method: 'POST',
+        headers: { cookie: viewerCookies.header, origin: 'http://127.0.0.1:4173', 'x-csrf-token': viewerCookies.csrf, 'content-type': 'application/json' },
+        body: JSON.stringify({ tokenLimit: null }),
+      })
+      assert.equal(readOnlyBudget.status, 403)
+      assert.equal((await readOnlyBudget.json()).error.code, 'read_only_role')
     })
   })
 })

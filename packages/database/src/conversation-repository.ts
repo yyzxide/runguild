@@ -368,7 +368,7 @@ export class ConversationRepository {
         input.conversationId,
         input.author,
       )
-      await this.assertEntityRefs(client, conversation, refs)
+      await this.assertEntityRefs(client, conversation, refs, input.author)
       const id = input.id ?? ('message_' + randomUUID()) as MessageId
       const inserted = await client.query<MessageRow>(
         'INSERT INTO messages ' +
@@ -446,6 +446,10 @@ export class ConversationRepository {
     mentions: readonly AgentId[],
     refs: ConversationEntityRefs,
   ): Promise<void> {
+    // Agent refs identify the sender's Task/Run. A mentioned teammate may be
+    // working on another Task in the same Mission. Human Task refs retain
+    // their existing meaning as a narrower delivery target.
+    const targetTaskId = input.author.kind === 'user' ? refs.taskId : undefined
     for (const agentId of mentions) {
       const currentRun = input.author.kind === 'agent' && input.author.id === agentId
         ? input.author.runId
@@ -459,7 +463,7 @@ export class ConversationRepository {
         'AND run.agent_id = $3 AND run.status IN ' +
         "('starting', 'running', 'waiting_tool', 'waiting_human') " +
         'AND ($4::text IS NULL OR run.task_id = $4) ORDER BY run.updated_at DESC, run.id DESC LIMIT 1',
-        [input.workspaceId, refs.missionId, agentId, refs.taskId ?? null],
+        [input.workspaceId, refs.missionId, agentId, targetTaskId ?? null],
       )
       const runId = active?.rows[0]?.id as RunId | undefined
       if (runId === undefined) {
@@ -613,7 +617,11 @@ export class ConversationRepository {
     client: PoolClient,
     conversation: ConversationRow,
     refs: ConversationEntityRefs,
+    author: ParticipantActor,
   ): Promise<void> {
+    if (author.kind === 'agent' && author.runId !== undefined && author.runId !== refs.runId) {
+      throw new ConversationScopeError('Agent message Run reference must match its author Run')
+    }
     if (refs.missionId !== undefined) {
       const mission = await client.query<{ conversation_id: string | null }>(
         'SELECT conversation_id FROM missions WHERE id = $1 AND workspace_id = $2 AND project_id = $3 FOR UPDATE',
@@ -637,11 +645,14 @@ export class ConversationRepository {
       if (refs.taskId === undefined || refs.missionId === undefined) {
         throw new ConversationScopeError('A Run reference requires Mission and Task references')
       }
-      const run = await client.query(
-        'SELECT 1 FROM agent_runs WHERE id = $1 AND workspace_id = $2 AND mission_id = $3 AND task_id = $4',
+      const run = await client.query<{ agent_id: string }>(
+        'SELECT agent_id FROM agent_runs WHERE id = $1 AND workspace_id = $2 AND mission_id = $3 AND task_id = $4',
         [refs.runId, conversation.workspace_id, refs.missionId, refs.taskId],
       )
       if (!run.rows[0]) throw new ConversationScopeError('Referenced Run is outside the Task')
+      if (author.kind === 'agent' && run.rows[0].agent_id !== author.id) {
+        throw new ConversationScopeError('Agent message Run reference must belong to its author')
+      }
     }
     if (refs.artifactId !== undefined) {
       const artifact = await client.query(

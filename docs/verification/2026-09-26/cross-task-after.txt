@@ -1,0 +1,14 @@
+✔ conversation.reply steers an Agent in another Task and preserves sender provenance on retry (2864.558828ms)
+✔ conversation.reply leaves unavailable recipients pending, stays in its Mission, and never wakes its sender (2122.085736ms)
+✔ a user message with an explicit Task reference only steers Runs in that Task (2173.107294ms)
+✔ Agent messages reject forged Run provenance before persisting messages or wakeups (1813.675684ms)
+✔ Conversation Repository persists messages and routes mentions into active Runs (2061.010133ms)
+✔ Conversation Repository enforces membership, idempotency, and entity scope (2084.079426ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 13160.05887

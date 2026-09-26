@@ -11,6 +11,7 @@ import {
 
 export interface TraceViewProps {
   readonly identity: TestIdentity
+  readonly initialRunId?: string
 }
 
 const statusLabels: Readonly<Record<string, string>> = {
@@ -162,7 +163,7 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
   )
 }
 
-export function TraceView({ identity }: TraceViewProps) {
+export function TraceView({ identity, initialRunId }: TraceViewProps) {
   const [runs, setRuns] = useState<readonly RunTraceSummary[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<RunTraceDetail | null>(null)
@@ -175,11 +176,15 @@ export function TraceView({ identity }: TraceViewProps) {
     setLoading(true)
     setError(null)
     try {
-      const next = await missionApi.listRunTraces(identity)
+      let next = await missionApi.listRunTraces(identity)
+      if (initialRunId && !next.some((run) => run.runId === initialRunId)) {
+        const requested = await missionApi.getRunTrace(identity, initialRunId)
+        next = [requested, ...next]
+      }
       setRuns(next)
       setSelectedId((current) => {
         if (current && next.some((run) => run.runId === current)) return current
-        return next[0]?.runId ?? null
+        return initialRunId ?? next[0]?.runId ?? null
       })
       if (next.length === 0) setDetail(null)
     } catch (caught) {
@@ -188,7 +193,7 @@ export function TraceView({ identity }: TraceViewProps) {
     } finally {
       setLoading(false)
     }
-  }, [identity])
+  }, [identity, initialRunId])
 
   useEffect(() => { void loadRuns() }, [loadRuns])
 

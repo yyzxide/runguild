@@ -20,6 +20,7 @@ import {
   ExecutionContextRepository,
   InboxRepository,
   MissionRepository,
+  MissionBudgetRepository,
   RuntimeRepository,
   ReviewRepository,
   ReviewerExecutionRepository,
@@ -140,6 +141,7 @@ const inbox = new InboxRepository(pool)
 const tasks = new TaskRepository(pool)
 const contexts = new ExecutionContextRepository(pool)
 const persistence = new RuntimeRepository(pool)
+const budget = new MissionBudgetRepository(pool)
 const completionVerifier = new DatabaseCompletionVerifier(pool)
 const evidence = new EvidenceRepository(pool)
 const toolStore = new ToolExecutionRepository(pool)
@@ -266,6 +268,7 @@ async function createRuntime(
   const model = modelFor(context.modelProvider, context.modelName)
   return new AgentRuntime({
     persistence,
+    budget,
     model,
     tools,
     completionVerifier,
@@ -313,6 +316,7 @@ async function createRuntime(
 }
 
 const planner = new ConversationPlanner({
+  budget,
   planning: conversationPlanning,
   missions,
   conversations: conversationRepository,
@@ -321,6 +325,7 @@ const planner = new ConversationPlanner({
 })
 
 const reviewer = new ArtifactReviewer({
+  budget,
   executions: reviewExecutions,
   reviews,
   modelFor,

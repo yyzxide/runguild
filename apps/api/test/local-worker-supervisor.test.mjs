@@ -44,7 +44,7 @@ test('local supervisor exposes readiness without exposing API credentials', () =
   assert.equal(JSON.stringify(capabilities).includes('postgres://database'), false)
 })
 
-test('local supervisor injects persisted Worktree setup argv into only the Agent child environment', () => {
+test('local supervisor injects persisted Worktree setup argv and credentials into the Agent child environment', () => {
   const supervisor = new LocalWorkerSupervisor({
     databaseUrl: 'postgres://database',
     openaiApiKey: 'secret-value',
@@ -56,11 +56,41 @@ test('local supervisor injects persisted Worktree setup argv into only the Agent
   assert.equal(environment.WORKSPACE_ID, 'workspace')
   assert.equal(environment.PROJECT_ID, 'project')
   assert.equal(environment.OPENAI_API_KEY, 'secret-value')
+})
+
+test('local Integration uses project verification and preparation argv without model credentials or unrelated defaults', () => {
+  const supervisor = new LocalWorkerSupervisor({
+    databaseUrl: 'postgres://database',
+    openaiApiKey: 'secret-value',
+    openaiBaseUrl: 'https://model.example/v1',
+    activity: { async hasActive() { return false } },
+  })
   const integration = supervisor.environmentFor({ kind: 'integration' }, configuration)
   assert.equal(integration.WORKSPACE_ID, 'workspace')
   assert.equal(integration.PROJECT_ID, 'project')
-  assert.equal(integration.AGENT_WORKTREE_SETUP_COMMANDS_JSON, undefined)
+  assert.deepEqual(JSON.parse(integration.AGENT_TEST_COMMANDS_JSON), [['npm', 'test']])
+  assert.deepEqual(JSON.parse(integration.AGENT_WORKTREE_SETUP_COMMANDS_JSON), [['npm', 'ci', '--ignore-scripts']])
+  // The Integration CLI has one timeout for both preparation and verification.
+  assert.equal(integration.INTEGRATION_TEST_TIMEOUT_MS, '240000')
   assert.equal(integration.OPENAI_API_KEY, undefined)
+  assert.equal(integration.OPENAI_BASE_URL, undefined)
+  assert.equal(integration.AGENT_ID, undefined)
+
+  const withoutSetup = supervisor.environmentFor({ kind: 'integration' }, {
+    ...configuration,
+    runtime: { ...configuration.runtime, worktreeSetupCommands: [], agentMaxTestTimeoutMs: 45000 },
+  })
+  assert.equal(withoutSetup.AGENT_TEST_COMMANDS_JSON, '[["npm","test"]]')
+  assert.equal(withoutSetup.AGENT_WORKTREE_SETUP_COMMANDS_JSON, '[]')
+  assert.equal(withoutSetup.INTEGRATION_TEST_TIMEOUT_MS, '45000')
+
+  for (const kind of ['scheduler', 'evaluation']) {
+    const environment = supervisor.environmentFor({ kind }, configuration)
+    assert.equal(environment.AGENT_TEST_COMMANDS_JSON, undefined)
+    assert.equal(environment.AGENT_WORKTREE_SETUP_COMMANDS_JSON, undefined)
+    assert.equal(environment.INTEGRATION_TEST_TIMEOUT_MS, undefined)
+    assert.equal(environment.OPENAI_API_KEY, undefined)
+  }
 })
 
 test('local supervisor refuses duplicate and non-owned process control', async () => {

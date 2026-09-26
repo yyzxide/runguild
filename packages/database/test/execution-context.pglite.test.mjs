@@ -155,6 +155,45 @@ test('execution context freezes Mission, Task, criteria, and exact Skill Version
   }
 })
 
+test('review corrections are scoped to an earlier attempt, bounded, and frozen across restart', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const contexts = new ExecutionContextRepository(poolAdapter(database))
+    const first = await contexts.load('run_context_1', 'agent_context')
+    assert.equal(first.previousReview, undefined)
+    await database.exec(`
+      INSERT INTO artifacts (id, workspace_id, project_id, mission_id, title, created_by)
+        VALUES ('artifact_review', 'ws_context', 'project_context', 'mission_context', 'Result', 'agent_context');
+      INSERT INTO artifact_versions (id, artifact_id, version, content, yjs_state_bytes, content_hash, yjs_state_hash,
+        created_by_run_id, created_by_kind, created_by_id) VALUES
+        ('version_review', 'artifact_review', 1, '{}', decode('', 'hex'), 'content', 'state', 'run_context_1', 'agent', 'agent_context');
+      INSERT INTO task_submissions (id, workspace_id, mission_id, task_id, run_id, artifact_version_id,
+        submitted_by_agent_id, evidence_bundle_hash, status) VALUES
+        ('submission_review', 'ws_context', 'mission_context', 'task_context', 'run_context_1', 'version_review',
+          'agent_context', 'bundle', 'rejected');
+      INSERT INTO reviews (id, workspace_id, mission_id, task_id, submission_id, reviewer_kind, reviewer_id,
+        status, summary, findings, completed_at) VALUES
+        ('review_previous', 'ws_context', 'mission_context', 'task_context', 'submission_review', 'user', 'user_context',
+          'changes_requested', 'Duplicate rows survive retry.', '[]', NOW());
+    `)
+    const findings = Array.from({ length: 25 }, () => ({ severity: 'error', summary: 'x'.repeat(1500),
+      evidenceIds: ['valid_evidence', 'y'.repeat(201), 7] }))
+    await database.query('UPDATE reviews SET findings = $1::jsonb WHERE id = $2', [JSON.stringify(findings), 'review_previous'])
+    const second = await contexts.load('run_context_2', 'agent_context')
+    assert.equal(second.previousReview.artifactVersionId, 'version_review')
+    assert.equal(second.previousReview.summary, 'Duplicate rows survive retry.')
+    assert.equal(second.previousReview.findings.length, 20)
+    assert.equal(second.previousReview.findings[0].summary.length, 1000)
+    assert.deepEqual(second.previousReview.findings[0].evidenceIds, ['valid_evidence'])
+    await database.exec("UPDATE reviews SET summary = 'Changed after context freeze', findings = '[]'")
+    const restarted = await new ExecutionContextRepository(poolAdapter(database)).load('run_context_2', 'agent_context')
+    assert.deepEqual(restarted.previousReview, second.previousReview)
+    assert.equal(restarted.frozenContextHash, second.frozenContextHash)
+    assert.equal((await contexts.load('run_context_1', 'agent_context')).previousReview, undefined)
+  } finally { await database.close() }
+})
+
 test('Skill assignment cannot cross Workspace or pin another Skill version', async () => {
   const database = new PGlite()
   try {

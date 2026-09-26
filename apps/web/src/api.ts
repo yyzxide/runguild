@@ -21,12 +21,30 @@ export interface MissionPlan {
   readonly tasks: readonly PlanTask[]
 }
 
+export interface MissionBudget {
+  readonly tokenLimit: number | null
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly totalTokens: number
+  readonly remainingTokens: number | null
+  readonly inFlightCalls: number
+  readonly unknownUsageCalls: number
+  readonly estimatedCostUsd: number | null
+  readonly unpricedCalls: number
+  readonly status: 'unlimited' | 'available' | 'exhausted' | 'usage_unknown'
+}
+
 export interface MissionSnapshot {
   readonly id: string
   readonly workspaceId: string
   readonly projectId: string
   readonly title: string
   readonly goal: string
+  readonly constraints: readonly string[]
+  readonly acceptanceCriteria: readonly string[]
+  readonly goalVerification: boolean
+  readonly verificationTaskId: string | null
+  readonly budget: MissionBudget
   readonly status: MissionStatus
   readonly planVersion: number
   readonly updatedAt: string
@@ -49,10 +67,60 @@ export interface MissionSnapshot {
   readonly tasks: readonly {
     readonly id: string
     readonly title: string
+    readonly description: string
     readonly status: string
     readonly role: string | null
     readonly priority: number
     readonly dependsOn: readonly string[]
+    readonly attemptCount: number
+    readonly maxAttempts: number
+    readonly reviewRequired: boolean
+    readonly latestRun: {
+      readonly id: string
+      readonly agentId: string
+      readonly agentName: string
+      readonly modelProvider: string
+      readonly modelName: string
+      readonly modelSource: 'observed' | 'configured'
+      readonly status: string
+      readonly currentHop: number
+      readonly maxHops: number
+      readonly startedAt: string | null
+      readonly finishedAt: string | null
+      readonly completionSummary: string | null
+    } | null
+    readonly acceptanceCriteria: readonly {
+      readonly id: string
+      readonly key: string
+      readonly description: string
+      readonly required: boolean
+      readonly requiredEvidenceKinds: readonly string[]
+      readonly evidenceStatus: 'complete' | 'missing'
+      readonly evidence: readonly {
+        readonly id: string
+        readonly kind: string
+        readonly summary: string
+        readonly createdAt: string
+        readonly artifactVersionId: string | null
+      }[]
+    }[]
+    readonly latestReview: {
+      readonly id: string
+      readonly status: string
+      readonly submissionStatus: string
+      readonly artifactVersionId: string
+      readonly isCurrentAttempt: boolean
+      readonly summary: string
+      readonly reviewerName: string | null
+      readonly createdAt: string
+      readonly resolvedAt: string | null
+    } | null
+    readonly integration: {
+      readonly status: string
+      readonly headCommit: string | null
+      readonly integratedCommit: string | null
+      readonly lastError: string | null
+    } | null
   }[]
 }
 
@@ -850,6 +918,20 @@ export const missionApi = {
     )
   },
 
+  retryTask(identity: TestIdentity, missionId: string, taskId: string, reason: string): Promise<unknown> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/missions/${encodeURIComponent(missionId)}/tasks/${encodeURIComponent(taskId)}/retry`,
+      { method: 'POST', headers: actorHeaders(identity.userId), body: JSON.stringify({ reason }) },
+    )
+  },
+
+  setMissionBudget(identity: TestIdentity, missionId: string, tokenLimit: number | null): Promise<MissionBudget> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/missions/${encodeURIComponent(missionId)}/budget`,
+      { method: 'POST', headers: actorHeaders(identity.userId), body: JSON.stringify({ tokenLimit }) },
+    )
+  },
+
   approveDelivery(identity: TestIdentity, missionId: string, expectedArtifactVersionId: string): Promise<void> {
     return request(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/missions/${encodeURIComponent(missionId)}/delivery/approve`,
@@ -907,6 +989,7 @@ export const missionApi = {
     readonly mentions: readonly string[]
     readonly missionId?: string
     readonly replyToMessageId?: string
+    readonly idempotencyKey?: string
   }): Promise<ConversationMessage> {
     const result = await request<{ readonly message: ConversationMessage; readonly reused: boolean }>(
       `/api/v1/workspaces/${encodeURIComponent(input.identity.workspaceId)}/conversations/${encodeURIComponent(input.conversationId)}/messages`,
@@ -914,7 +997,7 @@ export const missionApi = {
         method: 'POST',
         headers: {
           ...actorHeaders(input.identity.userId),
-          'x-idempotency-key': 'web-message-' + crypto.randomUUID(),
+          'x-idempotency-key': input.idempotencyKey ?? 'web-message-' + crypto.randomUUID(),
         },
         body: JSON.stringify({
           body: input.body,
@@ -932,7 +1015,13 @@ export const missionApi = {
     readonly conversationId: string
     readonly sourceMessageIds: readonly string[]
     readonly title: string
+    readonly goal?: string
+    readonly constraints?: readonly string[]
+    readonly acceptanceCriteria?: readonly string[]
+    readonly budgetTokens?: number | null
+    readonly goalVerification?: boolean
     readonly plannerAgentId?: string
+    readonly idempotencyKey?: string
   }): Promise<ConversationPlanningRequest> {
     const result = await request<{
       readonly request: ConversationPlanningRequest
@@ -943,11 +1032,16 @@ export const missionApi = {
         method: 'POST',
         headers: {
           ...actorHeaders(input.identity.userId),
-          'x-idempotency-key': 'web-planning-' + crypto.randomUUID(),
+          'x-idempotency-key': input.idempotencyKey ?? 'web-planning-' + crypto.randomUUID(),
         },
         body: JSON.stringify({
           sourceMessageIds: input.sourceMessageIds,
           title: input.title,
+          ...(input.goal === undefined ? {} : { goal: input.goal }),
+          ...(input.constraints === undefined ? {} : { constraints: input.constraints }),
+          ...(input.acceptanceCriteria === undefined ? {} : { acceptanceCriteria: input.acceptanceCriteria }),
+          ...(input.budgetTokens === undefined ? {} : { budgetTokens: input.budgetTokens }),
+          ...(input.goalVerification === undefined ? {} : { goalVerification: input.goalVerification }),
           ...(input.plannerAgentId ? { plannerAgentId: input.plannerAgentId } : {}),
         }),
       },

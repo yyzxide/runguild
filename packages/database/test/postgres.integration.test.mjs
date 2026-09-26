@@ -14,13 +14,32 @@ import {
 } from '../dist/index.js'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
-if (!databaseUrl && process.env.REQUIRE_POSTGRES === '1') {
-  throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
+if (!databaseUrl) {
+  throw new Error(
+    'PostgreSQL integration tests require TEST_DATABASE_URL. Run npm test or npm run test:integration ' +
+    'to start an isolated test database, or provide a dedicated PostgreSQL URL whose database name ends in _test.',
+  )
 }
 
 function isDedicatedTestDatabaseName(name) {
   return typeof name === 'string' && name.endsWith('_test')
 }
+
+function assertDedicatedTestDatabaseUrl(value) {
+  let url
+  let name
+  try {
+    url = new URL(value)
+    name = decodeURIComponent(url.pathname.slice(1))
+  } catch {
+    throw new Error('TEST_DATABASE_URL must be a valid PostgreSQL URL for a dedicated _test database')
+  }
+  if (!['postgres:', 'postgresql:'].includes(url.protocol) || !isDedicatedTestDatabaseName(name)) {
+    throw new Error('TEST_DATABASE_URL must be a PostgreSQL URL whose database name ends in _test')
+  }
+}
+
+assertDedicatedTestDatabaseUrl(databaseUrl)
 
 async function assertDedicatedTestDatabase(pool) {
   const result = await pool.query('SELECT current_database() AS name')
@@ -37,6 +56,10 @@ test('PostgreSQL integration suite requires a dedicated _test database name', ()
   assert.equal(isDedicatedTestDatabaseName('mission_control'), false)
   assert.equal(isDedicatedTestDatabaseName('production'), false)
   assert.equal(isDedicatedTestDatabaseName(undefined), false)
+  assert.doesNotThrow(() => assertDedicatedTestDatabaseUrl('postgresql://localhost/mission_control_test'))
+  assert.throws(() => assertDedicatedTestDatabaseUrl('postgresql://localhost/mission_control'))
+  assert.throws(() => assertDedicatedTestDatabaseUrl('http://localhost/mission_control_test'))
+  assert.throws(() => assertDedicatedTestDatabaseUrl('not a connection URL'))
 })
 
 async function resetDatabase(pool) {
@@ -59,68 +82,95 @@ async function seedMission(pool) {
   )
 }
 
-test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) => {
+async function seedClaimableTask(pool) {
+  await resetDatabase(pool)
+  await seedMission(pool)
+  await pool.query(
+    "INSERT INTO tasks (id, mission_id, title, status, required_role) " +
+    "VALUES ('task_claim', 'mission_test', 'Claim me', 'ready', 'builder')",
+  )
+  await pool.query(
+    "INSERT INTO task_dispatches " +
+    "(id, workspace_id, mission_id, task_id, agent_id, attempt, dispatch_token, expires_at) " +
+    "VALUES ('dispatch_claim', 'ws_test', 'mission_test', 'task_claim', 'agent_a', 1, " +
+    "'dispatch_token_claim', NOW() + INTERVAL '60 seconds')",
+  )
+}
+
+function claimInput(runId, agentId = 'agent_a') {
+  return {
+    workspaceId: 'ws_test',
+    projectId: 'project_test',
+    missionId: 'mission_test',
+    taskId: 'task_claim',
+    agentId,
+    runId,
+    correlationId: 'correlation_claim',
+    dispatchToken: 'dispatch_token_claim',
+    leaseSeconds: 60,
+  }
+}
+
+test('PostgreSQL coordination integration', async (t) => {
   const pool = new Pool({ connectionString: databaseUrl, max: 10 })
   try {
     await assertDedicatedTestDatabase(pool)
     await runMigrations(pool)
 
-    await t.test('only one competing agent claims a ready task', async () => {
-      await resetDatabase(pool)
-      await seedMission(pool)
-      await pool.query(
-        "INSERT INTO tasks (id, mission_id, title, status, required_role) " +
-        "VALUES ('task_claim', 'mission_test', 'Claim me', 'ready', 'builder')",
+    await t.test('a different agent cannot consume another agent\'s dispatch', async () => {
+      await seedClaimableTask(pool)
+      assert.deepEqual(await new TaskRepository(pool).claimTask(claimInput('run_foreign', 'agent_b')), {
+        claimed: false, reason: 'not_claimable',
+      })
+      const state = await pool.query(
+        "SELECT t.status AS task_status, t.attempt_count, d.status AS dispatch_status, " +
+        "(SELECT COUNT(*)::int FROM agent_runs WHERE task_id = t.id) AS runs " +
+        "FROM tasks t JOIN task_dispatches d ON d.task_id = t.id WHERE t.id = 'task_claim'",
       )
-      await pool.query(
-        "INSERT INTO task_dispatches " +
-        "(id, workspace_id, mission_id, task_id, agent_id, attempt, dispatch_token, expires_at) " +
-        "VALUES ('dispatch_claim', 'ws_test', 'mission_test', 'task_claim', 'agent_a', 1, " +
-        "'dispatch_token_claim', NOW() + INTERVAL '60 seconds')",
-      )
+      assert.deepEqual(state.rows[0], {
+        task_status: 'ready', attempt_count: 0, dispatch_status: 'pending', runs: 0,
+      })
+    })
 
-      const repository = new TaskRepository(pool)
-      const [first, second] = await Promise.all([
-        repository.claimTask({
-          workspaceId: 'ws_test',
-          projectId: 'project_test',
-          missionId: 'mission_test',
-          taskId: 'task_claim',
-          agentId: 'agent_a',
-          runId: 'run_a',
-          correlationId: 'correlation_claim',
-          dispatchToken: 'dispatch_token_claim',
-          leaseSeconds: 60,
-        }),
-        repository.claimTask({
-          workspaceId: 'ws_test',
-          projectId: 'project_test',
-          missionId: 'mission_test',
-          taskId: 'task_claim',
-          agentId: 'agent_b',
-          runId: 'run_b',
-          correlationId: 'correlation_claim',
-          dispatchToken: 'dispatch_token_claim',
-          leaseSeconds: 60,
-        }),
-      ])
-
-      assert.equal([first, second].filter((result) => result.claimed).length, 1)
-      assert.equal([first, second].filter((result) => !result.claimed).length, 1)
-      const counts = await pool.query(
-        "SELECT " +
-        "(SELECT COUNT(*)::int FROM task_leases WHERE task_id = 'task_claim') AS leases, " +
-        "(SELECT COUNT(*)::int FROM agent_runs WHERE task_id = 'task_claim') AS runs",
-      )
-      assert.deepEqual(counts.rows[0], { leases: 1, runs: 1 })
+    await t.test('competing connections consume the same authorized dispatch only once', async () => {
+      await seedClaimableTask(pool)
+      const left = new Pool({ connectionString: databaseUrl, max: 1 })
+      const right = new Pool({ connectionString: databaseUrl, max: 1 })
+      try {
+        const [leftBackend, rightBackend] = await Promise.all([
+          left.query('SELECT pg_backend_pid() AS pid'),
+          right.query('SELECT pg_backend_pid() AS pid'),
+        ])
+        assert.notEqual(leftBackend.rows[0].pid, rightBackend.rows[0].pid)
+        const results = await Promise.all([
+          new TaskRepository(left).claimTask(claimInput('run_a')),
+          new TaskRepository(right).claimTask(claimInput('run_b')),
+        ])
+        assert.equal(results.filter((result) => result.claimed).length, 1)
+        assert.deepEqual(results.find((result) => !result.claimed), {
+          claimed: false, reason: 'not_claimable',
+        })
+        const counts = await pool.query(
+          "SELECT " +
+          "(SELECT COUNT(*)::int FROM task_leases WHERE task_id = 'task_claim') AS leases, " +
+          "(SELECT COUNT(*)::int FROM agent_runs WHERE task_id = 'task_claim') AS runs, " +
+          "(SELECT attempt_count FROM tasks WHERE id = 'task_claim') AS attempts, " +
+          "(SELECT status FROM task_dispatches WHERE id = 'dispatch_claim') AS dispatch_status",
+        )
+        assert.deepEqual(counts.rows[0], { leases: 1, runs: 1, attempts: 1, dispatch_status: 'consumed' })
+      } finally {
+        await Promise.all([left.end(), right.end()])
+      }
     })
 
     await t.test('expired lease times out the run and makes work ready again', async () => {
+      await seedClaimableTask(pool)
+      const repository = new TaskRepository(pool)
+      assert.equal((await repository.claimTask(claimInput('run_expired'))).claimed, true)
       await pool.query(
         "UPDATE task_leases SET heartbeat_at = NOW() - INTERVAL '10 seconds', " +
         "expires_at = NOW() - INTERVAL '1 second' WHERE task_id = 'task_claim'",
       )
-      const repository = new TaskRepository(pool)
       const recovered = await repository.recoverExpiredLeases(10, 'correlation_recovery')
       assert.deepEqual(recovered, ['task_claim'])
 
@@ -176,6 +226,12 @@ test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) =>
     })
 
     await t.test('outbox rows are exclusively claimed and explicitly published', async () => {
+      await resetDatabase(pool)
+      await seedMission(pool)
+      await new InboxRepository(pool).enqueue({
+        id: 'inbox_outbox', workspaceId: 'ws_test', agentId: 'agent_a', missionId: 'mission_test',
+        kind: 'task.ready', payload: { taskId: 'task_outbox' }, dedupeKey: 'task.ready:task_outbox',
+      })
       const outbox = new OutboxRepository(pool)
       const [left, right] = await Promise.all([
         outbox.claimBatch({ limit: 10, claimSeconds: 30 }),
@@ -227,7 +283,7 @@ test('PostgreSQL coordination integration', { skip: !databaseUrl }, async (t) =>
       })).archivedAt, null)
     })
 
-    await t.test('completing a reviewed task unlocks its dependent', async () => {
+    await t.test('completing a task unlocks its dependent', async () => {
       await resetDatabase(pool)
       await seedMission(pool)
       await pool.query(

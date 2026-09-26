@@ -26,27 +26,31 @@ durations, tokens, and event sequence values.
 
 ## Layout
 
-The page behaves like an engineering instrument: narrow navigation, a wide
-Mission topology surface, and a persistent evidence rail.
+The page keeps narrow navigation and gives each operational surface room for
+its current work. The Mission route now uses `GoalView`: the next action and
+original contract come before task details, with the dependency graph available
+as an expandable view. The same route can display ordinary Missions and Missions
+with Goal verification enabled.
 
 ~~~text
-+------+--------------------------------------+------------------+
-| nav  | mission contract                     | system / actions |
-|      +--------------------------------------+------------------+
-|      |                                      |                  |
-|      |       dependency topology            | evidence spine   |
-|      |       selected Task expands          | live event chain |
-|      |                                      |                  |
-|      +----------------------+---------------+                  |
-|      | selected run detail  | agent roster  |                  |
-+------+----------------------+---------------+------------------+
++------+---------------------------------------------------------+
+| nav  | Mission / next action / budget                          |
+|      +---------------------------------------------------------+
+|      | original acceptance criteria / constraints / plan       |
+|      +----------------------+----------------------------------+
+|      | task list and owner  | selected Task: Run, dependencies, |
+|      |                      | evidence, Review, Integration    |
+|      +----------------------+----------------------------------+
+|      | expandable task DAG / delivery preview and feedback     |
++------+---------------------------------------------------------+
 ~~~
 
 ## Signature
 
-The Evidence Spine is a vertical, numbered chain whose nodes are durable facts,
-not decorative steps. Selecting a Task filters the chain to the proof that can
-advance that Task.
+Evidence remains the organizing principle: selecting a Task reveals the
+criterion evidence, current Review, exact commit and Integration facts that
+allow it to advance. A completed task count is not a goal-coverage percentage,
+and evidence completeness is not a substitute for Review or human acceptance.
 
 ## Implemented operator surfaces
 
@@ -59,9 +63,20 @@ advance that Task.
   cards remain visible as preserved history, cannot be entered, and explain
   the quiescent-execution requirement before confirmation.
 - **协作室** displays durable messages, explicit recipients, selected-message
-  planning, and Planner progress.
-- **Mission** projects the real Task DAG, gates, Runs, Evidence, Review,
-  Integration, and final-delivery state.
+  planning, and Planner progress. `/goal` explicitly creates an independent
+  Mission with optional criteria, constraints, and Token budget. Ordinary
+  messages supplement the current Mission; with no selected Mission or active
+  planning, the first request also starts a Goal. Historical-message planning
+  remains available. The composer states whether a message starts new work or
+  belongs to the current work.
+- **目标 / Mission** projects the original contract, next action, actual Task
+  ownership and dependencies, latest Runs, per-criterion Evidence, current
+  Review, Integration, and final-delivery state. Current Web planning enables
+  Goal verification; older Missions keep their existing flow. The page labels
+  the final verification task when enabled, displays immutable delivery text,
+  and offers reasoned task retry, final approval, or feedback that appends a
+  repair task. Run details open the selected Run, including older Runs outside
+  the recent list.
 - **协作产物** reads the real Project Artifact ledger, reconstructs LIVE Yjs
   state, and switches to exact immutable Versions.
 - **评测实验** lists persisted Scenario Versions and Experiments and rebuilds
@@ -79,6 +94,35 @@ Agent, Mission, Worker, Worktree, Evidence, Artifact, Review, Integration, and
 Evaluation remain visible. Model names, commit ids, token counts, durations,
 event sequence values, and failure codes use monospace treatment.
 
+## Goal interaction rules
+
+- Goal extends the existing Mission workflow. Plan approval is still required;
+  it is not an alternative way to bypass planning, Review, or human delivery.
+- After an explicit approval or continue action, execution preflight checks the
+  current Project, active roles, configuration, and Worker state. With local
+  runtime control enabled, it starts missing eligible Agent, Integration, and
+  Scheduler processes. Partial starts remain visible and can be retried;
+  polling alone does not start execution workers.
+- Final verification waits for all original tasks to complete and integrate.
+  Its Builder checks the combined result and may repair within the approved
+  scope; independent Review and human final approval remain separate gates.
+  Exhausted attempts and unresolved blockers need operator attention.
+- Budget shows known cumulative input/output Tokens, admitted calls still in
+  flight, unknown usage, and missing pricing. It gates new model calls, so later
+  settlement can exceed the limit. Unknown usage with a finite limit is a
+  distinct wait: increasing the limit does not make the missing usage known.
+- The budget form changes the total limit without clearing usage. Zero blocks
+  new calls; removing the limit permits continuation without a bounded total.
+  A missing price produces an unavailable estimate, not a zero-cost claim.
+- Next-action text explains planning approval, task failure, human wait, budget
+  wait, terminal verification, or delivery. Feedback asks for the unmet
+  criterion or concrete correction, and preserves existing deliverables while
+  the new repair task runs. Read-only users see facts without these controls.
+- Dependency and upstream-task displays describe current task relationships;
+  they must not imply a durable request/reply lifecycle or automatically
+  frozen handoff package. Reviewer approval must not imply an independent
+  platform acceptance suite has rerun the work.
+
 ## Data and security boundary
 
 No main operator surface may substitute sample metrics, sample Missions, or
@@ -95,4 +139,4 @@ An early direction used a dark background with green status lights. That is a
 common AI dashboard default and weakens the distinction between evidence and
 decoration. The revised cold-paper cockpit spends saturated color only on
 execution semantics. Large gradient KPI cards and glass panels were removed;
-the DAG and Evidence Spine carry the identity instead.
+task relationships and attributable evidence carry the identity instead.
