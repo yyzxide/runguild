@@ -1,9 +1,17 @@
 # RunGuild
 
+[![CI](https://github.com/yyzxide/runguild/actions/workflows/ci.yml/badge.svg)](https://github.com/yyzxide/runguild/actions/workflows/ci.yml)
+
 RunGuild is a verifiable execution platform where humans and
 persistent AI agent teams turn conversations into software-engineering
 missions, execute dependency-aware task graphs, collaborate on shared
 artifacts, and finish through evidence-based review.
+
+The dated [delivery status](docs/DELIVERY_STATUS_2026-09-14.md) maps the current
+implementation, CI, browser acceptance, and real-model evidence to the earlier
+audit findings. The new [18-Trial report](docs/REAL_EVALUATION_2026-09-14.md)
+keeps measured results and limitations separate from deterministic platform
+claims.
 
 This repository is intentionally implemented independently. Cumora is used as
 a study reference for durable agent runtime, inbox/wake, typed actions,
@@ -33,8 +41,11 @@ retains automatic planning. The Goal page brings
 plan approval, task assignments and dependencies, actual acceptance evidence,
 independent review, integration, and delivery preview into one workflow.
 
-`/goal` is a Web command that creates an ordinary Mission through the existing
-message and planning APIs; it does not introduce a separate Goal service or API.
+`/goal` is a Web command that creates an ordinary Mission through the atomic
+Conversation task-submission API. Its source message and Planning Request are
+committed together; browser recovery retains the same request ID and complete
+Goal contract. Selected historical messages use the planning API directly.
+There is no separate Goal service.
 The current Web enables `goalVerification` for all three creation paths:
 explicit `/goal`, the first task message when no Mission or planning request is
 active, and promotion of selected historical messages. Existing Missions and
@@ -227,12 +238,19 @@ The control-plane foundation is executable:
   tasks inside one Trial to integrate sequentially without contaminating the
   project branch or another Trial;
 - aggregate and paired reports for success, wall time, estimated cost, tokens,
-  rework, Tool failures, review churn, and context compaction;
-- a completed real-model paired system run, documented in
-  [`docs/REAL_EVALUATION_2026-08-31.md`](docs/REAL_EVALUATION_2026-08-31.md),
-  which preserved isolated Trial refs and exposed concrete retry, Review
-  assignment, hop-budget, and pricing-ledger gaps instead of hiding them with
-  mocks;
+  rework, Tool failures, review churn, and context compaction; unavailable
+  provider prices remain `null` instead of becoming fake zero-cost evidence,
+  and fewer than three complete pairs are labelled exploratory;
+- an evidence-grade real-model evaluation across local bug repair, API
+  implementation, and a cross-module policy change: 18/18 post-fix Trials
+  completed from frozen baselines, with exact requested/returned model and
+  endpoint provenance, protected-test integrity, redacted machine-readable
+  Run Traces, and explicit cost/statistical limitations; a separate live probe
+  recorded a real model patch denied by the protected-path policy before the
+  Trial recovered and completed. The current report is
+  [`docs/REAL_EVALUATION_2026-09-14.md`](docs/REAL_EVALUATION_2026-09-14.md),
+  while the earlier fault-finding run remains in
+  [`docs/REAL_EVALUATION_2026-08-31.md`](docs/REAL_EVALUATION_2026-08-31.md);
 - a responsive React operator workspace whose home page derives one next action
   from real API, Workspace, Conversation, Plan, and Mission state; it restores
   the real Project repository/branch, configured Agent models, project-scoped
@@ -282,9 +300,9 @@ through an isolated temporary database by default. Reviewer usage accounting, pr
 Artifact/Evaluation/Trace projections, cross-instance Artifact fan-out, and
 persistent browser authentication are implemented. The next priority is to
 repeat bounded real-model Missions and paired experiments on a personal
-machine, then improve recovery diagnostics, cost observability, and operator
-ergonomics from those traces. Public deployment hardening is optional while
-RunGuild remains a personal-machine system.
+machine. The platform does not claim a multi-Agent advantage until that bounded
+experiment has enough complete pairs. Public deployment hardening is optional
+while RunGuild remains a personal-machine system.
 
 ## Repository layout
 
@@ -326,6 +344,7 @@ Use Node.js 22.12.0 or newer, matching the locked Vite toolchain requirement.
 ~~~bash
 npm run typecheck
 npm test
+npm run test:e2e # requires E2E_DATABASE_URL or TEST_DATABASE_URL ending in _test
 npm run web:start
 ~~~
 
@@ -462,6 +481,14 @@ supports multiline patch bodies without accepting missing delimiters, broken
 quotes, non-object arguments, or unknown tools; the official endpoint remains
 strict-only.
 
+Every model ledger entry now separates the configured model from the model
+identifier actually returned by the provider and records the exact normalized
+`/responses` endpoint. The same provenance is persisted for execution Agents,
+automatic Reviewers, and the Conversation Planner. Endpoint validation rejects
+embedded credentials, query strings, fragments, and non-loopback plaintext
+HTTP, so the redacted Run Trace can expose routing evidence without leaking an
+API key. Historical rows remain explicitly unknown rather than being inferred.
+
 Run the API and scheduler worker:
 
 ~~~bash
@@ -472,6 +499,12 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control npm run
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control REDIS_URL=redis://localhost:6379 npm run api:start
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control REDIS_URL=redis://localhost:6379 npm run worker:start
 ~~~
+
+For a bounded real-model single-Agent versus multi-Agent comparison, use the
+committed fixture materializer and live harness documented in
+[`docs/LIVE_EVALUATION_RUNBOOK_ZH.md`](docs/LIVE_EVALUATION_RUNBOOK_ZH.md).
+The exported Trial metrics include grouped execution-Agent and Reviewer model
+provenance; the harness never reads or serializes the API key.
 
 Run one Agent execution process after creating an Agent row. The process
 provisions the Task Worktree from the Project default branch. Repository and
@@ -491,6 +524,8 @@ AGENT_CONTEXT_INPUT_TOKENS=65536 \
 AGENT_WORKTREE_SETUP_COMMANDS_JSON='[["npm","ci","--ignore-scripts","--no-audit","--no-fund"]]' \
 AGENT_WORKTREE_SETUP_TIMEOUT_MS=300000 \
 AGENT_TEST_COMMANDS_JSON='[["npm","test"],["npm","run","typecheck"]]' \
+AGENT_PROTECTED_TEST_PATHS_JSON='["packages/database/test","packages/workspace-tools/test","package.json"]' \
+AGENT_TEST_SANDBOX_JSON='{"mode":"bubblewrap","network":"none","maxProcesses":128,"maxOpenFiles":1024,"maxFileSizeMb":512}' \
 npm run agent:start
 ~~~
 
@@ -567,6 +602,7 @@ POST /api/v1/workspaces/:workspaceId/projects/:projectId/conversations
 GET  /api/v1/workspaces/:workspaceId/projects/:projectId/conversations
 GET  /api/v1/workspaces/:workspaceId/conversations/:conversationId/messages
 POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/messages
+POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/task-submissions
 POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/planning-requests
 GET  /api/v1/workspaces/:workspaceId/conversation-planning-requests/:requestId
 POST /api/v1/workspaces/:workspaceId/missions/:missionId/plan
@@ -631,3 +667,13 @@ both the connection URL and `current_database()` for a name ending in `_test`
 before applying migrations or clearing fixtures. Give each concurrent test run
 its own database. Never point `TEST_DATABASE_URL` at a development or production
 RunGuild database.
+
+The GitHub Actions workflow provides a dedicated PostgreSQL 17 service whose
+database name ends in `_test`, so the full suite, including coordination, runs
+on every push to `main` and every pull request instead of being skipped. The
+same job starts the real local-mode API and Vite Web application in Chromium;
+it verifies that a greeting remains an ordinary durable message while a task
+request atomically creates a Mission and starts planning without a second
+manual action. Artifact, Evaluation, and Trace are route-split production
+chunks and are also loaded by browser acceptance, keeping the main bundle below
+Vite's 500 kB warning threshold.

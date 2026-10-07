@@ -59,8 +59,12 @@ export class EvidenceRepository {
       throw new Error('Evidence uri and contentHash are required')
     }
     return withTransaction(this.pool, async (client) => {
-      const successfulExecutionEvidence = !['test_run', 'command_result'].includes(input.kind)
-        || input.metadata['passed'] === true
+      const successfulExecutionEvidence = input.kind === 'test_run'
+        ? input.metadata['passed'] === true
+          && input.metadata['clean'] === true
+          && input.metadata['stable'] === true
+          && input.metadata['protectedTestsIntact'] === true
+        : input.kind !== 'command_result' || input.metadata['passed'] === true
       const criteria = successfulExecutionEvidence
         ? await client.query<{ id: string }>(
             'SELECT id FROM task_acceptance_criteria ' +

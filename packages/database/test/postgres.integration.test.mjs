@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { createHash, randomUUID } from 'node:crypto'
+import { readFile, readdir } from 'node:fs/promises'
 import test from 'node:test'
 
 import { Pool } from 'pg'
@@ -111,11 +113,105 @@ function claimInput(runId, agentId = 'agent_a') {
   }
 }
 
+const goalHistory = ['0027_mission_budget.sql', '0028_goal_verification.sql']
+const mainHistory = [
+  '0027_protected_test_paths.sql', '0028_test_sandbox_config.sql',
+  '0029_evaluation_unknown_pricing.sql', '0030_model_provider_provenance.sql',
+]
+
+async function verifyHistoricalUpgrade(admin, history) {
+  const schema = 'migration_upgrade_' + randomUUID().replaceAll('-', '')
+  await admin.query('CREATE SCHEMA "' + schema + '"')
+  const pool = new Pool({ connectionString: databaseUrl, max: 1, options: '-c search_path=' + schema })
+  try {
+    await pool.query('CREATE TABLE schema_migrations (' +
+      'name TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())')
+    const folder = new URL('../migrations/', import.meta.url)
+    const common = (await readdir(folder)).filter((name) => /^00\d\d_.*\.sql$/.test(name)
+      && Number(name.slice(0, 4)) <= 26).sort()
+    assert.equal(common.length, 26)
+    const applyHistorical = async (names) => {
+      for (const name of names) {
+        const sql = await readFile(new URL(name, folder), 'utf8')
+        await pool.query(sql)
+        await pool.query(
+          "INSERT INTO schema_migrations (name, checksum, applied_at) VALUES ($1, $2, '2026-09-26T00:00:00Z')",
+          [name, createHash('sha256').update(sql).digest('hex')],
+        )
+      }
+    }
+    await applyHistorical(common)
+    await seedMission(pool)
+    await pool.query("INSERT INTO tasks (id, mission_id, title, status, attempt_count) " +
+      "VALUES ('task_upgrade', 'mission_test', 'Keep existing work', 'running', 1)")
+    await pool.query("INSERT INTO agent_runs (id, workspace_id, mission_id, task_id, agent_id, attempt, status) " +
+      "VALUES ('run_upgrade', 'ws_test', 'mission_test', 'task_upgrade', 'agent_a', 1, 'running')")
+    await pool.query("INSERT INTO llm_calls " +
+      '(id, workspace_id, mission_id, task_id, run_id, hop, provider, model, status, request_hash, ' +
+      'request_redacted, input_tokens, output_tokens) VALUES ' +
+      "('call_upgrade', 'ws_test', 'mission_test', 'task_upgrade', 'run_upgrade', 1, 'test', 'test', " +
+      "'succeeded', 'request-hash', '{}', 7, 5)")
+    await applyHistorical(history === 'goal' ? goalHistory : mainHistory)
+    if (history === 'goal') {
+      await pool.query("UPDATE missions SET budget_tokens = 0, goal_verification = TRUE, " +
+        "verification_task_id = 'task_upgrade' WHERE id = 'mission_test'")
+    }
+    await pool.query("INSERT INTO project_runtime_configs (project_id, workspace_id) VALUES ('project_test', 'ws_test')")
+    if (history === 'main') {
+      await pool.query("UPDATE project_runtime_configs SET protected_test_paths = '[\"tests/acceptance.mjs\"]', " +
+        "test_sandbox_mode = 'bubblewrap', test_network_mode = 'none', test_max_processes = 256 " +
+        "WHERE project_id = 'project_test'")
+      await pool.query("UPDATE llm_calls SET endpoint = 'https://provider.example/v1', " +
+        "returned_model = 'observed-model' WHERE id = 'call_upgrade'")
+    }
+    const original = (await pool.query('SELECT name, checksum, applied_at FROM schema_migrations ORDER BY name')).rows
+
+    assert.deepEqual(await runMigrations(pool), history === 'goal' ? mainHistory : goalHistory)
+    assert.deepEqual(await runMigrations(pool), [], 'repeat startup must not replay either historical branch')
+    const retained = (await pool.query(
+      'SELECT name, checksum, applied_at FROM schema_migrations WHERE name = ANY($1::text[]) ORDER BY name',
+      [original.map((row) => row.name)],
+    )).rows
+    assert.deepEqual(retained, original, 'historical identities, checksums and timestamps must survive')
+    assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM schema_migrations')).rows[0].count, 32)
+    const mission = (await pool.query(
+      'SELECT title, budget_tokens, goal_verification, verification_task_id FROM missions WHERE id = $1',
+      ['mission_test'],
+    )).rows[0]
+    assert.equal(mission.title, 'Mission')
+    assert.equal(mission.goal_verification, history === 'goal')
+    assert.equal(mission.budget_tokens, history === 'goal' ? '0' : null)
+    assert.equal(mission.verification_task_id, history === 'goal' ? 'task_upgrade' : null)
+    assert.deepEqual((await pool.query(
+      "SELECT id, input_tokens, output_tokens, status FROM mission_model_calls WHERE mission_id = 'mission_test'",
+    )).rows, [{ id: 'legacy:execution:call_upgrade', input_tokens: '7', output_tokens: '5', status: 'completed' }])
+    const runtime = (await pool.query('SELECT protected_test_paths, test_sandbox_mode, test_network_mode, ' +
+      "test_max_processes FROM project_runtime_configs WHERE project_id = 'project_test'")).rows[0]
+    assert.deepEqual(runtime, history === 'main'
+      ? { protected_test_paths: ['tests/acceptance.mjs'], test_sandbox_mode: 'bubblewrap', test_network_mode: 'none', test_max_processes: 256 }
+      : { protected_test_paths: [], test_sandbox_mode: 'trusted_process', test_network_mode: 'host', test_max_processes: 128 })
+    assert.deepEqual((await pool.query(
+      "SELECT endpoint, returned_model FROM llm_calls WHERE id = 'call_upgrade'",
+    )).rows[0], history === 'main'
+      ? { endpoint: 'https://provider.example/v1', returned_model: 'observed-model' }
+      : { endpoint: null, returned_model: null })
+  } finally {
+    await pool.end()
+    await admin.query('DROP SCHEMA "' + schema + '" CASCADE')
+  }
+}
+
 test('PostgreSQL coordination integration', async (t) => {
   const pool = new Pool({ connectionString: databaseUrl, max: 10 })
   try {
     await assertDedicatedTestDatabase(pool)
     await runMigrations(pool)
+
+    for (const history of ['goal', 'main']) {
+      await t.test('upgrades the existing ' + history + ' migration history without replay or data loss', async () => {
+        await verifyHistoricalUpgrade(pool, history)
+      })
+    }
 
     await t.test('a different agent cannot consume another agent\'s dispatch', async () => {
       await seedClaimableTask(pool)

@@ -195,6 +195,12 @@ An already stored invalid Goal plan, or a deterministic repository refusal of
 the proposal, terminates the Planning Request with a visible error rather than
 replaying the same unusable plan indefinitely.
 
+Planner and Reviewer ledgers preserve three distinct provenance fields: the
+configured model, the exact normalized transport endpoint, and the model name
+returned by the provider. The ordinary Agent LLM ledger uses the same contract.
+These are facts from different points in the request lifecycle and are not
+silently collapsed into one label.
+
 The current Planner contract represents independent approval as
 `reviewRequired=true` on the producing Task. It must not generate a downstream
 Reviewer Task solely to approve that parent: the parent cannot complete until
@@ -640,7 +646,8 @@ text-only approval can never become a database Review decision.
 
 ## 8. Repository execution
 
-Each Builder task receives an isolated Git worktree and sandbox identity:
+Each Builder task receives an isolated Git worktree and an explicit test
+execution policy:
 
 ~~~text
 project repository
@@ -650,9 +657,15 @@ project repository
   +-- integration worktree
 ~~~
 
-File tools are path-scoped to the assigned worktree. Shell commands run with
-time, output, environment, and resource limits. Integration happens only after
-tests and review gates pass.
+File tools are path-scoped to the assigned worktree. `trusted_process` is the
+portable compatibility mode and is deliberately reported as sharing the Agent
+Worker's host permission domain. On Linux, `bubblewrap` is the fail-closed
+sandbox mode: it creates user/PID/IPC/UTS namespaces, optionally removes the
+network namespace, clears the environment, exposes only read-only system
+runtime directories plus the writable Task Worktree, and applies CPU, process,
+open-file, output-file, time, and captured-output limits. It never silently
+falls back to trusted execution. Integration happens only after tests and
+review gates pass.
 
 The Agent Worker normally resolves the Project's default branch in
 `REPOSITORY_ROOT`, derives a stable path and `agent/task-*` branch under
@@ -716,6 +729,14 @@ HEAD is contained by the recorded base ref.
 
 The runtime exposes no general shell tool. `test.run` spawns an argv array
 without a shell and only when it exactly matches the configured allowlist.
+The Project configuration can also freeze a list of Git-tracked acceptance-test
+files or directories when a Task Worktree is first assigned. Agent patch,
+delete, and commit tools reject those paths; every test run re-hashes the
+protected manifest before and after execution. A zero exit code is not passing
+Evidence when the Worktree changed during the command, the protected manifest
+changed, the snapshot is dirty, or the result cannot be tied to the exact HEAD
+and tree. The Evidence content hash includes this repository state, so identical
+console output at different commits cannot collapse into one stale record.
 The development-only local Worker supervisor follows the same boundary. Its
 routes exist only when `ENABLE_LOCAL_RUNTIME_CONTROL=true`; child processes
 receive an explicit environment allowlist, model credentials come only from the
@@ -743,7 +764,16 @@ An Evaluation Scenario separates the benchmark definition from an execution:
    execution-Agent plus Reviewer model calls and tokens, estimated cost, Tool
    failures, review churn, and context statistics from durable facts;
 7. the report exposes per-variant aggregates and paired deltas (`multi -
-   single`) only for repetitions where both results exist.
+   single`) only for repetitions where both results exist. Cost stays unknown
+   when any included call lacks pricing, and the report exposes price coverage;
+8. the report labels fewer than three complete pairs as exploratory. Reaching
+   that minimum means the engineering comparison is repeatable, not
+   statistically significant.
+
+Every newly collected Trial also groups model provenance by actor kind,
+provider, requested model, exact endpoint, and provider-returned model. This
+keeps Reviewer usage and routing visible in the report instead of requiring an
+operator to infer them from the aggregate token count.
 
 Scenario Version immutability prevents a benchmark from changing after Trials
 start. Trial materialization uses expiring leases and fencing tokens; a stale
@@ -762,7 +792,10 @@ automatically, so they are not end-to-end `/goal` evaluations.
 ## 10. Current model execution
 
 The production provider is OpenAI Responses. Every successful response id is
-stored in the LLM ledger. The default OpenAI endpoint reuses it as
+stored in the LLM ledger. Each call also stores the exact credential-free
+`/responses` endpoint and the provider-returned model identifier separately
+from the requested model. Missing provenance in historical rows remains null.
+The default OpenAI endpoint reuses the response id as
 `previous_response_id` after a durable resume, while a configured custom
 `OPENAI_BASE_URL` conservatively replays the complete local transcript because
 OpenAI-compatible endpoints are not guaranteed to persist responses. A

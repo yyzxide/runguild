@@ -19,17 +19,21 @@
     "agent:start": "node apps/worker/dist/agent-main.js",
     "integration:start": "node apps/worker/dist/integration-main.js",
     "evaluation:start": "node apps/worker/dist/evaluation-main.js",
+    "evaluation:materialize-target": "node scripts/materialize-evaluation-target.mjs",
+    "evaluation:live": "node scripts/run-live-evaluation.mjs",
     "web:start": "npm run dev --workspace @runguild/web",
     "web:preview": "npm run preview --workspace @runguild/web",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node scripts/test.mjs",
     "test:integration": "npm run build && node scripts/test.mjs --postgres",
-    "test:without-postgres": "npm run build && node scripts/test.mjs --without-postgres"
+    "test:without-postgres": "npm run build && node scripts/test.mjs --without-postgres",
+    "test:e2e": "npm run build && playwright test"
   },
   "engines": {
     "node": ">=22.12.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.0",
     "typescript": "^5.9.0"
   }
 }

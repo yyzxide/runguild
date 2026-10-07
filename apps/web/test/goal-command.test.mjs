@@ -5,7 +5,7 @@ import ts from 'typescript'
 
 const source = await readFile(new URL('../src/goal-command.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } })
-const { parseGoalCommand, parseGoalBudget, createRoomSubmission, submitRoomSubmission } = await import('data:text/javascript;base64,' + Buffer.from(compiled.outputText).toString('base64'))
+const { parseGoalCommand, parseGoalBudget, createRoomSubmission, submitRoomSubmission, inferComposerIntent, pendingRoomSubmission, pendingSubmissionKey, readPendingSubmission, restoreRoomSubmission, sameSubmission } = await import('data:text/javascript;base64,' + Buffer.from(compiled.outputText).toString('base64'))
 
 const input = {
   identity: { workspaceId: 'workspace', projectId: 'project', userId: 'user' },
@@ -46,17 +46,17 @@ test('budget and verification are frozen into the planning request but do not af
   assert.equal(submission.planning.budgetTokens, 50000)
   const attempts = []
   const api = {
-    async postMessage() { return { id: 'message' } },
-    async createPlanningRequest(request) {
-      attempts.push({ limit: request.budgetTokens, verify: request.goalVerification, key: request.idempotencyKey })
+    async postMessage() { assert.fail('a goal must use the atomic endpoint') },
+    async submitConversationTask(request) {
+      attempts.push({ limit: request.budgetTokens, verify: request.goalVerification, key: request.clientRequestId })
       if (attempts.length === 1) throw new Error('response lost')
-      return { missionId: 'mission' }
+      return { message: { id: 'message' }, request: { missionId: 'mission' } }
     },
     async getMission() { return { id: 'mission' } },
   }
   await assert.rejects(submitRoomSubmission(api, submission), /response lost/)
   await submitRoomSubmission(api, submission)
-  assert.deepEqual(attempts, Array(2).fill({ limit: 50000, verify: true, key: 'web-planning-budget-operation' }))
+  assert.deepEqual(attempts, Array(2).fill({ limit: 50000, verify: true, key: 'budget-operation' }))
   const followup = createRoomSubmission({ ...input, draft: '补充说明', budgetText: 'invalid' }, 'followup')
   assert.equal(followup.planning, undefined)
 })
@@ -90,23 +90,29 @@ test('combined Chinese goal materials honor the exact 65536 UTF-8 byte message l
   assert.throws(() => createRoomSubmission({ ...input, acceptanceText: acceptanceText + 'x', constraintText: '' }, 'overflow'), /目标及验收材料过长/)
 })
 
-for (const lostResponse of ['message', 'planning', 'mission']) {
-  test(`retry after lost ${lostResponse} response reuses both writes and selects the new Mission`, async () => {
-    const submission = createRoomSubmission(input, 'retry-operation')
+for (const lostResponse of ['submission', 'mission']) {
+  test(`reload after lost ${lostResponse} response replays the immutable atomic Goal without duplicates`, async () => {
+    const submission = createRoomSubmission({ ...input, budgetText: '0' }, 'retry-operation')
+    const persisted = new Map([[pendingSubmissionKey(input.identity, 'room'), JSON.stringify(pendingRoomSubmission(submission))]])
     const messages = new Map()
     const requests = new Map()
     let failed = false
     const api = {
-      async postMessage(value) {
-        if (!messages.has(value.idempotencyKey)) messages.set(value.idempotencyKey, { id: 'new_message', ...value })
-        if (lostResponse === 'message' && !failed) { failed = true; throw new Error('response lost') }
-        return messages.get(value.idempotencyKey)
-      },
-      async createPlanningRequest(value) {
-        assert.deepEqual(value.sourceMessageIds, ['new_message'])
-        if (!requests.has(value.idempotencyKey)) requests.set(value.idempotencyKey, { id: 'request', missionId: 'new_mission', status: 'queued' })
-        if (lostResponse === 'planning' && !failed) { failed = true; throw new Error('response lost') }
-        return requests.get(value.idempotencyKey)
+      async postMessage() { assert.fail('a new Goal must never be posted separately') },
+      async submitConversationTask(value) {
+        assert.equal(value.clientRequestId, 'retry-operation')
+        assert.equal(value.budgetTokens, 0)
+        assert.equal(value.goalVerification, true)
+        assert.deepEqual(value.acceptanceCriteria, ['可预览错误行', '重复导入不重复写入'])
+        assert.deepEqual(value.constraints, ['保持接口兼容'])
+        assert.equal(value.goal, '增加 CSV 错误行预览')
+        assert.equal('missionId' in value, false)
+        if (!requests.has(value.clientRequestId)) {
+          messages.set(value.clientRequestId, { id: 'new_message' })
+          requests.set(value.clientRequestId, { id: 'request', missionId: 'new_mission', status: 'queued' })
+        }
+        if (lostResponse === 'submission' && !failed) { failed = true; throw new Error('response lost') }
+        return { message: messages.get(value.clientRequestId), request: requests.get(value.clientRequestId) }
       },
       async getMission(identity, id) {
         assert.deepEqual(identity, input.identity)
@@ -116,10 +122,54 @@ for (const lostResponse of ['message', 'planning', 'mission']) {
       },
     }
     await assert.rejects(submitRoomSubmission(api, submission), /response lost/)
-    const result = await submitRoomSubmission(api, submission)
+    const pending = readPendingSubmission({ getItem: (key) => persisted.get(key) ?? null }, input.identity, 'room')
+    const result = await submitRoomSubmission(api, restoreRoomSubmission(input.identity, pending))
     assert.equal(messages.size, 1)
     assert.equal(requests.size, 1)
     assert.equal(result.mission.id, 'new_mission')
     assert.equal(result.mission.status, 'planning')
   })
 }
+
+test('greetings remain messages while explicit goals override message intent', () => {
+  assert.equal(inferComposerIntent('你好'), 'message')
+  assert.equal(inferComposerIntent('帮我创建 CSV 预览'), 'task')
+  assert.equal(inferComposerIntent('/goal 增加 CSV 预览'), 'task')
+  const greeting = createRoomSubmission({ ...input, draft: '你好', missionId: undefined, planningActive: false, intent: 'message' }, 'greeting')
+  assert.equal(greeting.planning, undefined)
+  assert.equal(greeting.message.missionId, undefined)
+  assert.equal(createRoomSubmission({ ...input, intent: 'message' }, 'explicit').planning.goalVerification, true)
+})
+
+test('pending submissions from the old browser preserve omitted Goal fields on replay', async () => {
+  const legacy = { version: 1, clientRequestId: 'legacy-operation', conversationId: 'room', intent: 'task', body: '帮我创建页面', mentions: ['planner'], title: '创建页面', plannerAgentId: 'planner' }
+  const pending = readPendingSubmission({ getItem: () => JSON.stringify(legacy) }, input.identity, 'room')
+  await submitRoomSubmission({
+    async postMessage() { assert.fail('legacy task submissions remain atomic') },
+    async submitConversationTask(value) {
+      assert.equal(value.clientRequestId, 'legacy-operation')
+      for (const field of ['goal', 'goalVerification', 'budgetTokens', 'constraints', 'acceptanceCriteria']) assert.equal(field in value, false)
+      return { message: { id: 'message' }, request: { missionId: 'mission' } }
+    },
+    async getMission() { return { id: 'mission' } },
+  }, restoreRoomSubmission(input.identity, pending))
+  assert.equal(sameSubmission(legacy, { ...legacy, clientRequestId: 'new-id' }), true)
+  assert.equal(sameSubmission(legacy, { ...legacy, budgetTokens: 0 }), false)
+})
+
+test('a restored ordinary message keeps its request ID, Mission, recipients and reply', async () => {
+  const submission = createRoomSubmission({ ...input, draft: '补充说明' }, 'followup-operation')
+  const restored = restoreRoomSubmission(input.identity, JSON.parse(JSON.stringify(pendingRoomSubmission(submission))))
+  const result = await submitRoomSubmission({
+    async postMessage(value) {
+      assert.equal(value.clientRequestId, 'followup-operation')
+      assert.equal(value.missionId, 'old_mission')
+      assert.equal(value.replyToMessageId, 'old_message')
+      assert.deepEqual(value.mentions, ['builder'])
+      return { id: 'message' }
+    },
+    async submitConversationTask() { assert.fail('a follow-up must not create a Goal') },
+    async getMission() { assert.fail('a follow-up must not replace the selected Mission') },
+  }, restored)
+  assert.deepEqual(result, { message: { id: 'message' } })
+})

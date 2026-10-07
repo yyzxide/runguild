@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
 
-import { createWorkspaceToolHandlers } from '../dist/index.js'
+import { buildBubblewrapTestInvocation, createWorkspaceToolHandlers } from '../dist/index.js'
 
 const execute = promisify(execFile)
 
@@ -29,10 +29,12 @@ function request(action, input, id = 'call_test') {
   }
 }
 
-async function fixture() {
+async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'mission-workspace-tools-'))
   await writeFile(join(root, 'sample.txt'), 'alpha\nsecond line\n', 'utf8')
   await execute('git', ['init', root])
+  await execute('git', ['-C', root, 'config', 'user.name', 'RunGuild Test'])
+  await execute('git', ['-C', root, 'config', 'user.email', 'runguild-test@example.invalid'])
   await execute('git', ['-C', root, 'checkout', '-b', 'main'])
   await execute('git', ['-C', root, 'add', 'sample.txt'])
   await execute('git', [
@@ -59,10 +61,12 @@ async function fixture() {
     updatedAt: new Date().toISOString(),
   }
   const evidence = []
-  const command = ['/bin/echo', 'tests ok']
+  const command = options.command ?? ['/bin/echo', 'tests ok']
   const handlers = await createWorkspaceToolHandlers({
     root,
     allowedTestCommands: [command],
+    protectedTestPaths: options.protectedTestPaths ?? [],
+    ...(options.testSandbox ? { testSandbox: options.testSandbox } : {}),
     evidence: {
       async record(context, draft) {
         const item = {
@@ -357,6 +361,8 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
     assert.match(setup.evidence[0].draft.metadata.treeHash, /^[0-9a-f]{40}$/)
     assert.equal(setup.evidence[0].draft.metadata.clean, true)
     assert.equal(setup.evidence[0].draft.metadata.stable, true)
+    assert.equal(setup.evidence[0].draft.metadata.sandboxMode, 'trusted_process')
+    assert.equal(setup.evidence[0].draft.metadata.networkMode, 'host')
     assert.match(setup.evidence[0].draft.metadata.stateHash, /^[0-9a-f]{64}$/)
 
     await writeFile(join(setup.root, 'sample.txt'), 'dirty before test\n', 'utf8')
@@ -375,6 +381,92 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
       ),
       /not in the workspace allowlist/,
     )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('protected-test reruns retain distinct evidence even when output and Git state are identical', async () => {
+  const setup = await fixture({ protectedTestPaths: ['sample.txt'] })
+  try {
+    const run = setup.handlers.get('test.run')
+    for (const callId of ['call_first_verification', 'call_final_verification']) {
+      const result = await run.execute(
+        { command: setup.command, timeoutMs: 10_000 },
+        { request: request('test.run', { command: setup.command, timeoutMs: 10_000 }, callId) },
+      )
+      assert.equal(result.output.passed, true)
+    }
+    const [first, second] = [setup.evidence[0].draft, setup.evidence[2].draft]
+    assert.equal(first.metadata.stateHash, second.metadata.stateHash)
+    assert.equal(first.metadata.protectedTestManifestHash, second.metadata.protectedTestManifestHash)
+    assert.equal(second.metadata.protectedTestsIntact, true)
+    assert.notEqual(first.contentHash, second.contentHash)
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('Bubblewrap test invocation mounts only runtime roots and the Task Worktree', () => {
+  const policy = {
+    mode: 'bubblewrap', network: 'none',
+    maxProcesses: 64, maxOpenFiles: 512, maxFileSizeMb: 128,
+  }
+  const invocation = buildBubblewrapTestInvocation({
+    root: '/srv/runguild/task-1',
+    command: ['npm', 'test'],
+    timeoutMs: 25_000,
+    policy,
+  })
+  assert.equal(invocation.command[0], '/usr/bin/bwrap')
+  assert.equal(invocation.cwd, '/srv/runguild/task-1')
+  assert.equal(invocation.command.includes('--unshare-net'), true)
+  assert.equal(invocation.command.includes('--clearenv'), true)
+  assert.equal(invocation.command.join(' ').includes('--ro-bind / /'), false)
+  assert.equal(invocation.command.join(' ').includes('--bind /srv/runguild/task-1 /workspace'), true)
+  assert.equal(invocation.command.join(' ').includes('--cpu=30:30'), true)
+  assert.equal(invocation.command.join(' ').endsWith('-- npm test'), true)
+
+  const hostNetwork = buildBubblewrapTestInvocation({
+    root: '/srv/runguild/task-1', command: ['npm', 'test'], timeoutMs: 25_000,
+    policy: { ...policy, network: 'host' },
+  })
+  assert.equal(hostNetwork.command.includes('--unshare-net'), false)
+})
+
+test('protected acceptance tests cannot be patched and a mutating zero-exit test is failed', async () => {
+  const command = ['/bin/sh', '-c', 'printf "tampered\\n" > sample.txt']
+  const setup = await fixture({ command, protectedTestPaths: ['sample.txt'] })
+  try {
+    const patch = setup.handlers.get('file.patch')
+    const unifiedDiff = [
+      'diff --git a/sample.txt b/sample.txt',
+      '--- a/sample.txt',
+      '+++ b/sample.txt',
+      '@@ -1,2 +1,2 @@',
+      '-alpha',
+      '+forged test',
+      ' second line',
+      '',
+    ].join('\n')
+    await assert.rejects(
+      patch.execute(
+        { path: 'sample.txt', unifiedDiff },
+        { request: request('file.patch', { path: 'sample.txt', unifiedDiff }, 'call_protected_patch') },
+      ),
+      /cannot modify protected acceptance test path/,
+    )
+    assert.equal(await readFile(join(setup.root, 'sample.txt'), 'utf8'), 'alpha\nsecond line\n')
+
+    const result = await setup.handlers.get('test.run').execute(
+      { command, timeoutMs: 10_000 },
+      { request: request('test.run', { command, timeoutMs: 10_000 }, 'call_mutating_test') },
+    )
+    assert.equal(result.output.exitCode, 0)
+    assert.equal(result.output.passed, false)
+    assert.equal(setup.evidence[0].draft.metadata.stable, false)
+    assert.equal(setup.evidence[0].draft.metadata.protectedTestsIntact, false)
+    assert.match(setup.evidence[0].draft.metadata.protectedTestIntegrityError, /changed/)
   } finally {
     await rm(setup.root, { recursive: true, force: true })
   }

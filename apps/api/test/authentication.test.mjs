@@ -99,7 +99,8 @@ function apiDependencies(authentication, overviewCalls, projectMemberships, proj
     ...(projectMemberships ? { projectMemberships } : {}),
     ...(projectProvisioning ? { projectProvisioning } : {}),
     ...(projectLifecycle ? { projectLifecycle } : {}),
-    missions: {}, conversations: {}, conversationPlanning: {}, runControls: {}, taskControls: {},
+    missions: {}, conversations: {}, conversationPlanning: {}, conversationTaskSubmissions: {},
+    runControls: {}, taskControls: {},
     toolApprovals: {}, artifacts: {}, reviews: {}, reviewerExecutions: {}, skills: {}, evaluations: {},
     projectRuntimeConfigs: {}, runTraces: {},
     projectOperator: {

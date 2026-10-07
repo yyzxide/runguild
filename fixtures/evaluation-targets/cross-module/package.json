@@ -1,0 +1,9 @@
+{
+  "name": "runguild-eval-cross-module",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "node --check src/config.mjs && node --check src/report.mjs"
+  }
+}

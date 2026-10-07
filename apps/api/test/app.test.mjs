@@ -114,6 +114,11 @@ function fakeProjectRuntimeConfigs() {
       worktreeSetupCommands: [],
       worktreeSetupTimeoutMs: 300_000,
       testCommands: [['npm', 'test']],
+      protectedTestPaths: [],
+      testSandbox: {
+        mode: 'trusted_process', network: 'host',
+        maxProcesses: 128, maxOpenFiles: 1024, maxFileSizeMb: 512,
+      },
       agentContextInputTokens: 65_536,
       agentMaxTestTimeoutMs: 120_000,
     },
@@ -143,6 +148,8 @@ function fakeProjectRuntimeConfigs() {
             worktreeSetupCommands: input.worktreeSetupCommands,
             worktreeSetupTimeoutMs: input.worktreeSetupTimeoutMs,
             testCommands: input.testCommands,
+            protectedTestPaths: input.protectedTestPaths,
+            testSandbox: input.testSandbox,
             agentContextInputTokens: input.agentContextInputTokens,
             agentMaxTestTimeoutMs: input.agentMaxTestTimeoutMs,
           },
@@ -295,6 +302,35 @@ function fakeConversationPlanning() {
       async get(workspaceId, requestId, actor) {
         calls.push(['planning.get', { workspaceId, requestId, actor }])
         return { ...request, id: requestId, workspaceId }
+      },
+    },
+  }
+}
+
+function fakeConversationTaskSubmissions() {
+  const calls = []
+  return {
+    calls,
+    service: {
+      async submit(input) {
+        calls.push(input)
+        return {
+          message: {
+            id: 'message_task', workspaceId: input.workspaceId,
+            conversationId: input.conversationId, sequence: '2',
+            author: { kind: 'user', id: input.createdBy }, authorName: 'Developer',
+            body: input.body, mentions: input.mentions, entityRefs: {}, deliveries: [],
+            createdAt: '2030-01-01T00:00:00.000Z',
+          },
+          request: {
+            id: 'planning_task', workspaceId: input.workspaceId, projectId: 'project_api',
+            conversationId: input.conversationId, missionId: 'mission_task',
+            plannerAgentId: input.plannerAgentId ?? 'planner_api', sourceMessageIds: ['message_task'],
+            status: 'queued', attempt: 0, maxAttempts: 3,
+            createdAt: '2030-01-01T00:00:00.000Z', updatedAt: '2030-01-01T00:00:00.000Z',
+          },
+          reused: false,
+        }
       },
     },
   }
@@ -620,6 +656,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   const development = fakeDevelopmentSetup()
   const conversations = fakeConversations()
   const conversationPlanning = fakeConversationPlanning()
+  const conversationTaskSubmissions = fakeConversationTaskSubmissions()
   const runTraces = fakeRunTraces()
   const budgetCalls = []
   const budgetSnapshot = { tokenLimit: 10000, inputTokens: 100, outputTokens: 50, totalTokens: 150,
@@ -639,6 +676,7 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     runTraces: runTraces.service,
     conversations: conversations.service,
     conversationPlanning: conversationPlanning.service,
+    conversationTaskSubmissions: conversationTaskSubmissions.service,
     runControls: runtime.runControls,
     taskControls: taskControls.service,
     toolApprovals: runtime.toolApprovals,
@@ -724,6 +762,11 @@ test('mission API enforces actor identity and exposes command flow', async () =>
         worktreeSetupCommands: [['npm', 'ci', '--ignore-scripts']],
         worktreeSetupTimeoutMs: 240_000,
         testCommands: [['npm', 'test'], ['npm', 'run', 'typecheck']],
+        protectedTestPaths: ['apps/api/test', 'package.json'],
+        testSandbox: {
+          mode: 'bubblewrap', network: 'none',
+          maxProcesses: 64, maxOpenFiles: 512, maxFileSizeMb: 256,
+        },
         agentContextInputTokens: 80_000,
         agentMaxTestTimeoutMs: 180_000,
         agentModels: [{ agentId: 'planner_api', modelProvider: 'openai', modelName: 'gpt-new' }],
@@ -733,6 +776,8 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     const updatedRuntimeBody = await updatedRuntime.json()
     assert.equal(updatedRuntimeBody.configuration.agents[0].modelName, 'gpt-new')
     assert.deepEqual(updatedRuntimeBody.configuration.runtime.worktreeSetupCommands, [['npm', 'ci', '--ignore-scripts']])
+    assert.deepEqual(updatedRuntimeBody.configuration.runtime.protectedTestPaths, ['apps/api/test', 'package.json'])
+    assert.equal(updatedRuntimeBody.configuration.runtime.testSandbox.mode, 'bubblewrap')
 
     const agentRuntimeConfig = await fetch(baseUrl + '/api/v1/workspaces/ws/projects/project_api/runtime-config', {
       headers: { 'x-actor-id': 'planner_api', 'x-actor-kind': 'agent' },
@@ -777,6 +822,53 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     })
     assert.equal(postedMessage.status, 201)
     assert.equal((await postedMessage.json()).message.deliveries[0].status, 'steered')
+
+    const submittedTask = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/task-submissions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-actor-id': 'user_api',
+        'x-client-request-id': 'browser-task-request-1',
+      },
+      body: JSON.stringify({
+        body: '实现可恢复的任务提交。',
+        mentions: ['planner_api'],
+        title: '可恢复任务提交',
+        plannerAgentId: 'planner_api',
+      }),
+    })
+    assert.equal(submittedTask.status, 201)
+    const submittedTaskBody = await submittedTask.json()
+    assert.equal(submittedTaskBody.message.id, 'message_task')
+    assert.equal(submittedTaskBody.request.id, 'planning_task')
+    assert.equal(conversationTaskSubmissions.calls[0].clientRequestId, 'browser-task-request-1')
+
+    const goalContract = {
+      body: '/goal 增加 CSV 预览', title: 'CSV 预览', goal: '增加 CSV 预览',
+      constraints: ['保持接口兼容'], acceptanceCriteria: ['错误行可预览'],
+      goalVerification: true, budgetTokens: 0,
+    }
+    const goalSubmission = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/task-submissions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api',
+        'x-client-request-id': 'browser-goal-request-1' },
+      body: JSON.stringify(goalContract),
+    })
+    assert.equal(goalSubmission.status, 201)
+    const submittedGoalInput = conversationTaskSubmissions.calls[1]
+    for (const key of ['goal', 'constraints', 'acceptanceCriteria', 'goalVerification', 'budgetTokens']) {
+      assert.deepEqual(submittedGoalInput[key], goalContract[key])
+    }
+    for (const invalid of [{ budgetTokens: -1 }, { acceptanceCriteria: ['   '] }]) {
+      const rejectedGoal = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/task-submissions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api',
+          'x-client-request-id': 'browser-goal-invalid' },
+        body: JSON.stringify({ ...goalContract, ...invalid }),
+      })
+      assert.equal(rejectedGoal.status, 400)
+    }
+    assert.equal(conversationTaskSubmissions.calls.length, 2)
 
     const planningRequest = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/planning-requests', {
       method: 'POST',

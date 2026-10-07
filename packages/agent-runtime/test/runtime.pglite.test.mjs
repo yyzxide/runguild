@@ -18,7 +18,12 @@ const migrationUrls = [
   new URL('../../database/migrations/0007_worktrees.sql', import.meta.url),
   new URL('../../database/migrations/0008_context.sql', import.meta.url),
   new URL('../../database/migrations/0009_evaluation.sql', import.meta.url),
+  new URL('../../database/migrations/0010_conversations.sql', import.meta.url),
+  new URL('../../database/migrations/0011_conversation_planning.sql', import.meta.url),
+  new URL('../../database/migrations/0014_reviewer_execution.sql', import.meta.url),
+  new URL('../../database/migrations/0018_reviewer_model_calls.sql', import.meta.url),
   new URL('../../database/migrations/0024_model_protocol_events.sql', import.meta.url),
+  new URL('../../database/migrations/0030_model_provider_provenance.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {

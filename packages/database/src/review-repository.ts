@@ -98,6 +98,8 @@ function selectSubmissionEvidence(
   const [worktreeTreeHash] = treeHashes
 
   return rows.filter((item) => {
+    if (item.kind === 'test_run' && (item.metadata.clean !== true
+        || item.metadata.stable !== true || item.metadata.protectedTestsIntact !== true)) return false
     // Current-run tests need the same code binding as reused tests. A model
     // may run tests, edit again and only then commit within a single Run.
     if (item.run_id === input.submittingRunId

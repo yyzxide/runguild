@@ -11,7 +11,7 @@ import {
 
 export interface TraceViewProps {
   readonly identity: TestIdentity
-  readonly initialRunId?: string
+  readonly initialRunId?: string | null
 }
 
 const statusLabels: Readonly<Record<string, string>> = {
@@ -67,7 +67,9 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
   const totalInput = detail.llmCalls.reduce((sum, call) => sum + (call.inputTokens ?? 0), 0)
   const totalOutput = detail.llmCalls.reduce((sum, call) => sum + (call.outputTokens ?? 0), 0)
   const totalCached = detail.llmCalls.reduce((sum, call) => sum + (call.cachedInputTokens ?? 0), 0)
-  const totalCost = detail.llmCalls.reduce((sum, call) => sum + (call.estimatedCostUsd ?? 0), 0)
+  const totalCost = detail.llmCalls.some((call) => call.estimatedCostUsd === null)
+    ? null
+    : detail.llmCalls.reduce((sum, call) => sum + (call.estimatedCostUsd ?? 0), 0)
   const context = detail.contextSummary
   return (
     <>
@@ -129,6 +131,8 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
               <span className="trace-event__index">{String(call.hop).padStart(2, '0')}</span>
               <code className="trace-call__hop">hop {call.hop}</code>
               <strong>{statusLabels[call.status] ?? call.status}</strong>
+              <p>{call.provider} · {call.model}{call.returnedModel === null ? '' : ` → ${call.returnedModel}`}</p>
+              <code>{call.endpoint ?? '端点未知（历史记录）'}</code>
               <p>{formatNumber(call.inputTokens)} 输入 · {formatNumber(call.outputTokens)} 输出 · {formatNumber(call.cachedInputTokens)} 缓存</p>
               <code>{formatCost(call.estimatedCostUsd)}</code>
               <code>{call.latencyMs === null ? '—' : `${call.latencyMs} ms`}</code>
@@ -143,17 +147,18 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
 
       <section className="trace-summary-block">
         <div className="panel-heading">
-          <div><span className="micro-label">仅动作 / 状态 / 错误码</span><h3>工具执行摘要</h3></div>
+          <div><span className="micro-label">动作 / 状态 / 安全目标 / 策略结果</span><h3>工具执行摘要</h3></div>
           <code>{detail.toolExecutions.length} 次</code>
         </div>
-        <p className="trace-redaction-note">不包含工具请求与结果原文。</p>
+        <p className="trace-redaction-note">不包含工具请求、结果或任意错误原文；文件目标仅显示已校验的仓库相对路径。</p>
         <div className="trace-tool-list">
           {detail.toolExecutions.map((tool) => (
             <div className="trace-tool" key={tool.id}>
               <code className="trace-tool__action">{tool.action}</code>
+              <code>{tool.targetPath ?? '—'}</code>
               <span>{statusLabels[tool.status] ?? tool.status}</span>
               <code>{tool.effectState}</code>
-              <code>{tool.errorCode ?? '—'}</code>
+              <code>{tool.policyDecision === 'protected_path_denied' ? '受保护路径已拒绝' : (tool.errorCode ?? '—')}</code>
               <small>{formatDateTime(tool.startedAt)} → {formatDateTime(tool.finishedAt)}</small>
             </div>
           ))}
@@ -163,9 +168,9 @@ function RunTraceDetailPanel({ detail }: { readonly detail: RunTraceDetail }) {
   )
 }
 
-export function TraceView({ identity, initialRunId }: TraceViewProps) {
+export function TraceView({ identity, initialRunId = null }: TraceViewProps) {
   const [runs, setRuns] = useState<readonly RunTraceSummary[] | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(initialRunId)
   const [detail, setDetail] = useState<RunTraceDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -184,7 +189,8 @@ export function TraceView({ identity, initialRunId }: TraceViewProps) {
       setRuns(next)
       setSelectedId((current) => {
         if (current && next.some((run) => run.runId === current)) return current
-        return initialRunId ?? next[0]?.runId ?? null
+        if (initialRunId && next.some((run) => run.runId === initialRunId)) return initialRunId
+        return next[0]?.runId ?? null
       })
       if (next.length === 0) setDetail(null)
     } catch (caught) {

@@ -4,6 +4,7 @@ import {
   EVALUATION_VARIANTS,
   type EvaluationExperimentId,
   type EvaluationExperimentStatus,
+  type EvaluationModelProvenance,
   type EvaluationScenarioDefinition,
   type EvaluationScenarioId,
   type EvaluationScenarioVersionId,
@@ -496,9 +497,9 @@ export class EvaluationRepository {
       "m.status IN ('completed', 'failed', 'cancelled') OR " +
       '(EXISTS (SELECT 1 FROM tasks any_task WHERE any_task.mission_id = m.id) AND (' +
       "  NOT EXISTS (SELECT 1 FROM tasks open_task WHERE open_task.mission_id = m.id AND open_task.status <> 'completed') OR " +
-      "  (EXISTS (SELECT 1 FROM tasks bad_task WHERE bad_task.mission_id = m.id AND bad_task.status IN ('failed', 'cancelled')) " +
+      "  (EXISTS (SELECT 1 FROM tasks bad_task WHERE bad_task.mission_id = m.id AND bad_task.status IN ('failed', 'cancelled', 'waiting_human')) " +
       "   AND NOT EXISTS (SELECT 1 FROM tasks active_task WHERE active_task.mission_id = m.id " +
-      "     AND active_task.status IN ('ready', 'claimed', 'running', 'waiting_human', 'reviewing')))" +
+      "     AND active_task.status IN ('ready', 'claimed', 'running', 'reviewing')))" +
       '))) ORDER BY t.started_at, t.id LIMIT $1',
       [limit],
     )
@@ -584,12 +585,13 @@ export class EvaluationRepository {
       const success = taskResult.rows.every((task) => task.status === 'completed')
         && ['reviewing', 'completed'].includes(missionRow.status)
       const hasFailure = ['failed', 'cancelled'].includes(missionRow.status)
-        || taskResult.rows.some((task) => ['failed', 'cancelled'].includes(task.status))
+        || taskResult.rows.some((task) => ['failed', 'cancelled', 'waiting_human'].includes(task.status))
       const hasActive = taskResult.rows.some((task) =>
-        ['ready', 'claimed', 'running', 'waiting_human', 'reviewing'].includes(task.status))
+        ['ready', 'claimed', 'running', 'reviewing'].includes(task.status))
       if (!success && (!hasFailure || hasActive)) return null
 
       const aggregates = await this.metricAggregates(client, trial.mission_id)
+      const modelProvenance = await this.modelProvenance(client, trial.mission_id)
       const completedTasks = taskResult.rows.filter((task) => task.status === 'completed').length
       const endTimes = [
         missionRow.updated_at.getTime(),
@@ -614,6 +616,7 @@ export class EvaluationRepository {
         contextSnapshots: aggregates.contextSnapshots,
         compactedContexts: aggregates.compactedContexts,
         estimatedContextTokens: aggregates.estimatedContextTokens,
+        modelProvenance,
       }
       const updated = await client.query<TrialRow>(
         "UPDATE evaluation_trials SET status = 'completed', metrics = $2::jsonb, " +
@@ -634,7 +637,7 @@ export class EvaluationRepository {
     readonly inputTokens: number
     readonly outputTokens: number
     readonly cachedInputTokens: number
-    readonly estimatedCostUsd: number
+    readonly estimatedCostUsd: number | null
     readonly toolCalls: number
     readonly toolFailures: number
     readonly reviewChangesRequested: number
@@ -649,7 +652,7 @@ export class EvaluationRepository {
       input_tokens: number
       output_tokens: number
       cached_input_tokens: number
-      estimated_cost_usd: string | number
+      estimated_cost_usd: string | number | null
       tool_calls: number
       tool_failures: number
       review_changes_requested: number
@@ -671,9 +674,14 @@ export class EvaluationRepository {
       '((SELECT COALESCE(SUM(l.cached_input_tokens), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
       ' (SELECT COALESCE(SUM(review_call.cached_input_tokens), 0) FROM reviewer_model_calls review_call ' +
       '  WHERE review_call.mission_id = $1))::int AS cached_input_tokens, ' +
-      '((SELECT COALESCE(SUM(l.estimated_cost_usd), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
-      ' (SELECT COALESCE(SUM(review_call.estimated_cost_usd), 0) FROM reviewer_model_calls review_call ' +
-      '  WHERE review_call.mission_id = $1)) AS estimated_cost_usd, ' +
+      '(CASE WHEN ' +
+      ' EXISTS (SELECT 1 FROM llm_calls l WHERE l.mission_id = $1 AND l.estimated_cost_usd IS NULL) OR ' +
+      ' EXISTS (SELECT 1 FROM reviewer_model_calls review_call ' +
+      '         WHERE review_call.mission_id = $1 AND review_call.estimated_cost_usd IS NULL) ' +
+      ' THEN NULL ELSE ' +
+      '  ((SELECT COALESCE(SUM(l.estimated_cost_usd), 0) FROM llm_calls l WHERE l.mission_id = $1) + ' +
+      '   (SELECT COALESCE(SUM(review_call.estimated_cost_usd), 0) FROM reviewer_model_calls review_call ' +
+      '    WHERE review_call.mission_id = $1)) END) AS estimated_cost_usd, ' +
       '(SELECT COUNT(*)::int FROM tool_executions x WHERE x.mission_id = $1) AS tool_calls, ' +
       "(SELECT COUNT(*)::int FROM tool_executions x WHERE x.mission_id = $1 AND x.status = 'failed') AS tool_failures, " +
       "(SELECT COUNT(*)::int FROM reviews r WHERE r.mission_id = $1 AND r.status = 'changes_requested') " +
@@ -693,7 +701,7 @@ export class EvaluationRepository {
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,
       cachedInputTokens: row.cached_input_tokens,
-      estimatedCostUsd: Number(row.estimated_cost_usd),
+      estimatedCostUsd: row.estimated_cost_usd === null ? null : Number(row.estimated_cost_usd),
       toolCalls: row.tool_calls,
       toolFailures: row.tool_failures,
       reviewChangesRequested: row.review_changes_requested,
@@ -701,6 +709,37 @@ export class EvaluationRepository {
       compactedContexts: row.compacted_contexts,
       estimatedContextTokens: row.estimated_context_tokens,
     }
+  }
+
+  private async modelProvenance(
+    client: PoolClient,
+    missionId: string,
+  ): Promise<readonly EvaluationModelProvenance[]> {
+    const result = await client.query<{
+      actor_kind: 'execution_agent' | 'reviewer_agent'
+      provider: string
+      requested_model: string
+      endpoint: string | null
+      returned_model: string | null
+      calls: number
+    }>(
+      "SELECT actor_kind, provider, requested_model, endpoint, returned_model, COUNT(*)::int AS calls FROM (" +
+      "SELECT 'execution_agent'::text AS actor_kind, provider, model AS requested_model, endpoint, returned_model " +
+      'FROM llm_calls WHERE mission_id = $1 UNION ALL ' +
+      "SELECT 'reviewer_agent'::text AS actor_kind, provider, model AS requested_model, endpoint, returned_model " +
+      'FROM reviewer_model_calls WHERE mission_id = $1' +
+      ') model_calls GROUP BY actor_kind, provider, requested_model, endpoint, returned_model ' +
+      'ORDER BY actor_kind, provider, requested_model, endpoint NULLS FIRST, returned_model NULLS FIRST',
+      [missionId],
+    )
+    return result.rows.map((row) => ({
+      actorKind: row.actor_kind,
+      provider: row.provider,
+      requestedModel: row.requested_model,
+      endpoint: row.endpoint,
+      returnedModel: row.returned_model,
+      calls: row.calls,
+    }))
   }
 
   private async refreshExperiment(experimentId: EvaluationExperimentId): Promise<void> {

@@ -46,7 +46,7 @@ test('execution prompt carries frozen review findings into a bounded repair atte
   assert.match(content, /new exact Artifact Version with fresh evidence/)
 })
 
-test('Agent inbox claims a dispatch, executes its durable Run, and releases the lease', async () => {
+test('Agent inbox preserves its lease and test policy through a durable Run retry', async () => {
   const claims = []
   const acknowledgements = []
   const executions = []
@@ -55,6 +55,9 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
     agentId: 'agent_builder',
     workspaceId: 'ws_agent',
     projectId: 'project_agent',
+    allowedTestCommands: [['npm', 'test']],
+    protectedTestPaths: ['test/acceptance'],
+    testSandbox: { mode: 'bubblewrap', network: 'none' },
     inbox: {
       async read() {
         return {
@@ -120,6 +123,7 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
       return {
         async run(input) {
           executions.push(input)
+          if (executions.length === 1) return { status: 'waiting_tool', summary: 'Retry tool.', hops: 1 }
           return { status: 'succeeded', summary: 'Done.', hops: 1 }
         },
       }
@@ -128,6 +132,7 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
     inboxLimit: 10,
     runLimit: 5,
     leaseSeconds: 60,
+    waitingToolRetryMs: 1,
   })
 
   const result = await processor.tick()
@@ -142,7 +147,14 @@ test('Agent inbox claims a dispatch, executes its durable Run, and releases the 
     expectedCursor: 0n,
     throughSeq: 1n,
   }])
-  assert.equal(executions.length, 1)
+  assert.equal(executions.length, 2)
+  for (const execution of executions) {
+    assert.equal(execution.leaseToken, 'lease_agent')
+    const prompt = execution.initialMessages.map((message) => message.content).join('\n')
+    assert.match(prompt, /test\/acceptance/)
+    assert.match(prompt, /bubblewrap with none network access/)
+    assert.match(prompt, /\[\["npm","test"\]\]/)
+  }
   assert.equal(executions[0].runId, 'run_agent')
   assert.equal(executions[0].resumeWaiting, true)
   assert.match(executions[0].initialMessages[1].content, /test_run/)

@@ -16,6 +16,10 @@ export const validTaskEvidencePredicate = `e.acceptance_criterion_id = c.id AND 
                 )
               )) OR (
                 e.kind IN ('test_run', 'command_result') AND e.metadata->>'passed' = 'true'
+                AND (e.kind <> 'test_run' OR (
+                  e.metadata->>'clean' = 'true' AND e.metadata->>'stable' = 'true'
+                  AND e.metadata->>'protectedTestsIntact' = 'true'
+                ))
                 AND (
                   (w.task_id IS NULL AND producer.attempt = t.attempt_count) OR (
                     w.head_commit IS NOT NULL AND e.metadata->>'headCommit' = w.head_commit

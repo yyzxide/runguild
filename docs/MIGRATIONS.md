@@ -1,6 +1,6 @@
 # Database Migrations
 
-RunGuild 的 PostgreSQL Migration 位于 `packages/database/migrations/`，按文件名前缀顺序执行。Migration 是追加式数据库历史：已经在某个数据库应用的旧文件不得修改；新的结构变化应新增下一个编号文件。
+RunGuild 的 PostgreSQL Migration 位于 `packages/database/migrations/`，按 `packages/database/src/migrate.ts` 登记的顺序执行。Migration 是追加式数据库历史：已经在某个数据库应用的旧文件不得修改或重命名；新的结构变化应新增下一个编号文件。
 
 ## 执行方式
 
@@ -27,7 +27,9 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 事务中执行。已应用文件被修改时会因 checksum 不一致而拒绝启动。不要通过
 删除 Migration 记录来强制重跑，也不要在有真实数据的数据库上手工回退结构。
 
-## 0001–0028 清单
+## 0001–0030 清单
+
+Goal 分支与主分支各自使用过 0027、0028 前缀，合并后保留全部 32 个迁移文件及其原始 checksum。迁移身份是完整文件名，而非数字前缀；已经应用任一分支的数据库只补齐缺失文件。不要为了重排编号重命名旧迁移，否则会被识别为新文件再次执行。
 
 | 编号 | 文件 | 主要作用 |
 |---|---|---|
@@ -59,8 +61,12 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 | 0026 | `0026_flash_agent_hop_budget.sql` | 把新 Run 的默认最大 hop 数进一步设为 60，不修改已有 Run。 |
 | 0027 | `0027_mission_budget.sql` | 增加 Mission 模型调用账本与持久化预算等待，回填可用历史用量；Token 限额允许 0，`NULL` 表示不限额。 |
 | 0028 | `0028_goal_verification.sql` | 增加 Mission 的终验开关与当前终验 Task 引用。默认关闭，旧 Mission 不会自动追加终验任务。 |
+| 0027 | `0027_protected_test_paths.sql` | 持久化项目级受保护验收路径，供 Agent Worker 冻结测试内容清单并拒绝篡改。 |
+| 0028 | `0028_test_sandbox_config.sql` | 持久化显式测试执行模式、网络策略和进程/文件资源限制；兼容模式不能伪称网络隔离。 |
+| 0029 | `0029_evaluation_unknown_pricing.sql` | 把底层调用价格缺失的历史 Evaluation Trial 成本修正为 `null`，避免未知价格被解释为零成本。 |
+| 0030 | `0030_model_provider_provenance.sql` | 为 Agent、Reviewer 与 Planner 调用分别记录无凭据的精确端点和供应商返回模型；历史未知值保留为 `null`。 |
 
-0027 会将仍能识别的缺失调用或空用量记为未知；旧适配器已把缺失 usage 写成 0 的记录无法还原，因此不能把回填值当作完整账单。0028 只增加数据库字段；新建 Mission 是否启用终验、追加终验任务与交付校验由应用代码处理。当前 Web 的新建入口会启用终验，直接 API 创建未显式启用时仍走原流程。
+`0027_mission_budget.sql` 会将仍能识别的缺失调用或空用量记为未知；旧适配器已把缺失 usage 写成 0 的记录无法还原，因此不能把回填值当作完整账单。`0028_goal_verification.sql` 只增加数据库字段；新建 Mission 是否启用终验、追加终验任务与交付校验由应用代码处理。当前 Web 的新建入口会启用终验，直接 API 创建未显式启用时仍走原流程。
 
 代码中已登记 Migration、测试库迁移通过，都不代表日常数据库已升级。更新时须对实际 `DATABASE_URL` 运行迁移，再使用依赖这些表和字段的新 API/Worker。
 

@@ -44,7 +44,8 @@ workarounds.
   key. Restoring PostgreSQL therefore restores credentials but not active
   plaintext tokens held only by clients/process environments.
 - `project_runtime_configs` stores the repository path, Worktree root, setup
-  argv, test allowlist, timeouts, context limits, and Agent model names in
+  argv, test allowlist, protected acceptance paths, explicit test sandbox and
+  network policy, resource limits, timeouts, context limits, and Agent model names in
   PostgreSQL. Paths such as `/home/sid/runguild` and
   `/home/sid/runguild-worktrees` must be updated after moving the checkout.
 - PostgreSQL contains Missions, Runs, Evidence, Artifact Versions, Reviews,

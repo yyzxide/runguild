@@ -5,7 +5,7 @@ import test from 'node:test'
 
 import { PGlite } from '@electric-sql/pglite'
 
-import { ConversationPlanningRepository, MissionBudgetRepository } from '../dist/index.js'
+import { ConversationPlanningRepository, ConversationTaskSubmissionRepository, MissionBudgetRepository } from '../dist/index.js'
 
 const migrations = [
   '0001_core.sql',
@@ -19,6 +19,7 @@ const migrations = [
   '0023_project_lifecycle.sql',
   '0027_mission_budget.sql',
   '0028_goal_verification.sql',
+  '0030_model_provider_provenance.sql',
 ]
 
 function poolAdapter(database) {
@@ -157,7 +158,9 @@ test('selected Conversation messages atomically create a leased Planner request 
       requestId: 'planning_request', plannerAgentId: 'planner',
       leaseToken: retried.work.leaseToken, plan,
       promptSnapshot: { messages: 2 }, responseSnapshot: { toolCalls: 1 },
-      modelProvider: 'test', modelName: 'planner-model', providerRequestId: 'response_1',
+      modelProvider: 'test', modelName: 'planner-model',
+      endpoint: 'https://api.example.test/responses', providerRequestId: 'response_1',
+      returnedModel: 'planner-model-2026-09-14',
       inputTokens: 120, outputTokens: 80, estimatedCostUsd: 0.01, latencyMs: 25,
     })
     const awaiting = await repository.markAwaitingApproval({
@@ -167,6 +170,14 @@ test('selected Conversation messages atomically create a leased Planner request 
     assert.equal(awaiting.status, 'awaiting_approval')
     assert.equal(awaiting.planVersion, 1)
     assert.equal('error' in awaiting, false)
+    const provenance = await database.query(
+      'SELECT model_endpoint, returned_model FROM conversation_planning_requests WHERE id = $1',
+      ['planning_request'],
+    )
+    assert.deepEqual(provenance.rows[0], {
+      model_endpoint: 'https://api.example.test/responses',
+      returned_model: 'planner-model-2026-09-14',
+    })
     assert.equal(await repository.get('ws', 'planning_request', { kind: 'user', id: 'outsider' }), null)
     await database.query(
       "UPDATE missions SET status = 'running', approved_by = 'user', approved_at = NOW() " +
@@ -251,6 +262,110 @@ test('planning replay retains the pre-contract hash when new fields are omitted'
     const replay = await repository.create(input)
     assert.equal(replay.reused, true)
     assert.equal(replay.request.missionId, created.request.missionId)
+  } finally {
+    await database.close()
+  }
+})
+
+test('task submission atomically persists message and Planning request across response-loss retries', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const repository = new ConversationTaskSubmissionRepository(poolAdapter(database))
+    const input = {
+      workspaceId: 'ws', conversationId: 'conversation', createdBy: 'user',
+      body: '实现断线后可恢复的任务提交。', mentions: ['planner'],
+      title: '可恢复任务提交', plannerAgentId: 'planner',
+      clientRequestId: 'browser-request-stable-1', correlationId: 'task-command',
+    }
+    const created = await repository.submit(input)
+    assert.equal(created.reused, false)
+    assert.equal(created.request.sourceMessageIds[0], created.message.id)
+    assert.deepEqual((await database.query(
+      'SELECT goal_verification, budget_tokens FROM missions WHERE id = $1', [created.request.missionId],
+    )).rows[0], { goal_verification: false, budget_tokens: null })
+
+    const responseLossRetry = await repository.submit(input)
+    assert.equal(responseLossRetry.reused, true)
+    assert.equal(responseLossRetry.message.id, created.message.id)
+    assert.equal(responseLossRetry.request.id, created.request.id)
+
+    const durable = await database.query(
+      "SELECT (SELECT COUNT(*)::int FROM messages WHERE body = $1) AS message_count, " +
+      "(SELECT COUNT(*)::int FROM conversation_planning_requests WHERE mission_id = $2) AS request_count, " +
+      "(SELECT COUNT(*)::int FROM missions WHERE id = $2) AS mission_count",
+      [input.body, created.request.missionId],
+    )
+    assert.deepEqual(durable.rows[0], { message_count: 1, request_count: 1, mission_count: 1 })
+
+    await assert.rejects(repository.submit({ ...input, body: '同一个请求不能改写任务内容。' }), /different content/)
+
+    await database.query("UPDATE agents SET status = 'disabled' WHERE id = 'planner'")
+    const rejectedBody = '没有 Planner 时不应只留下消息。'
+    await assert.rejects(repository.submit({
+      ...input, body: rejectedBody, title: '应当回滚',
+      clientRequestId: 'browser-request-rollback-1', correlationId: 'rollback',
+    }), /no active Planner/)
+    const rolledBack = await database.query('SELECT COUNT(*)::int AS count FROM messages WHERE body = $1', [rejectedBody])
+    assert.equal(rolledBack.rows[0].count, 0)
+
+    await database.query("UPDATE agents SET status = 'active' WHERE id = 'planner'")
+    const recovered = await repository.submit({
+      ...input, body: rejectedBody, title: '回滚后重试成功',
+      clientRequestId: 'browser-request-rollback-1', correlationId: 'rollback-retry',
+    })
+    assert.equal(recovered.reused, false)
+  } finally {
+    await database.close()
+  }
+})
+
+test('atomic Goal submission preserves its contract, zero budget and retry identity', async () => {
+  const database = new PGlite()
+  try {
+    await setup(database)
+    const pool = poolAdapter(database)
+    const repository = new ConversationTaskSubmissionRepository(pool)
+    const planning = new ConversationPlanningRepository(pool)
+    const input = {
+      workspaceId: 'ws', conversationId: 'conversation', createdBy: 'user',
+      body: '/goal Keep retries idempotent', title: 'Retry-safe Goal', goal: 'Keep retries idempotent',
+      constraints: ['Preserve existing data'], acceptanceCriteria: ['One durable task submission'],
+      goalVerification: true, budgetTokens: 0, plannerAgentId: 'planner',
+      clientRequestId: 'atomic-goal-request-1', correlationId: 'atomic-goal',
+    }
+    const created = await repository.submit(input)
+    const replay = await repository.submit(input)
+    assert.equal(replay.reused, true)
+    assert.equal(replay.message.id, created.message.id)
+    assert.equal(replay.request.id, created.request.id)
+    assert.deepEqual((await database.query(
+      'SELECT goal, constraints, acceptance_criteria, goal_verification, budget_tokens FROM missions WHERE id = $1',
+      [created.request.missionId],
+    )).rows[0], {
+      goal: input.goal, constraints: input.constraints, acceptance_criteria: input.acceptanceCriteria,
+      goal_verification: true, budget_tokens: 0,
+    })
+    await assert.rejects(repository.submit({ ...input, budgetTokens: 100 }), /different input/)
+    await assert.rejects(repository.submit({ ...input, acceptanceCriteria: ['Changed contract'] }), /different input/)
+    const claim = { requestId: created.request.id, plannerAgentId: 'planner', leaseSeconds: 60 }
+    assert.equal((await planning.claim(claim)).kind, 'budget_blocked')
+    assert.deepEqual((await database.query(
+      'SELECT attempt, (SELECT COUNT(*)::int FROM mission_model_calls WHERE mission_id = r.mission_id) AS calls ' +
+      'FROM conversation_planning_requests r WHERE id = $1', [created.request.id],
+    )).rows[0], { attempt: 0, calls: 0 })
+    await new MissionBudgetRepository(pool).setTokenLimit({
+      workspaceId: 'ws', missionId: created.request.missionId, actorId: 'user', tokenLimit: 100,
+    })
+    const resumed = await planning.claim(claim)
+    assert.equal(resumed.kind, 'work')
+    assert.equal(resumed.work.missionGoalVerification, true)
+    assert.deepEqual(resumed.work.missionAcceptanceCriteria, input.acceptanceCriteria)
+    const invalidBody = '/goal Invalid budget must not leave a message'
+    await assert.rejects(repository.submit({
+      ...input, body: invalidBody, budgetTokens: -1, clientRequestId: 'invalid-goal-budget',
+    }), /Token budget/)
+    assert.equal((await database.query('SELECT COUNT(*)::int AS count FROM messages WHERE body = $1', [invalidBody])).rows[0].count, 0)
   } finally {
     await database.close()
   }

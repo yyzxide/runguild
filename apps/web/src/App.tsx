@@ -36,8 +36,8 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createRoomSubmission, submitRoomSubmission, type RoomSubmission } from './goal-command'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createRoomSubmission, inferComposerIntent, pendingRoomSubmission, pendingSubmissionKey, readPendingSubmission, restoreRoomSubmission, sameSubmission, submitRoomSubmission, type ComposerIntent, type PendingConversationSubmission } from './goal-command'
 
 import {
   guidedPlan,
@@ -57,9 +57,9 @@ import {
 import { GoalView } from './GoalView'
 import { ensureGoalExecution } from './goal-execution'
 import { MembersView } from './MembersView'
-import { EvaluationView } from './EvaluationView'
-import { ArtifactView } from './ArtifactView'
-import { TraceView } from './TraceView'
+const EvaluationView = lazy(async () => ({ default: (await import('./EvaluationView')).EvaluationView }))
+const ArtifactView = lazy(async () => ({ default: (await import('./ArtifactView')).ArtifactView }))
+const TraceView = lazy(async () => ({ default: (await import('./TraceView')).TraceView }))
 
 type View = 'start' | 'mission' | 'team' | 'members' | 'artifacts' | 'evaluation' | 'trace'
 type ConnectionState = 'checking' | 'online' | 'offline'
@@ -212,6 +212,8 @@ function RuntimeConfigPanel({
     worktreeSetupCommands: runtime.configuration.runtime.worktreeSetupCommands,
     worktreeSetupTimeoutMs: runtime.configuration.runtime.worktreeSetupTimeoutMs,
     testCommands: runtime.configuration.runtime.testCommands,
+    protectedTestPaths: runtime.configuration.runtime.protectedTestPaths,
+    testSandbox: runtime.configuration.runtime.testSandbox,
     agentContextInputTokens: runtime.configuration.runtime.agentContextInputTokens,
     agentMaxTestTimeoutMs: runtime.configuration.runtime.agentMaxTestTimeoutMs,
     agentModels: runtime.configuration.agents.map((agent) => ({
@@ -223,17 +225,20 @@ function RuntimeConfigPanel({
   const [draft, setDraft] = useState<UpdateProjectRuntimeConfiguration>(toDraft)
   const [setupCommandsJson, setSetupCommandsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.worktreeSetupCommands, null, 2))
   const [testCommandsJson, setTestCommandsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.testCommands, null, 2))
+  const [protectedTestPathsJson, setProtectedTestPathsJson] = useState(() => JSON.stringify(runtime.configuration.runtime.protectedTestPaths, null, 2))
   const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
     setDraft(toDraft())
     setSetupCommandsJson(JSON.stringify(runtime.configuration.runtime.worktreeSetupCommands, null, 2))
     setTestCommandsJson(JSON.stringify(runtime.configuration.runtime.testCommands, null, 2))
+    setProtectedTestPathsJson(JSON.stringify(runtime.configuration.runtime.protectedTestPaths, null, 2))
   }, [toDraft])
 
   const save = () => {
     let setupCommands: unknown
     let commands: unknown
+    let protectedPaths: unknown
     try {
       setupCommands = JSON.parse(setupCommandsJson)
     } catch {
@@ -256,11 +261,23 @@ function RuntimeConfigPanel({
       setFormError('测试命令必须是非空的二维字符串数组。')
       return
     }
+    try {
+      protectedPaths = JSON.parse(protectedTestPathsJson)
+    } catch {
+      setFormError('受保护验收路径不是合法 JSON。请填写相对路径字符串数组。')
+      return
+    }
+    if (!Array.isArray(protectedPaths) || protectedPaths.length > 200
+        || protectedPaths.some((path) => typeof path !== 'string' || !path.trim())) {
+      setFormError('受保护验收路径必须是至多 200 项的相对路径字符串数组。')
+      return
+    }
     setFormError(null)
     onSave({
       ...draft,
       worktreeSetupCommands: setupCommands as string[][],
       testCommands: commands as string[][],
+      protectedTestPaths: protectedPaths as string[],
     })
   }
   const workerOnline = (kind: WorkerKind, agentId?: string) => kind === 'agent'
@@ -314,6 +331,17 @@ function RuntimeConfigPanel({
               <div className="manifest-step__body">
                 <div className="manifest-step__heading"><span><Terminal size={18} /></span><div><strong>允许 Agent 执行的测试</strong><small>使用参数数组，不经过 Shell；这也是工具网关的命令白名单。</small></div></div>
                 <label className="runtime-field runtime-field--code"><span>测试命令 JSON</span><textarea rows={5} value={testCommandsJson} onChange={(event) => setTestCommandsJson(event.target.value)} spellCheck={false} /></label>
+                <label className="runtime-field runtime-field--code"><span>受保护验收路径 JSON</span><textarea rows={4} value={protectedTestPathsJson} onChange={(event) => setProtectedTestPathsJson(event.target.value)} spellCheck={false} placeholder={'["test/acceptance", "package.json"]'} /><small>填写 Git 已跟踪的测试、夹具和命令入口。Agent 无法修改；测试运行前后都会核对内容清单。</small></label>
+                <div className="runtime-field-grid">
+                  <label className="runtime-field"><span>测试隔离模式</span><select value={draft.testSandbox.mode} onChange={(event) => { const mode = event.target.value as 'trusted_process' | 'bubblewrap'; setDraft({ ...draft, testSandbox: { ...draft.testSandbox, mode, network: mode === 'bubblewrap' ? 'none' : 'host' } }) }}><option value="bubblewrap">Bubblewrap（Linux 沙箱）</option><option value="trusted_process">Trusted process（兼容模式）</option></select></label>
+                  <label className="runtime-field"><span>测试网络</span><select value={draft.testSandbox.network} disabled={draft.testSandbox.mode === 'trusted_process'} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, network: event.target.value as 'none' | 'host' } })}><option value="none">禁用网络</option><option value="host">主机网络</option></select></label>
+                </div>
+                <div className="runtime-limits">
+                  <label className="runtime-field"><span>最大进程数</span><input type="number" min={16} max={4_096} value={draft.testSandbox.maxProcesses} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, maxProcesses: Number(event.target.value) } })} /></label>
+                  <label className="runtime-field"><span>最大文件描述符</span><input type="number" min={16} max={65_536} value={draft.testSandbox.maxOpenFiles} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, maxOpenFiles: Number(event.target.value) } })} /></label>
+                  <label className="runtime-field"><span>单文件上限（MiB）</span><input type="number" min={16} max={16_384} value={draft.testSandbox.maxFileSizeMb} onChange={(event) => setDraft({ ...draft, testSandbox: { ...draft.testSandbox, maxFileSizeMb: Number(event.target.value) } })} /></label>
+                </div>
+                <div className={`setup-policy${draft.testSandbox.mode === 'bubblewrap' ? ' setup-policy--sandboxed' : ''}`}><strong>{draft.testSandbox.mode === 'bubblewrap' ? 'Linux 隔离已选择' : 'Trusted-local 兼容模式'}</strong><span>{draft.testSandbox.mode === 'bubblewrap' ? `只挂载系统运行时与 Task Worktree；网络：${draft.testSandbox.network === 'none' ? '禁用' : '主机网络'}。环境不支持时 Worker 会拒绝启动，不会降级。` : '测试进程与 Worker 共享主机权限域；界面与证据会如实标记，不称为 OS 沙箱。'}</span></div>
                 <div className="runtime-limits">
                   <label className="runtime-field"><span>上下文输入 Token</span><input type="number" min={256} max={2_000_000} value={draft.agentContextInputTokens} onChange={(event) => setDraft({ ...draft, agentContextInputTokens: Number(event.target.value) })} /></label>
                   <label className="runtime-field"><span>单次测试超时（毫秒）</span><input type="number" min={1_000} max={900_000} value={draft.agentMaxTestTimeoutMs} onChange={(event) => setDraft({ ...draft, agentMaxTestTimeoutMs: Number(event.target.value) })} /></label>
@@ -679,7 +707,6 @@ function TeamRoomView({
   const [acceptanceText, setAcceptanceText] = useState('')
   const [constraintText, setConstraintText] = useState('')
   const [budgetText, setBudgetText] = useState('')
-  const submissionRef = useRef<{ readonly source: string; readonly submission: RoomSubmission } | null>(null)
   const submissionBusy = useRef(false)
   const historyOperation = useRef<{ readonly source: string; readonly key: string } | null>(null)
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null)
@@ -692,6 +719,8 @@ function TeamRoomView({
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [planningBusy, setPlanningBusy] = useState(false)
+  const [composerIntentOverride, setComposerIntentOverride] = useState<ComposerIntent | null>(null)
+  const [submissionRecoveryAttempted, setSubmissionRecoveryAttempted] = useState('')
   const [roomError, setRoomError] = useState<string | null>(null)
   const [plannerStartAttempted, setPlannerStartAttempted] = useState('')
   const [plannerStartError, setPlannerStartError] = useState<string | null>(null)
@@ -707,7 +736,6 @@ function TeamRoomView({
   const planningActive = planningRequest !== null
     && ['queued', 'running', 'model_complete', 'awaiting_approval'].includes(planningRequest.status)
   const explicitGoal = /^\/goal(?:\s|$)/.test(draft.trim())
-  const composingGoal = explicitGoal || (!mission && !planningActive)
   const plannerWorker = runtime?.control.workers.find((worker) =>
     worker.kind === 'agent' && worker.agentId === planner?.id)
   const plannerOnline = overview?.agents.find((agent) => agent.id === planner?.id)?.worker?.state === 'online'
@@ -718,6 +746,43 @@ function TeamRoomView({
   const planningBlockReason = runtime?.control.enabled
     ? plannerWorker?.missing.join('、') || '规划 Agent Worker 不可用'
     : '规划 Agent Worker 未在线，当前部署不允许从 Web 启动'
+  const composerIntent = explicitGoal ? 'task' : mission || planningActive
+    ? 'message'
+    : composerIntentOverride ?? inferComposerIntent(draft)
+  const composingGoal = composerIntent === 'task'
+
+  const acceptPlanningRequest = useCallback(async (request: ConversationPlanningRequest) => {
+    const snapshot = await missionApi.getMission(identity, request.missionId)
+    planningSelectionRef.current = request.id
+    selectedMissionRef.current = snapshot.id
+    onMissionReady(snapshot)
+    setPlanningRequest(request)
+    setPlannerStartError(null)
+    window.localStorage.setItem('runguild:last-planning:' + request.conversationId, request.id)
+    setSelectedMessageIds([])
+  }, [identity, onMissionReady])
+
+  const submitPendingSubmission = useCallback(async (pending: PendingConversationSubmission) => {
+    const result = await submitRoomSubmission(missionApi, restoreRoomSubmission(identity, pending))
+    if (result.planningRequest && result.mission) {
+      planningSelectionRef.current = result.planningRequest.id
+      selectedMissionRef.current = result.mission.id
+      onMissionReady(result.mission)
+      setPlanningRequest(result.planningRequest)
+      setPlannerStartError(null)
+      window.localStorage.setItem('runguild:last-planning:' + pending.conversationId, result.planningRequest.id)
+      setSelectedMessageIds([])
+    }
+    setMessages((current) => current.some((item) => item.id === result.message.id) ? current : [...current, result.message])
+    const storageKey = pendingSubmissionKey(identity, pending.conversationId)
+    if (readPendingSubmission(window.localStorage, identity, pending.conversationId)?.clientRequestId === pending.clientRequestId) {
+      window.localStorage.removeItem(storageKey)
+    }
+    setDraft((current) => current.trim() === pending.body ? '' : current)
+    setReplyTo(null)
+    setComposerIntentOverride(null)
+    return result.planningRequest
+  }, [identity, onMissionReady])
 
   useEffect(() => {
     if (!setup) return
@@ -756,6 +821,8 @@ function TeamRoomView({
     setPlanningTitle('')
     setPlanningRequest(null)
     planningSelectionRef.current = null
+    setComposerIntentOverride(null)
+    setSubmissionRecoveryAttempted('')
     setPlannerStartAttempted('')
     setPlannerStartError(null)
     if (!conversationId) return
@@ -833,14 +900,7 @@ function TeamRoomView({
       plannerAgentId: planner.id,
       idempotencyKey: historyOperation.current.key,
     })
-    const snapshot = await missionApi.getMission(identity, request.missionId)
-    planningSelectionRef.current = request.id
-    selectedMissionRef.current = snapshot.id
-    onMissionReady(snapshot)
-    setPlanningRequest(request)
-    setPlannerStartError(null)
-    window.localStorage.setItem('runguild:last-planning:' + conversationId, request.id)
-    setSelectedMessageIds([])
+    await acceptPlanningRequest(request)
     historyOperation.current = null
     return request
   }
@@ -856,6 +916,20 @@ function TeamRoomView({
       onOpenRuntime()
     }
   }
+  useEffect(() => {
+    if (!conversationId || sending) return
+    const pending = readPendingSubmission(window.localStorage, identity, conversationId)
+    if (!pending || pending.clientRequestId === submissionRecoveryAttempted) return
+    setSubmissionRecoveryAttempted(pending.clientRequestId)
+    setSending(true)
+    setRoomError(null)
+    void submitPendingSubmission(pending)
+      .catch((caught: unknown) => setRoomError(
+        (caught instanceof Error ? caught.message : '待确认的发送请求恢复失败')
+        + '；原请求仍保留，可重试待确认请求。',
+      ))
+      .finally(() => setSending(false))
+  }, [conversationId, identity, sending, submissionRecoveryAttempted, submitPendingSubmission])
   const createPlanningRequest = async () => {
     if (!conversationId || selectedMessageIds.length === 0 || !planningTitle.trim() || planningBusy) return
     setPlanningBusy(true)
@@ -875,34 +949,27 @@ function TeamRoomView({
     setSending(true)
     setRoomError(null)
     try {
-      const source = JSON.stringify([conversationId, mission?.id, draft.trim(), acceptanceText, constraintText, budgetText, selectedAgents, replyTo?.id])
-      if (submissionRef.current?.source !== source) {
-        submissionRef.current = { source, submission: createRoomSubmission({
-          identity, conversationId, draft, acceptanceText, constraintText, budgetText,
-          missionId: mission?.id ?? (planningActive ? planningRequest?.missionId : undefined),
-          planningActive, plannerAgentId: planner?.id, selectedAgents,
-          replyToMessageId: replyTo?.id,
-        }, crypto.randomUUID()) }
+      const existing = readPendingSubmission(window.localStorage, identity, conversationId)
+      const submission = createRoomSubmission({
+        identity, conversationId, draft, acceptanceText, constraintText, budgetText,
+        missionId: existing?.intent === 'task' ? undefined : mission?.id ?? (planningActive ? planningRequest?.missionId : undefined),
+        planningActive: existing?.intent === 'task' ? false : planningActive,
+        intent: composerIntent, plannerAgentId: planner?.id, selectedAgents,
+        replyToMessageId: replyTo?.id,
+      }, crypto.randomUUID())
+      const pending = pendingRoomSubmission(submission)
+      if (existing && !sameSubmission(existing, pending)) {
+        throw new Error('上一条发送请求仍待确认，请先重试待确认请求，避免重复创建目标')
       }
-      const result = await submitRoomSubmission(missionApi, submissionRef.current.submission)
-      const { message } = result
-      setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message])
-      if (result.planningRequest && result.mission) {
-        planningSelectionRef.current = result.planningRequest.id
-        selectedMissionRef.current = result.mission.id
-        setPlanningRequest(result.planningRequest)
-        setPlannerStartError(null)
-        window.localStorage.setItem('runguild:last-planning:' + conversationId, result.planningRequest.id)
-        setSelectedMessageIds([])
-        onMissionReady(result.mission)
-        await wakePlanner(result.planningRequest)
-      }
-      submissionRef.current = null
+      const resumable = existing ?? pending
+      window.localStorage.setItem(pendingSubmissionKey(identity, conversationId), JSON.stringify(resumable))
+      setSubmissionRecoveryAttempted(resumable.clientRequestId)
+      const request = await submitPendingSubmission(resumable)
       setDraft('')
       setAcceptanceText('')
       setConstraintText('')
       setBudgetText('')
-      setReplyTo(null)
+      if (request) await wakePlanner(request)
     } catch (caught) {
       setRoomError(caught instanceof Error ? caught.message : '消息或任务提交失败')
     } finally {
@@ -933,10 +1000,10 @@ function TeamRoomView({
   return (
     <>
       <section className="page-heading room-heading">
-        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>目标与协作</span></div><h1>告诉团队，要交付什么</h1><p>用 /goal 开始新目标，写明验收条件与约束。团队先提出计划，经过你的批准后执行；普通消息继续补充当前目标。</p></div>
-        <div className="page-actions"><button className="primary-action" disabled={sending} onClick={() => { setDraft('/goal '); setReplyTo(null); setRoomError(null) }}><Plus size={15} />新目标</button><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
+        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>目标与协作</span></div><h1>和 Agent 团队一起工作</h1><p>用 /goal 开始新目标，或发送首条任务并补充验收条件与约束。团队先提出计划，经你批准后执行；问候只作为普通消息保存。</p></div>
+        <div className="page-actions"><button className="primary-action" disabled={sending} onClick={() => { setDraft('/goal '); setReplyTo(null); setComposerIntentOverride(null); setRoomError(null) }}><Plus size={15} />新目标</button><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
       </section>
-      {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p></div></div> : null}
+      {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p>{conversationId && readPendingSubmission(window.localStorage, identity, conversationId) ? <button className="secondary-action" disabled={sending} onClick={() => setSubmissionRecoveryAttempted('')}>重试待确认请求</button> : null}</div></div> : null}
       <div className="room-workspace">
         <aside className="room-directory">
           <div className="room-directory__heading"><span className="micro-label">工作区会话</span><strong>{conversations.length}</strong></div>
@@ -989,9 +1056,10 @@ function TeamRoomView({
           <div className="room-composer">
             {replyTo ? <div className="reply-banner"><span>正在回复 <strong>{replyTo.authorName}</strong> · {replyTo.body.slice(0, 72)}</span><button onClick={() => setReplyTo(null)}>取消</button></div> : null}
             {!composingGoal ? <div className="recipient-picker"><span><AtSign size={13} />向执行中的 Agent 补充信息</span><div>{agents.map((agent) => <button disabled={sending} key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div> : null}
-            <div className="composer-field"><textarea aria-label="目标或补充消息" disabled={sending} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '补充当前目标，或输入 /goal 开始另一个目标。' : '/goal 为 CSV 导入增加错误行预览'} /><button aria-label={composingGoal ? '创建目标并规划' : '补充当前目标'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{composingGoal ? '创建目标' : '发送补充'}</span></button></div>
+            {!mission && !planningActive ? <div className="composer-intent" aria-label="发送方式"><span>发送方式</span><div><button disabled={sending || explicitGoal} className={composerIntent === 'task' ? 'is-selected' : ''} aria-pressed={composerIntent === 'task'} onClick={() => setComposerIntentOverride('task')}><Network size={12} />新任务<small>创建目标并规划</small></button><button disabled={sending || explicitGoal} className={composerIntent === 'message' ? 'is-selected' : ''} aria-pressed={composerIntent === 'message'} onClick={() => setComposerIntentOverride('message')}><MessageCircle size={12} />普通消息<small>仅记录与路由</small></button></div><em>{explicitGoal ? '/goal 明确创建新目标' : composerIntentOverride ? '已手动选择' : '已按输入内容判断，可手动切换'}</em></div> : null}
+            <div className="composer-field"><textarea aria-label="目标或补充消息" disabled={sending} value={draft} onChange={(event) => { setDraft(event.target.value); setComposerIntentOverride(null) }} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '补充当前目标，或输入 /goal 开始另一个目标。' : '/goal 为 CSV 导入增加错误行预览'} /><button aria-label={explicitGoal ? '创建目标并规划' : composingGoal ? '发送并启动规划' : mission ? '发送到当前 Mission' : planningActive ? '补充规划上下文' : '发送普通消息'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{composingGoal ? '创建目标' : mission || planningActive ? '发送补充' : '发送消息'}</span></button></div>
             {composingGoal ? <div className="goal-contract-inputs"><label>验收条件（每行一项，可选）<textarea disabled={sending} value={acceptanceText} onChange={(event) => setAcceptanceText(event.target.value)} rows={3} placeholder={'导入前可预览错误行\n重复导入不会产生重复数据\n相关回归测试通过'} /></label><label>约束（每行一项，可选）<textarea disabled={sending} value={constraintText} onChange={(event) => setConstraintText(event.target.value)} rows={2} placeholder={'保持现有接口兼容\n不修改线上数据'} /></label><label>Token 总限额（可选）<input inputMode="numeric" disabled={sending} value={budgetText} onChange={(event) => setBudgetText(event.target.value)} placeholder="留空不限额，例如 200000" /></label><p>限额覆盖规划、执行、审查与终验的模型用量；达到限额后等待你调整，在途调用可能超过限额。目标交付前会核对完整验收清单，最终仍由你确认。</p></div> : null}
-            <div className="composer-scope"><span className={!composingGoal && (mission || planningActive) ? 'is-bound' : ''}><Link2 size={12} />{composingGoal ? '新目标：创建独立 Mission，计划批准后才执行' : mission ? `补充当前目标 · ${mission.title}` : '补充正在规划的目标'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
+            <div className="composer-scope"><span className={!composingGoal && (mission || planningActive) ? 'is-bound' : ''}><Link2 size={12} />{composingGoal ? '新目标：创建独立 Mission，计划批准后才执行' : mission ? `补充当前目标 · ${mission.title}` : planningActive ? '补充正在规划的目标' : '普通消息：不会创建 Mission 或任务 DAG'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
           </div>
         </section>
 
@@ -1544,5 +1612,5 @@ export function App() {
   if (!authentication.projects.length) return <NoProjectAccess session={authentication} authenticationMode={authenticationMode} onLogout={logout} />
   if (!identity.projectId) return <WorkspaceLauncher session={authentication} authenticationMode={authenticationMode} onOpen={changeProject} onCreate={createProject} onLifecycle={updateProjectLifecycle} onLogout={logout} />
 
-  return <div className="app-shell"><AppNavigation view={view} session={authentication} authenticationMode={authenticationMode} onNavigate={navigate} onLeaveWorkspace={() => changeProject('')} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}>{content}</main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
+  return <div className="app-shell"><AppNavigation view={view} session={authentication} authenticationMode={authenticationMode} onNavigate={navigate} onLeaveWorkspace={() => changeProject('')} onLogout={logout} /><div className="app-stage"><TopBar view={view} connection={connection} projects={authentication.projects} projectId={identity.projectId} onProjectChange={changeProject} onOpenCommand={() => setCommandOpen(true)} /><main className={`page page--${view}`}><Suspense fallback={<section className="evaluation-state"><LoaderCircle className="is-spinning" size={22} /><strong>正在加载工作区模块</strong></section>}>{content}</Suspense></main></div>{commandOpen ? <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={navigate} /> : null}{runtimePanelOpen && runtimeConfiguration ? <RuntimeConfigPanel runtime={runtimeConfiguration} overview={overview} busy={runtimeBusy} error={runtimeError} onClose={() => setRuntimePanelOpen(false)} onSave={saveRuntimeConfiguration} onControl={controlWorker} /> : null}{runtimePanelOpen && !runtimeConfiguration ? <div className="runtime-config-backdrop" role="presentation" onMouseDown={() => setRuntimePanelOpen(false)}><section className="runtime-config-loading" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>{runtimeError ? <><CircleAlert size={24} /><strong>运行配置没有加载成功</strong><p>{runtimeError}</p><button className="secondary-action" onClick={() => setRuntimePanelOpen(false)}>关闭</button></> : <><LoaderCircle className="is-spinning" size={25} /><strong>正在读取项目运行配置</strong><p>只读取可持久化的启动参数，不读取模型密钥。</p></>}</section></div> : null}</div>
 }

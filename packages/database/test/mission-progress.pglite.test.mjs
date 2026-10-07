@@ -59,7 +59,7 @@ async function fixture(database) {
 }
 
 async function addEvidence(database, {
-  id, kind = 'test_run', runId = 'run_current', metadata = { passed: true, command: ['npm', 'test'] },
+  id, kind = 'test_run', runId = 'run_current', metadata = { passed: true, clean: true, stable: true, protectedTestsIntact: true, command: ['npm', 'test'] },
   expired = false, createdAt = '2026-01-01T00:00:00Z', criterion = true,
 }) {
   await database.query(`
@@ -140,7 +140,13 @@ test('criterion progress follows the completion gate for stale, expired and late
     await addEvidence(database, { id: 'old_attempt', runId: 'run_old' })
     await addEvidence(database, { id: 'expired', expired: true })
     await assertEvidence(false, [])
-    await addEvidence(database, { id: 'valid', metadata: { passed: true, command: ['npm', 'test'], raw: 'RAW_METADATA_MARKER' } })
+    await addEvidence(database, { id: 'valid', metadata: { passed: true, clean: true, stable: true, protectedTestsIntact: true, command: ['npm', 'test'], raw: 'RAW_METADATA_MARKER' } })
+    await assertEvidence(true, ['valid'])
+    await database.query("UPDATE evidence SET metadata = metadata || '{\"protectedTestsIntact\":false}'::jsonb WHERE id = 'valid'")
+    await assertEvidence(false, [])
+    await database.query("UPDATE evidence SET metadata = metadata - 'protectedTestsIntact' WHERE id = 'valid'")
+    await assertEvidence(false, [])
+    await database.query("UPDATE evidence SET metadata = metadata || '{\"protectedTestsIntact\":true}'::jsonb WHERE id = 'valid'")
     await assertEvidence(true, ['valid'])
     assert.doesNotMatch(JSON.stringify(await missions.getMission('ws_goal', 'mission_goal')), /RAW_METADATA_MARKER/)
     await addEvidence(database, { id: 'failed_later', createdAt: '2026-01-02T00:00:00Z', metadata: { passed: false, command: ['npm', 'test'] } })
@@ -165,7 +171,7 @@ test('review evidence must bind the current Submission and exact committed tree,
     `)
     await addEvidence(database, { id: 'commit', kind: 'file_diff', criterion: false, metadata: { commit: 'head-current', treeHash: 'tree-current' } })
     await addEvidence(database, { id: 'tests', metadata: {
-      passed: true, command: ['npm', 'test'], headCommit: 'head-current', treeHash: 'tree-current', clean: true, stable: true,
+      passed: true, command: ['npm', 'test'], headCommit: 'head-current', treeHash: 'tree-current', clean: true, stable: true, protectedTestsIntact: true,
     } })
     let snapshot = await missions.getMission('ws_goal', 'mission_goal')
     assert.equal(snapshot.tasks[0].acceptanceCriteria[0].evidenceStatus, 'missing')

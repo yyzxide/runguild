@@ -98,14 +98,18 @@ summary is attempted.
 ### Goal creation and final verification
 
 `/goal` is parsed by the Web client; it is not a separate HTTP endpoint or a
-model Tool. The client first records the source message, then creates a
-Planning Request using the existing Conversation API. During a retry it retains
-the same command payload and separate idempotency keys for those two writes.
-This retry state lasts for the mounted client component; it is not a durable
-browser recovery queue.
+model Tool. New task input uses the Conversation task-submission API to commit
+the source message, Mission, and Planning Request in one transaction. Before
+sending, the browser persists the complete command contract and fixed
+`clientRequestId` in its localStorage recovery queue. A lost response or page
+reload followed by reopening the project retries that same payload and ID without creating another Mission;
+reusing the ID with changed input is rejected. Older queued requests retain
+their original omitted fields so their idempotency hashes remain valid.
+Promotion of existing messages still uses the planning API directly.
 
 | Route | Goal-related contract |
 |---|---|
+| `POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/task-submissions` | Human-only atomic message and planning submission, with a fixed `x-client-request-id` header. The body accepts `body`, `title`, optional message references and recipients, plus optional `goal`, `constraints`, `acceptanceCriteria`, `goalVerification`, `budgetTokens`, and `plannerAgentId`. Retries are bound to the original payload. |
 | `POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/planning-requests` | Human-only. Existing `sourceMessageIds` and `title`, plus optional `goal`, `constraints`, `acceptanceCriteria`, `goalVerification`, `budgetTokens`, and `plannerAgentId`. |
 | `POST /api/v1/workspaces/:workspaceId/projects/:projectId/missions` | Existing Mission creation with optional `goalVerification` and `budgetTokens`; the supplied original `goal`, `constraints`, and `acceptanceCriteria` are retained. |
 | `GET /api/v1/workspaces/:workspaceId/missions/:missionId` | Mission contract, proposed plan, Task progress, `goalVerification`, `verificationTaskId`, `finalDelivery`, and the production server's `budget` snapshot. |
@@ -470,7 +474,17 @@ changing the checked-out project branch or another Trial.
 Terminal Trial metrics are computed by the server from Task, Run, LLM Call,
 Tool Execution, Review, and Context Snapshot rows. A caller cannot submit a
 self-reported score. Paired report deltas use `multi_agent - single_agent` and
-include only repetitions where both Trial metrics are present.
+include only repetitions where both Trial metrics are present. If any model
+call in a Trial lacks a configured price, `estimatedCostUsd` is `null`; a paired
+cost delta is emitted only when every complete pair has prices on both sides.
+The report exposes price-covered pair counts separately from complete pair
+counts.
+
+Reports with fewer than three complete pairs, or an unfinished Experiment, are
+labelled `exploratory`. Three complete pairs are only the minimum for a
+repeatable engineering comparison. The report always carries the limitation
+that statistical significance has not been established; callers must not
+translate this operational gate into a statistical claim.
 
 The current Trial driver uses the frozen plans directly; it does not invoke the
 Conversation Planner or opt into `goalVerification`/`budgetTokens`. Existing

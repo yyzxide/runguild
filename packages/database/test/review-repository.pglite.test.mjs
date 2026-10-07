@@ -29,6 +29,7 @@ const migrationUrls = [
   new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
   new URL('../migrations/0027_mission_budget.sql', import.meta.url),
   new URL('../migrations/0028_goal_verification.sql', import.meta.url),
+  new URL('../migrations/0030_model_provider_provenance.sql', import.meta.url),
 ]
 
 function poolAdapter(database) {
@@ -377,11 +378,11 @@ test('evidence-only retry freezes exact commit and clean tested-HEAD evidence fr
       "'{\"commit\":\"" + headCommit + "\",\"treeHash\":\"" + treeHash + "\",\"toolCallId\":\"call_commit\"}'::jsonb), " +
       "('evidence_test_retry', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
       "'test_run', 'test-run://retry', 'test_retry', " +
-      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"headCommit\":\"" + headCommit +
+      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"protectedTestsIntact\":true,\"headCommit\":\"" + headCommit +
       "\",\"treeHash\":\"" + treeHash + "\",\"command\":[\"npm\",\"test\"],\"toolCallId\":\"call_test\"}'::jsonb), " +
       "('evidence_test_stale', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
       "'test_run', 'test-run://stale', 'test_stale', " +
-      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"headCommit\":\"" + baseCommit +
+      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"protectedTestsIntact\":true,\"headCommit\":\"" + baseCommit +
       "\",\"treeHash\":\"" + 'd'.repeat(40) + "\",\"command\":[\"npm\",\"test\"]}'::jsonb), " +
       "('evidence_test_dirty', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
       "'test_run', 'test-run://dirty', 'test_dirty', " +
@@ -477,7 +478,9 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
           responseSnapshot: { finishReason: 'stop', content: 'Approved in prose.', toolCalls: [] },
           modelProvider: 'openai',
           modelName: 'test',
+          endpoint: 'https://api.example.test/responses',
           providerRequestId: 'response_invalid',
+          returnedModel: 'test-2026-09-14',
           inputTokens: 321,
           outputTokens: 17,
           cachedInputTokens: 123,
@@ -498,22 +501,26 @@ test('human retry requeues only an exhausted Reviewer execution and preserves it
     )
     assert.equal(failed.rows[0].status, 'failed')
     const invalidResponse = await database.query(
-      'SELECT response_snapshot, provider_request_id, input_tokens, output_tokens ' +
+      'SELECT response_snapshot, model_endpoint, provider_request_id, returned_model, input_tokens, output_tokens ' +
       'FROM review_executions WHERE review_id = $1',
       [reviewId],
     )
     assert.equal(invalidResponse.rows[0].response_snapshot.content, 'Approved in prose.')
     assert.equal(invalidResponse.rows[0].provider_request_id, 'response_invalid')
+    assert.equal(invalidResponse.rows[0].model_endpoint, 'https://api.example.test/responses')
+    assert.equal(invalidResponse.rows[0].returned_model, 'test-2026-09-14')
     assert.equal(invalidResponse.rows[0].input_tokens, 321)
     assert.equal(invalidResponse.rows[0].output_tokens, 17)
     const invalidCalls = await database.query(
-      'SELECT attempt, status, input_tokens, output_tokens, cached_input_tokens, error ' +
+      'SELECT attempt, status, endpoint, returned_model, input_tokens, output_tokens, cached_input_tokens, error ' +
       'FROM reviewer_model_calls WHERE review_id = $1 ORDER BY attempt',
       [reviewId],
     )
     assert.deepEqual(invalidCalls.rows, [{
       attempt: 1,
       status: 'invalid',
+      endpoint: 'https://api.example.test/responses',
+      returned_model: 'test-2026-09-14',
       input_tokens: 321,
       output_tokens: 17,
       cached_input_tokens: 123,
@@ -706,7 +713,7 @@ test('Mission-room Reviewer receives durable work after Task review and resumes 
   }
 })
 
-for (const scenario of ['old-head', 'dirty', 'newer-failure', 'exact-pass']) {
+for (const scenario of ['old-head', 'dirty', 'protected-tests-changed', 'protected-tests-unknown', 'newer-failure', 'exact-pass']) {
   test('Review completion checks final code evidence: ' + scenario, async () => {
     const database = new PGlite()
     try {
@@ -717,14 +724,14 @@ for (const scenario of ['old-head', 'dirty', 'newer-failure', 'exact-pass']) {
       await database.exec("INSERT INTO task_acceptance_criteria (id,task_id,criterion_key,description,required,required_evidence_kinds) VALUES ('criterion_final','task_review','test','final tests',true,ARRAY['test_run']);")
       await database.query("INSERT INTO task_worktrees (task_id,workspace_id,mission_id,project_id,repository_path,worktree_path,branch_name,base_ref,base_commit,head_commit,status) VALUES ('task_review','ws_review','mission_review','project_review','/repo','/trees/task','agent/task','main',$1,$2,'committed')", [base, head])
       await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,kind,uri,content_hash,metadata) VALUES ('commit_final','ws_review','mission_review','task_review','run_builder','file_diff','git://final','diff_final',$1::jsonb)", [JSON.stringify({commit: head, treeHash:tree})])
-      const metadata = {passed:true,clean:scenario !== 'dirty',stable:true,headCommit:scenario === 'old-head' ? base : head,treeHash:tree,command:['npm','test']}
+      const metadata = {passed:true,clean:scenario !== 'dirty',stable:true,protectedTestsIntact:scenario === 'protected-tests-unknown' ? undefined : scenario !== 'protected-tests-changed',headCommit:scenario === 'old-head' ? base : head,treeHash:tree,command:['npm','test']}
       await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,acceptance_criterion_id,kind,uri,content_hash,metadata,created_at) VALUES ('test_final','ws_review','mission_review','task_review','run_builder','criterion_final','test_run','test://final','test_final',$1::jsonb,NOW()-INTERVAL '1 minute')", [JSON.stringify(metadata)])
       if (scenario === 'newer-failure') {
         await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,kind,uri,content_hash,metadata) VALUES ('test_failed','ws_review','mission_review','task_review','run_builder','test_run','test://failed','failed_final',$1::jsonb)", [JSON.stringify({...metadata,passed:false})])
       }
       const submission = await submit(repository)
       const selected = (await database.query('SELECT evidence_id FROM task_submission_evidence WHERE submission_id=$1',[submission.id])).rows.map(x=>x.evidence_id)
-      assert.equal(selected.includes('test_final'), scenario !== 'old-head' && scenario !== 'dirty')
+      assert.equal(selected.includes('test_final'), ['newer-failure', 'exact-pass'].includes(scenario))
       const result = await repository.reviewSubmission({ reviewId:'review_final',workspaceId:'ws_review',submissionId:submission.id,
         reviewer:{kind:'user',id:'user_reviewer'},decision:'approved',summary:'audit',findings:[],correlationId:'final_audit' })
       assert.deepEqual(result.taskCompletion, {completed:false,reason:scenario === 'exact-pass' ? 'missing_integration' : 'missing_evidence'})

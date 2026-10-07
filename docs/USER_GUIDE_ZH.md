@@ -198,7 +198,7 @@ Reviewer 和协作室；任何一步失败都会整体回滚。浏览器不会�
 ID、Project ID、Agent ID 或 Conversation ID。
 
 若创建时留空仓库路径，进入工作台后打开“配置与启停”，再补充仓库路径、
-Worktree 根目录、准备命令和测试白名单。创建工作区不会自动启动 Worker，也
+Worktree 根目录、准备命令、测试白名单和受保护验收路径。创建工作区不会自动启动 Worker，也
 不会扫描或修改填写的仓库。
 
 ### 3.8 重命名、归档与恢复工作区
@@ -224,15 +224,18 @@ Worktree 根目录、准备命令和测试白名单。创建工作区不会自�
 3. **默认分支**：通常是 `main`。
 4. **Worktree 准备命令**：新 Worktree 没有 `node_modules`，Node 项目通常需要一个经过审查的精确 argv，例如 `npm ci --ignore-scripts --no-audit --no-fund`。
 5. **测试白名单**：每项都是精确 argv，不是 Shell 文本，例如 `npm run typecheck`、`npm test`。
-6. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
-7. **Token 和超时**：单次测试默认上限为 120000 毫秒（120 秒），小项目可先保留。如果让 Agent 修改 RunGuild 本仓库，已归档的完整测试阶段耗时超过 200 秒，应在项目配置把单次测试上限调至 600000 毫秒，并让测试调用申请足够的超时；提高配置上限不会覆盖调用自身较短的超时。
+6. **受保护验收路径**：填写 Git 已跟踪的测试、夹具与命令入口，例如 `test/acceptance`、`package.json`。Agent 不能修改这些路径；测试前后会校验内容清单。若命令是 `npm test`，至少保护 `package.json` 与真正决定通过/失败的测试目录。
+7. **测试隔离**：Linux 本地作品演示优先选择 `Bubblewrap + 禁用网络`。需要连接外部测试数据库时可显式选择主机网络。`Trusted process` 只用于兼容，它与 Worker 共用主机权限域，系统不会把它标成 OS 沙箱。
+8. **资源限制**：为测试配置最大进程数、文件描述符和单文件大小；墙钟超时仍由“单次测试超时”控制。Bubblewrap 或 `prlimit` 缺失时 Agent Worker 会拒绝启动，不会静默降级。
+9. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
+10. **Token 和超时**：单次测试默认上限为 120000 毫秒（120 秒），小项目可先保留。如果让 Agent 修改 RunGuild 本仓库，已归档的完整测试阶段耗时超过 200 秒，应在项目配置把单次测试上限调至 600000 毫秒，并让测试调用申请足够的超时；提高配置上限不会覆盖调用自身较短的超时。
 
-RunGuild 本仓库的 `npm test` 会启动临时 PostgreSQL 容器。由 Agent 的
-`test.run` 执行时，子进程只保留 `PATH`、`LANG`、`CI`，不会继承自定义
-`TEST_DATABASE_URL` 或 `DOCKER_HOST`。因此需确认运行 Worker 的系统用户
-能够直接访问默认 Docker；终端使用自定义测试数据库或 Docker 地址跑通，
-不等于 Agent 的测试环境也已可用。耗时证据见
-[2026-09-26 测试归档](verification/2026-09-26/README.md)。
+RunGuild 本仓库的 `npm test` 会启动临时 PostgreSQL 容器。`test.run` 不会继承自定义
+`TEST_DATABASE_URL` 或 `DOCKER_HOST`；Bubblewrap 也不开放主机 Docker socket，
+仅切换为主机网络不会授予 Docker 访问。若用 `Trusted process` 在专用环境执行本仓库
+完整测试，需确认 Worker 用户能访问默认 Docker，并理解该模式共用主机权限域。
+终端使用自定义测试数据库或 Docker 地址跑通，不等于 Agent 的测试环境也已可用。
+耗时证据见 [2026-09-26 测试归档](verification/2026-09-26/README.md)。
 
 API Key 只来自 API 进程环境，不进入 PostgreSQL，也不会返回浏览器。
 
@@ -304,6 +307,8 @@ docker compose down -v
 
 当前既没有选中的 Mission，也没有进行中的规划时，直接发送首条需求会自动创建 Mission 并交给 Planner，不需要再勾选消息。有当前 Mission 时，普通消息是补充信息，可选择接收的 Agent；消息不会自动改写已批准的计划。
 
+首条任务和 `/goal` 会通过一次原子提交共同保存消息与规划请求。浏览器发送前会把完整目标材料和请求 ID 存入本地恢复队列；响应丢失时可重试，刷新后重新进入项目也会沿用同一请求恢复，避免重复创建 Mission。问候默认作为普通消息保存；没有当前 Mission 时也可手动切换“新任务”与“普通消息”。
+
 也可以选择一到五十条历史消息，填写 Mission 标题，点击“用所选历史创建任务”发起新的规划。当前已有进行中的规划时，这个入口暂不可用。
 
 若要在讨论中明确另起一个 Mission，点击“新目标”，或直接输入：
@@ -344,6 +349,8 @@ Planner 的输出仍是“待批准计划”，不会自动开工。验收条件
 
 在“目标”页查看分工、依赖交接、实际执行者、尝试次数、任务验收证据、独立评审和集成结果。任务完成数不等于用户目标验收覆盖率；目标验收清单仍需逐项核对。点击某次运行可进入对应记录检查模型调用、工具调用与错误；Worker 心跳仍可在工作台查看。
 
+模型调用摘要会分别显示配置的请求模型、供应商实际返回的模型标识和精确 `/responses` 端点。三者一致是正常情况；别名被解析为具体模型时，请求模型和返回模型可能不同。旧记录缺少这些字段时会明确显示“未知”，系统不会根据当前配置倒推历史事实。
+
 `Agent active` 只表示 Agent 配置启用，不表示 Worker 在线。真正的进程状态来自持久化 Worker 心跳。
 
 ### 6.4 Review、Integration 与最终批准
@@ -352,6 +359,7 @@ Planner 的输出仍是“待批准计划”，不会自动开工。验收条件
 
 - Worktree 中形成精确 Git commit；
 - 必需测试产生 Evidence；
+- 测试对应干净、稳定的 Git HEAD，且受保护验收文件未变化；
 - Artifact Version 已冻结；
 - Reviewer 审查的是该精确版本和提交；
 - Integration Worker 只集成已审查的 commit。
@@ -379,6 +387,7 @@ Planner 的输出仍是“待批准计划”，不会自动开工。验收条件
 | Worker 心跳失联 | Worker 终端或 API 子进程日志 | 等租约过期后重启；不要并行启动同一 Agent |
 | Planner 一直等待 | Planner Worker、Planning Request 状态、模型配置 | 启动 Planner，检查 Key、端点和模型名称 |
 | 模型调用因预算等待 | 目标页的限额、已知用量和未知用量 | 用量已知时提高或移除限额；用量未知时提高限额无效，需核对后决定是否移除限额 |
+| 请求模型与返回模型不同 | Run Trace 中的端点和返回模型 | 先确认是否为供应商别名解析；若端点异常，停止 Worker 并检查 `OPENAI_BASE_URL` |
 | Task 等待依赖 | Mission DAG 上游状态 | 先解决失败或未完成的上游 Task |
 | Builder 无法测试 | Worktree setup、测试 argv、超时 | 修正精确 argv；不要开放任意 Shell |
 | Review 失败 | Review 材料、Reviewer Worker、运行记录 | 修复证据或使用受审计的 Review retry |

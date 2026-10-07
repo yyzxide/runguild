@@ -304,6 +304,8 @@ export interface RunTraceLlmCallSummary {
   readonly hop: number
   readonly provider: string
   readonly model: string
+  readonly endpoint: string | null
+  readonly returnedModel: string | null
   readonly status: string
   readonly inputTokens: number | null
   readonly outputTokens: number | null
@@ -322,6 +324,8 @@ export interface RunTraceToolExecutionSummary {
   readonly status: string
   readonly effectState: string | null
   readonly errorCode: string | null
+  readonly targetPath: string | null
+  readonly policyDecision: 'protected_path_denied' | null
   readonly startedAt: string | null
   readonly finishedAt: string | null
 }
@@ -392,13 +396,21 @@ export interface EvaluationTrialMetrics {
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cachedInputTokens: number
-  readonly estimatedCostUsd: number
+  readonly estimatedCostUsd: number | null
   readonly toolCalls: number
   readonly toolFailures: number
   readonly reviewChangesRequested: number
   readonly contextSnapshots: number
   readonly compactedContexts: number
   readonly estimatedContextTokens: number
+  readonly modelProvenance?: readonly {
+    readonly actorKind: 'execution_agent' | 'reviewer_agent'
+    readonly provider: string
+    readonly requestedModel: string
+    readonly endpoint: string | null
+    readonly returnedModel: string | null
+    readonly calls: number
+  }[]
 }
 
 export interface EvaluationTrial {
@@ -427,8 +439,9 @@ export interface EvaluationVariantAggregate {
   readonly successRate: number
   readonly meanWallTimeMs: number
   readonly medianWallTimeMs: number
-  readonly meanCostUsd: number
-  readonly totalCostUsd: number
+  readonly pricedTrials: number
+  readonly meanCostUsd: number | null
+  readonly totalCostUsd: number | null
   readonly meanInputTokens: number
   readonly meanOutputTokens: number
   readonly meanReworkAttempts: number
@@ -442,9 +455,18 @@ export interface EvaluationExperimentReport {
   readonly repetitions: number
   readonly variants: readonly EvaluationVariantAggregate[]
   readonly pairedTrials: number
+  readonly pairedCostTrials: number
   readonly pairedSuccessDelta: number
-  readonly pairedMeanCostDeltaUsd: number
+  readonly pairedMeanCostDeltaUsd: number | null
   readonly pairedMeanWallTimeDeltaMs: number
+  readonly evidenceLevel: 'exploratory' | 'repeatable'
+  readonly minimumEvidencePairedTrials: number
+  readonly limitations: readonly (
+    | 'experiment_not_completed'
+    | 'insufficient_paired_trials'
+    | 'incomplete_cost_coverage'
+    | 'statistical_significance_not_established'
+  )[]
   readonly trials: readonly EvaluationTrial[]
 }
 
@@ -463,6 +485,14 @@ export interface ProjectRuntimeConfiguration {
     readonly worktreeSetupCommands: readonly (readonly string[])[]
     readonly worktreeSetupTimeoutMs: number
     readonly testCommands: readonly (readonly string[])[]
+    readonly protectedTestPaths: readonly string[]
+    readonly testSandbox: {
+      readonly mode: 'trusted_process' | 'bubblewrap'
+      readonly network: 'none' | 'host'
+      readonly maxProcesses: number
+      readonly maxOpenFiles: number
+      readonly maxFileSizeMb: number
+    }
     readonly agentContextInputTokens: number
     readonly agentMaxTestTimeoutMs: number
   }
@@ -514,6 +544,14 @@ export interface UpdateProjectRuntimeConfiguration {
   readonly worktreeSetupCommands: readonly (readonly string[])[]
   readonly worktreeSetupTimeoutMs: number
   readonly testCommands: readonly (readonly string[])[]
+  readonly protectedTestPaths: readonly string[]
+  readonly testSandbox: {
+    readonly mode: 'trusted_process' | 'bubblewrap'
+    readonly network: 'none' | 'host'
+    readonly maxProcesses: number
+    readonly maxOpenFiles: number
+    readonly maxFileSizeMb: number
+  }
   readonly agentContextInputTokens: number
   readonly agentMaxTestTimeoutMs: number
   readonly agentModels: readonly {
@@ -750,19 +788,20 @@ export const missionApi = {
     )
   },
 
-  async listRunTraces(identity: TestIdentity): Promise<readonly RunTraceSummary[]> {
+  async listRunTraces(identity: TestIdentity, limit = 20): Promise<readonly RunTraceSummary[]> {
     const result = await request<{ readonly runs: readonly RunTraceSummary[] }>(
-      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces`,
+      `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces?limit=${encodeURIComponent(String(limit))}`,
       { headers: actorHeaders(identity.userId) },
     )
     return result.runs
   },
 
-  getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
-    return request(
+  async getRunTrace(identity: TestIdentity, runId: string): Promise<RunTraceDetail> {
+    const result = await request<{ readonly run: RunTraceDetail }>(
       `/api/v1/workspaces/${encodeURIComponent(identity.workspaceId)}/projects/${encodeURIComponent(identity.projectId)}/run-traces/${encodeURIComponent(runId)}`,
       { headers: actorHeaders(identity.userId) },
     )
+    return result.run
   },
 
   async listArtifacts(
@@ -987,6 +1026,7 @@ export const missionApi = {
     readonly conversationId: string
     readonly body: string
     readonly mentions: readonly string[]
+    readonly clientRequestId: string
     readonly missionId?: string
     readonly replyToMessageId?: string
     readonly idempotencyKey?: string
@@ -997,7 +1037,7 @@ export const missionApi = {
         method: 'POST',
         headers: {
           ...actorHeaders(input.identity.userId),
-          'x-idempotency-key': input.idempotencyKey ?? 'web-message-' + crypto.randomUUID(),
+          'x-idempotency-key': input.idempotencyKey ?? 'web-message-' + input.clientRequestId,
         },
         body: JSON.stringify({
           body: input.body,
@@ -1008,6 +1048,49 @@ export const missionApi = {
       },
     )
     return result.message
+  },
+
+  async submitConversationTask(input: {
+    readonly identity: TestIdentity
+    readonly conversationId: string
+    readonly body: string
+    readonly mentions: readonly string[]
+    readonly title: string
+    readonly goal?: string
+    readonly constraints?: readonly string[]
+    readonly acceptanceCriteria?: readonly string[]
+    readonly budgetTokens?: number | null
+    readonly goalVerification?: boolean
+    readonly plannerAgentId: string
+    readonly clientRequestId: string
+    readonly replyToMessageId?: string
+  }): Promise<{
+    readonly message: ConversationMessage
+    readonly request: ConversationPlanningRequest
+    readonly reused: boolean
+  }> {
+    return request(
+      `/api/v1/workspaces/${encodeURIComponent(input.identity.workspaceId)}/conversations/${encodeURIComponent(input.conversationId)}/task-submissions`,
+      {
+        method: 'POST',
+        headers: {
+          ...actorHeaders(input.identity.userId),
+          'x-client-request-id': input.clientRequestId,
+        },
+        body: JSON.stringify({
+          body: input.body,
+          mentions: input.mentions,
+          title: input.title,
+          ...(input.goal === undefined ? {} : { goal: input.goal }),
+          ...(input.constraints === undefined ? {} : { constraints: input.constraints }),
+          ...(input.acceptanceCriteria === undefined ? {} : { acceptanceCriteria: input.acceptanceCriteria }),
+          ...(input.budgetTokens === undefined ? {} : { budgetTokens: input.budgetTokens }),
+          ...(input.goalVerification === undefined ? {} : { goalVerification: input.goalVerification }),
+          plannerAgentId: input.plannerAgentId,
+          ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+        }),
+      },
+    )
   },
 
   async createPlanningRequest(input: {
