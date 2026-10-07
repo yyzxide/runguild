@@ -1,0 +1,338 @@
+[
+  {
+    "at": "2026-09-26T12:56:08.668Z",
+    "type": "goal.created",
+    "missionId": "mission_63f3b0b7-8dd3-4051-94ad-6b9a35ca41f3",
+    "tokenLimit": 0
+  },
+  {
+    "at": "2026-09-26T12:56:09.183Z",
+    "type": "budget.paused",
+    "plannerAttempt": 0,
+    "modelCalls": 0
+  },
+  {
+    "at": "2026-09-26T12:56:09.204Z",
+    "type": "budget.resumed",
+    "tokenLimit": 1500000
+  },
+  {
+    "at": "2026-09-26T12:56:09.226Z",
+    "type": "mission.progress",
+    "status": "planning",
+    "planning": "queued",
+    "tasks": [],
+    "knownTokens": 0
+  },
+  {
+    "at": "2026-09-26T12:56:10.247Z",
+    "type": "mission.progress",
+    "status": "planning",
+    "planning": "running",
+    "tasks": [],
+    "knownTokens": 0
+  },
+  {
+    "at": "2026-09-26T12:56:19.404Z",
+    "type": "mission.progress",
+    "status": "awaiting_approval",
+    "planning": "awaiting_approval",
+    "tasks": [],
+    "knownTokens": 3791
+  },
+  {
+    "at": "2026-09-26T12:56:19.436Z",
+    "type": "plan.approved",
+    "taskCount": 3
+  },
+  {
+    "at": "2026-09-26T12:56:20.469Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "ready",
+        "attempt": 0
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 3791
+  },
+  {
+    "at": "2026-09-26T12:56:21.498Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "running",
+        "attempt": 1,
+        "hop": 1
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 3791
+  },
+  {
+    "at": "2026-09-26T12:56:52.271Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "running",
+        "attempt": 1,
+        "hop": 14
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 142626
+  },
+  {
+    "at": "2026-09-26T12:57:14.843Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "reviewing",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 413330
+  },
+  {
+    "at": "2026-09-26T12:57:22.030Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "ready",
+        "attempt": 0
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 430916
+  },
+  {
+    "at": "2026-09-26T12:57:23.058Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "running",
+        "attempt": 1,
+        "hop": 1
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 430916
+  },
+  {
+    "at": "2026-09-26T12:57:46.693Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "reviewing",
+        "attempt": 1,
+        "hop": 14
+      },
+      {
+        "role": "builder",
+        "status": "blocked",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 643738
+  },
+  {
+    "at": "2026-09-26T12:57:51.829Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 14
+      },
+      {
+        "role": "builder",
+        "status": "ready",
+        "attempt": 0
+      }
+    ],
+    "knownTokens": 658436
+  },
+  {
+    "at": "2026-09-26T12:57:53.880Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 14
+      },
+      {
+        "role": "builder",
+        "status": "running",
+        "attempt": 1,
+        "hop": 1
+      }
+    ],
+    "knownTokens": 662860
+  },
+  {
+    "at": "2026-09-26T12:58:19.587Z",
+    "type": "mission.progress",
+    "status": "running",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 14
+      },
+      {
+        "role": "builder",
+        "status": "reviewing",
+        "attempt": 1,
+        "hop": 14
+      }
+    ],
+    "knownTokens": 937288
+  },
+  {
+    "at": "2026-09-26T12:58:25.753Z",
+    "type": "mission.progress",
+    "status": "reviewing",
+    "planning": "awaiting_approval",
+    "tasks": [
+      {
+        "role": "researcher",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 24
+      },
+      {
+        "role": "builder",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 14
+      },
+      {
+        "role": "builder",
+        "status": "completed",
+        "attempt": 1,
+        "hop": 14
+      }
+    ],
+    "knownTokens": 959806
+  },
+  {
+    "at": "2026-09-26T12:58:26.123Z",
+    "type": "goal.completed",
+    "missionId": "mission_63f3b0b7-8dd3-4051-94ad-6b9a35ca41f3",
+    "finalCommit": "eb789a00bcc066c0cd6b03e8ee5240c36f79e9b6",
+    "knownTokens": 959806
+  }
+]

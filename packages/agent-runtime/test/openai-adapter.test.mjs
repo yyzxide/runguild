@@ -39,6 +39,20 @@ function fakeClient(responses) {
   }
 }
 
+test('OpenAI adapter marks missing and partial usage unknown and tolerates missing cache details', async () => {
+  for (const usage of [undefined, null, {}, { input_tokens: 20 }, { output_tokens: 5 }, { input_tokens: -1, output_tokens: 2 }]) {
+    const fake = fakeClient([response({ usage })])
+    const adapter = new OpenAIResponsesAdapter({ apiKey: '', model: 'test', client: fake.client })
+    const result = await adapter.complete({ messages: [], tools: [] })
+    assert.equal(result.usage.usageReported, false)
+  }
+  const fake = fakeClient([response({ usage: { input_tokens: 20, output_tokens: 5 } })])
+  const result = await new OpenAIResponsesAdapter({ apiKey: '', model: 'test', client: fake.client })
+    .complete({ messages: [], tools: [] })
+  assert.notEqual(result.usage.usageReported, false)
+  assert.equal(result.usage.cachedInputTokens, 0)
+})
+
 test('OpenAI adapter maps protocol messages and function calls to Responses API items', async () => {
   const fake = fakeClient([response({
     id: 'resp_first',

@@ -7,6 +7,7 @@ import {
 } from '@runguild/protocol'
 import type { Pool } from 'pg'
 
+import { hasMissingTaskEvidence } from './evidence-gate.js'
 import { appendDomainEvent } from './events.js'
 import { TaskRepository } from './task-repository.js'
 import { withTransaction } from './transaction.js'
@@ -41,29 +42,7 @@ export class DatabaseCompletionVerifier {
         return { accepted: false, reason: 'Task is not in a completable execution state.' }
       }
 
-      const missing = await client.query<{ missing: boolean }>(
-        'SELECT EXISTS (' +
-        '  SELECT 1 FROM task_acceptance_criteria c WHERE c.task_id = $1 AND c.required AND (' +
-        '    (cardinality(c.required_evidence_kinds) = 0 AND NOT EXISTS (' +
-        '      SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
-        "      AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
-        "      AND (e.kind <> 'test_run' OR (e.metadata->>'clean' = 'true' " +
-        "        AND e.metadata->>'stable' = 'true' AND e.metadata->>'protectedTestsIntact' = 'true')) " +
-        '      AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        '    )) OR EXISTS (' +
-        '      SELECT 1 FROM unnest(c.required_evidence_kinds) required_kind WHERE NOT EXISTS (' +
-        '        SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
-        '        AND e.kind = required_kind AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        "        AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
-        "        AND (e.kind <> 'test_run' OR (e.metadata->>'clean' = 'true' " +
-        "          AND e.metadata->>'stable' = 'true' AND e.metadata->>'protectedTestsIntact' = 'true'))" +
-        '      )' +
-        '    )' +
-        '  )' +
-        ') AS missing',
-        [input.run.taskId],
-      )
-      if (missing.rows[0]?.missing) {
+      if (await hasMissingTaskEvidence(client, input.run.taskId)) {
         return { accepted: false, reason: 'Required durable evidence is missing.' }
       }
 

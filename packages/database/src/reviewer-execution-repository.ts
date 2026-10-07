@@ -21,6 +21,7 @@ import type { Pool, PoolClient } from 'pg'
 import { canonicalJson } from './json.js'
 import { appendDomainEvent } from './events.js'
 import { withTransaction } from './transaction.js'
+import { reserveMissionModelCall } from './mission-budget-repository.js'
 
 export type ReviewerDecisionStatus = 'approved' | 'rejected' | 'changes_requested'
 
@@ -121,9 +122,11 @@ export interface ReviewerExecutionWork {
   readonly modelName: string
   readonly materials: ReviewMaterialSnapshot
   readonly storedDecision?: ReviewerDecision
+  readonly budgetCallId?: string
 }
 
 export type ClaimReviewerExecutionResult =
+  | { readonly kind: 'budget_blocked' }
   | { readonly kind: 'work'; readonly work: ReviewerExecutionWork }
   | { readonly kind: 'busy'; readonly retryAfterMs: number }
   | { readonly kind: 'not_ready'; readonly taskStatus: string }
@@ -369,6 +372,13 @@ export class ReviewerExecutionRepository {
 
       const materials = row.materials_snapshot ?? await this.loadMaterials(client, row)
       const leaseToken = 'review_lease_' + randomUUID()
+      const budgetCallId = row.decision === null ? 'budget_reviewer_' + randomUUID() : undefined
+      if (budgetCallId && !await reserveMissionModelCall(client, {
+        callId: budgetCallId, workspaceId: row.workspace_id as WorkspaceId, missionId: row.mission_id as MissionId,
+        role: 'reviewer', operationId: row.review_id, leaseToken, agentId: input.reviewerAgentId,
+        kind: 'artifact.review_requested', payload: { schemaVersion: 1, type: 'artifact.review_requested',
+          reviewId: row.review_id, submissionId: row.submission_id, taskId: row.task_id, missionId: row.mission_id },
+      })) return { kind: 'budget_blocked' }
       const claimed = await client.query<Pick<ExecutionRow, 'attempt'>>(
         "UPDATE review_executions SET status = CASE WHEN decision IS NULL THEN 'running' ELSE 'model_complete' END, " +
         'attempt = CASE WHEN decision IS NULL THEN attempt + 1 ELSE attempt END, lease_token = $2, ' +
@@ -410,6 +420,7 @@ export class ReviewerExecutionRepository {
           modelName: row.model_name,
           materials,
           ...(row.decision === null ? {} : { storedDecision: row.decision }),
+          ...(budgetCallId === undefined ? {} : { budgetCallId }),
         },
       }
     })

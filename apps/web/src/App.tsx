@@ -36,7 +36,8 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createRoomSubmission, inferComposerIntent, pendingRoomSubmission, pendingSubmissionKey, readPendingSubmission, restoreRoomSubmission, sameSubmission, submitRoomSubmission, type ComposerIntent, type PendingConversationSubmission } from './goal-command'
 
 import {
   guidedPlan,
@@ -49,15 +50,13 @@ import {
   type MissionSnapshot,
   type ProjectOperatorOverview,
   type ProjectRuntimeConfigurationResponse,
-  type RunTraceSummary,
   type TestIdentity,
   type UpdateProjectRuntimeConfiguration,
   type WorkerKind,
 } from './api'
-import { MissionGraph } from './MissionGraph'
+import { GoalView } from './GoalView'
+import { ensureGoalExecution } from './goal-execution'
 import { MembersView } from './MembersView'
-import { type EvidenceFact, type MissionTask, type TaskStatus } from './data'
-
 const EvaluationView = lazy(async () => ({ default: (await import('./EvaluationView')).EvaluationView }))
 const ArtifactView = lazy(async () => ({ default: (await import('./ArtifactView')).ArtifactView }))
 const TraceView = lazy(async () => ({ default: (await import('./TraceView')).TraceView }))
@@ -67,7 +66,7 @@ type ConnectionState = 'checking' | 'online' | 'offline'
 
 const viewMeta: Record<View, { readonly label: string; readonly icon: LucideIcon; readonly eyebrow: string }> = {
   start: { label: '工作台', icon: LayoutDashboard, eyebrow: '状态、上下文与下一步操作' },
-  mission: { label: 'Mission', icon: Network, eyebrow: '任务依赖与执行状态' },
+  mission: { label: '目标', icon: Network, eyebrow: '验收、团队分工与交付' },
   team: { label: '协作室', icon: MessageCircle, eyebrow: '讨论、规划与运行中干预' },
   members: { label: '成员', icon: Users, eyebrow: '人类成员、角色与工作区访问' },
   artifacts: { label: '协作产物', icon: FileStack, eyebrow: '实时协作 · 冻结版本' },
@@ -643,10 +642,10 @@ function StartView({
             <div className="test-step__heading"><div><span className="micro-label">人工门禁</span><h2>批准计划并生成 DAG</h2></div>{approved ? <StatusPill tone="verified">已生成 {mission?.tasks.length} 个任务</StatusPill> : null}</div>
             <p>批准操作必须由人类用户完成。后端会在一个事务中冻结计划版本、生成任务与依赖，并把 Mission 切换为“运行中”。</p>
             {approved ? (
-              <div className="success-result"><CircleCheck size={21} /><div><strong>控制面测试已经跑通</strong><span>数据已持久化。启动 Scheduler 与 Agent Worker 后，准备就绪的任务才会被领取并调用模型。</span></div></div>
+              <div className="success-result"><CircleCheck size={21} /><div><strong>控制面测试已经跑通</strong><span>计划与任务已保存。执行环境就绪后，团队会领取任务；可在目标页继续执行并查看结果。</span></div></div>
             ) : null}
             <div className="step-actions">
-              <button className="primary-action" disabled={!planProposed || approved || Boolean(busy)} onClick={onApprove}>{busy === 'approve' ? <LoaderCircle className="is-spinning" size={16} /> : <ShieldCheck size={16} />}{approved ? '计划已批准' : '由我批准并生成 DAG'}</button>
+              <button className="primary-action" disabled={!planProposed || approved || Boolean(busy)} onClick={onApprove}>{busy === 'approve' ? <LoaderCircle className="is-spinning" size={16} /> : <ShieldCheck size={16} />}{approved ? '计划已批准' : '批准计划并开始执行'}</button>
               {approved ? <button className="secondary-action" onClick={onOpenMission}>打开真实任务图<ArrowRight size={15} /></button> : null}
               {mission ? <button className="secondary-action" disabled={Boolean(busy)} onClick={onRefresh}><RefreshCw size={15} />刷新状态</button> : null}
             </div>
@@ -654,151 +653,6 @@ function StartView({
         </section>
         </div></div>
       </details>
-    </>
-  )
-}
-
-function formatRunDuration(run: RunTraceSummary | undefined): string {
-  if (!run?.startedAt) return '—'
-  const started = new Date(run.startedAt).getTime()
-  const finished = run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now()
-  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return '—'
-  const seconds = Math.round((finished - started) / 1_000)
-  if (seconds < 60) return `${seconds}秒`
-  return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒`
-}
-
-function mapMissionTasks(mission: MissionSnapshot, runs: readonly RunTraceSummary[]): MissionTask[] {
-  return mission.tasks.map((task, index) => {
-    const planTask = mission.proposedPlan?.plan.tasks[index]
-    const latestRun = runs.find((run) => run.task.id === task.id)
-    let status: TaskStatus = 'queued'
-    if (task.status === 'completed') status = 'verified'
-    else if (['claimed', 'running', 'reviewing'].includes(task.status)) status = 'running'
-    else if (['blocked', 'waiting_human'].includes(task.status)) status = 'waiting'
-    return {
-      id: task.id,
-      key: `任务-${String(index + 1).padStart(2, '0')}`,
-      title: task.title,
-      role: roleLabels[task.role ?? 'custom'] ?? task.role ?? '待分配',
-      agent: latestRun?.agent.name ?? (task.status === 'blocked' ? '等待依赖' : '等待调度'),
-      status,
-      statusLabel: task.status === 'ready' ? '已就绪，等待 Scheduler' : missionStatusLabels[task.status] ?? task.status,
-      summary: planTask?.description ?? '任务已经由已批准计划生成。',
-      duration: formatRunDuration(latestRun),
-      attempts: latestRun?.attempt ?? 0,
-      model: latestRun ? '见运行账本' : '由 Worker 配置',
-      dependsOn: task.dependsOn,
-      criteria: planTask?.acceptanceCriteria.map((criterion) => ({ label: criterion.description, passed: task.status === 'completed' })) ?? [],
-    }
-  })
-}
-
-function MissionContract({ mission }: { readonly mission: MissionSnapshot }) {
-  return (
-    <section className="mission-contract" aria-label="Mission 契约">
-      <div className="contract-cell contract-cell--goal"><span className="micro-label">Mission 目标</span><strong>{mission.goal}</strong></div>
-      <div className="contract-cell"><span className="micro-label">数据来源</span><code>真实 API</code><small>持久化 Mission 快照</small></div>
-      <div className="contract-cell"><span className="micro-label">计划版本</span><code>v{mission.planVersion}</code><small>{mission.proposedPlan?.status ?? '尚未提交'}</small></div>
-      <div className="contract-cell"><span className="micro-label">当前状态</span><code className="proof-value">{missionStatusLabels[mission.status]}</code><small>{mission.tasks.length} 个任务</small></div>
-    </section>
-  )
-}
-
-function EvidenceSpine({ facts, selectedTask, runs, loading, error, onOpenRun }: {
-  readonly facts: readonly EvidenceFact[]
-  readonly selectedTask: MissionTask
-  readonly runs: readonly RunTraceSummary[]
-  readonly loading: boolean
-  readonly error: string | null
-  readonly onOpenRun: (runId: string) => void
-}) {
-  const filtered = facts.filter((fact) => fact.taskId === selectedTask.id)
-  return (
-    <aside className="evidence-panel">
-      <div className="panel-heading"><div><span className="micro-label">Mission + Run Ledger</span><h2>任务状态与运行</h2></div><StatusPill tone="live"><span className="pulse-dot" />真实数据</StatusPill></div>
-      <p className="panel-intro">当前状态来自 Mission API；<strong>{selectedTask.key}</strong> 的 Run 由项目运行账本按 Task ID 关联。</p>
-      {filtered.length ? <ol className="evidence-spine">{filtered.map((fact) => <li key={fact.id} className={`evidence-fact evidence-fact--${fact.state}`}><span className="evidence-fact__sequence">{fact.sequence}</span><div className="evidence-fact__content"><div className="evidence-fact__meta"><span>{fact.kind}</span><time>{fact.time}</time></div><strong>{fact.title}</strong><code>{fact.detail}</code></div></li>)}</ol> : <div className="empty-evidence">Mission API 尚未返回任务状态。</div>}
-      <div className="task-run-register">
-        <header><strong>关联 Run</strong><code>{loading ? '读取中' : `${runs.length} 条`}</code></header>
-        {error ? <p className="task-run-register__empty">运行账本读取失败：{error}</p> : runs.length ? runs.slice(0, 3).map((run) => <button key={run.runId} onClick={() => onOpenRun(run.runId)}><span><strong>{run.agent.name}</strong><small>{run.status} · 第 {run.attempt} 次尝试</small></span><code>Hop {run.currentHop}/{run.maxHops}</code><ArrowRight size={13} /></button>) : <p className="task-run-register__empty">{loading ? '正在读取该任务的运行记录…' : '这个任务尚未产生 Run；被依赖阻塞或尚未被 Scheduler 领取时属于正常状态。'}</p>}
-      </div>
-    </aside>
-  )
-}
-
-function TaskInspector({ task }: { readonly task: MissionTask }) {
-  const passed = task.criteria.filter((criterion) => criterion.passed).length
-  return (
-    <section className="task-inspector">
-      <div className="task-inspector__identity"><div className={`agent-medallion agent-medallion--${task.status}`}><Bot size={21} strokeWidth={1.8} /></div><div><span className="micro-label">当前选中任务</span><h2>{task.title}</h2><p>{task.summary}</p></div></div>
-      <dl className="run-facts"><div><dt>执行者</dt><dd>{task.agent} · {task.role}</dd></div><div><dt>模型</dt><dd><code>{task.model}</code></dd></div><div><dt>运行时长</dt><dd><code>{task.duration}</code></dd></div><div><dt>尝试次数</dt><dd><code>{task.attempts || '尚未开始'}</code></dd></div></dl>
-      <div className="criteria-list"><div className="criteria-list__heading"><span>验收门禁</span><code>{passed}/{task.criteria.length}</code></div>{task.criteria.map((criterion) => <div key={criterion.label} className={criterion.passed ? 'is-passed' : ''}><span>{criterion.passed ? <Check size={13} /> : <Clock3 size={13} />}</span><p>{criterion.label}</p></div>)}</div>
-    </section>
-  )
-}
-
-function MissionView({ mission, identity, busy, error, onNavigate, onOpenRun, onRefresh, onApproveDelivery, onRequestDeliveryChanges }: {
-  readonly mission: MissionSnapshot | null
-  readonly identity: TestIdentity
-  readonly busy: string | null
-  readonly error: string | null
-  readonly onNavigate: (view: View) => void
-  readonly onOpenRun: (runId: string) => void
-  readonly onRefresh: () => void
-  readonly onApproveDelivery: () => void
-  readonly onRequestDeliveryChanges: (reason: string) => void
-}) {
-  const [runTraces, setRunTraces] = useState<readonly RunTraceSummary[]>([])
-  const [runTracesLoading, setRunTracesLoading] = useState(false)
-  const [runTracesError, setRunTracesError] = useState<string | null>(null)
-  const missionRuns = useMemo(() => mission ? runTraces.filter((run) => run.mission.id === mission.id) : [], [mission, runTraces])
-  const tasks = useMemo(() => mission ? mapMissionTasks(mission, missionRuns) : [], [mission, missionRuns])
-  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? '')
-  const [deliveryFeedback, setDeliveryFeedback] = useState('')
-  useEffect(() => { if (!tasks.some((task) => task.id === selectedTaskId)) setSelectedTaskId(tasks[0]?.id ?? '') }, [selectedTaskId, tasks])
-  useEffect(() => {
-    if (!mission) {
-      setRunTraces([])
-      setRunTracesError(null)
-      return
-    }
-    let cancelled = false
-    setRunTracesLoading(true)
-    setRunTracesError(null)
-    void missionApi.listRunTraces(identity, 100)
-      .then((runs) => { if (!cancelled) setRunTraces(runs) })
-      .catch((caught: unknown) => {
-        if (!cancelled) {
-          setRunTraces([])
-          setRunTracesError(caught instanceof Error ? caught.message : '运行账本读取失败')
-        }
-      })
-      .finally(() => { if (!cancelled) setRunTracesLoading(false) })
-    return () => { cancelled = true }
-  }, [identity, mission?.id, mission?.updatedAt])
-  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
-  if (!mission) return <section className="product-empty-state"><span><Network size={26} /></span><div><span className="micro-label">尚无 Mission</span><h1>先从一次真实任务讨论开始</h1><p>进入协作室描述目标并选择关键消息。Planner 提交计划、你批准之后，任务 DAG 才会出现在这里。</p></div><button className="primary-action" onClick={() => onNavigate('team')}>进入协作室<ArrowRight size={15} /></button></section>
-  if (!selectedTask) return <><section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><span>{mission.title}</span></div><h1>{mission.title}</h1><p>这个 Mission 已创建，但任务 DAG 尚未物化。</p></div><div className="page-actions"><StatusPill tone="active">{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button></div></section><MissionContract mission={mission} /><section className="mission-awaiting-state"><Network size={25} /><div><strong>{mission.status === 'awaiting_approval' ? '计划正在等待你的批准' : 'Planner 还没有提交可执行计划'}</strong><p>{mission.proposedPlan?.summary ?? '回到协作室查看 Planner 的规划进度。'}</p></div><button className="primary-action" onClick={() => onNavigate(mission.status === 'awaiting_approval' ? 'start' : 'team')}>{mission.status === 'awaiting_approval' ? '去工作台批准' : '查看协作室'}<ArrowRight size={14} /></button></section></>
-  const liveFacts: EvidenceFact[] = mission.tasks.map((task, index) => ({ id: task.id, taskId: task.id, sequence: String(index + 1).padStart(2, '0'), time: new Date(mission.updatedAt).toLocaleTimeString('zh-CN'), kind: '任务状态', title: `${task.title}：${task.status}`, detail: `状态由 Mission API 于 ${new Date(mission.updatedAt).toLocaleString('zh-CN')} 返回`, state: task.status === 'completed' ? 'verified' : ['claimed', 'running', 'reviewing'].includes(task.status) ? 'active' : 'pending' }))
-  return (
-    <>
-      <section className="page-heading page-heading--mission"><div><div className="breadcrumb"><span>Mission</span><i>/</i><span>{mission.title}</span></div><h1>{mission.title}</h1><p>以下任务和依赖直接读取自后端数据库。</p></div><div className="page-actions"><StatusPill tone="active"><span className="pulse-dot" />{missionStatusLabels[mission.status]}</StatusPill><button className="secondary-action" onClick={onRefresh}><RefreshCw size={15} />刷新</button><button className="primary-action" onClick={() => onNavigate('team')}><MessageCircle size={15} />打开协作室</button></div></section>
-      <MissionContract mission={mission} />
-      {mission.status === 'reviewing' || mission.status === 'completed' ? <section className={`final-delivery-gate final-delivery-gate--${mission.finalDelivery?.approvalStatus ?? 'missing'}`}>
-        <span className="final-delivery-gate__mark">{mission.finalDelivery?.approvalStatus === 'approved' ? <CircleCheck size={22} /> : mission.finalDelivery ? <ShieldCheck size={22} /> : <CircleAlert size={22} />}</span>
-        <div>
-          <span className="micro-label">Final delivery gate</span>
-          <strong>{mission.finalDelivery?.approvalStatus === 'approved' ? '最终交付版本已批准' : mission.finalDelivery ? '所有 Task 已完成，等待最终人工批准' : '缺少可冻结的最终交付版本'}</strong>
-          {mission.finalDelivery ? <p>Artifact Version <code>v{mission.finalDelivery.version}</code> · SHA-256 <code>{mission.finalDelivery.contentHash.slice(0, 16)}…</code></p> : <p>Mission 已进入审查态，但数据库中没有属于该 Mission 的 Artifact Version。请先排查产物冻结链路。</p>}
-          {error && busy === null ? <em>{error}</em> : null}
-        </div>
-        {mission.status === 'reviewing' && mission.finalDelivery ? <form className="final-delivery-actions" onSubmit={(event) => { event.preventDefault(); if (deliveryFeedback.trim()) onRequestDeliveryChanges(deliveryFeedback.trim()) }}>
-          <textarea value={deliveryFeedback} onChange={(event) => setDeliveryFeedback(event.target.value)} placeholder="发现问题时填写具体修改要求，系统会追加一个修复任务" maxLength={20_000} />
-          <div><button className="secondary-action" type="submit" disabled={Boolean(busy) || !deliveryFeedback.trim()}>{busy === 'request-delivery-changes' ? <LoaderCircle className="is-spinning" size={15} /> : <RotateCcw size={15} />}退回并创建修复任务</button><button className="primary-action" type="button" onClick={onApproveDelivery} disabled={Boolean(busy)}>{busy === 'approve-delivery' ? <LoaderCircle className="is-spinning" size={15} /> : <ShieldCheck size={15} />}批准此版本并完成 Mission</button></div>
-        </form> : null}
-      </section> : null}
-      <div className="mission-workspace"><section className="topology-panel"><div className="panel-heading panel-heading--topology"><div><span className="micro-label">已批准计划 · 版本 {mission.planVersion}</span><h2>任务依赖拓扑</h2></div><span className="topology-summary">点击节点查看任务详情</span></div><MissionGraph tasks={tasks} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} /></section><EvidenceSpine facts={liveFacts} selectedTask={selectedTask} runs={missionRuns.filter((run) => run.task.id === selectedTask.id)} loading={runTracesLoading} error={runTracesError} onOpenRun={onOpenRun} /><TaskInspector task={selectedTask} /></div>
     </>
   )
 }
@@ -822,58 +676,6 @@ function messageTime(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   }).format(new Date(value))
-}
-
-type ComposerIntent = 'message' | 'task'
-
-interface PendingConversationSubmission {
-  readonly version: 1
-  readonly clientRequestId: string
-  readonly conversationId: string
-  readonly intent: ComposerIntent
-  readonly body: string
-  readonly mentions: readonly string[]
-  readonly replyToMessageId?: string
-  readonly missionId?: string
-  readonly title?: string
-  readonly plannerAgentId?: string
-}
-
-function inferComposerIntent(value: string): ComposerIntent {
-  const taskMarker = /(?:帮我|请.{0,12}(?:实现|开发|完成|修复|优化|重构|新增|添加|设计|测试|部署|编写|创建|构建|搭建|接入|排查)|实现|开发|完成|修复|优化|重构|新增|添加|设计|测试|部署|编写|创建|构建|搭建|接入|排查|做一个|build|implement|fix|refactor|create|deploy|test)/iu
-  return taskMarker.test(value.trim()) ? 'task' : 'message'
-}
-
-function pendingSubmissionKey(identity: TestIdentity, conversationId: string): string {
-  return ['runguild:pending-submission', identity.workspaceId, identity.userId, conversationId].join(':')
-}
-
-function readPendingSubmission(identity: TestIdentity, conversationId: string): PendingConversationSubmission | null {
-  const raw = window.localStorage.getItem(pendingSubmissionKey(identity, conversationId))
-  if (!raw) return null
-  try {
-    const value = JSON.parse(raw) as Partial<PendingConversationSubmission>
-    if (value.version !== 1
-        || typeof value.clientRequestId !== 'string'
-        || value.conversationId !== conversationId
-        || (value.intent !== 'message' && value.intent !== 'task')
-        || typeof value.body !== 'string'
-        || !Array.isArray(value.mentions)
-        || !value.mentions.every((agentId) => typeof agentId === 'string')) return null
-    if (value.intent === 'task'
-        && (typeof value.title !== 'string' || typeof value.plannerAgentId !== 'string')) return null
-    return value as PendingConversationSubmission
-  } catch {
-    return null
-  }
-}
-
-function sameSubmission(
-  left: PendingConversationSubmission,
-  right: PendingConversationSubmission,
-): boolean {
-  return JSON.stringify({ ...left, clientRequestId: undefined })
-    === JSON.stringify({ ...right, clientRequestId: undefined })
 }
 
 function TeamRoomView({
@@ -902,10 +704,18 @@ function TeamRoomView({
   const [messages, setMessages] = useState<readonly ConversationMessage[]>([])
   const [selectedAgents, setSelectedAgents] = useState<readonly string[]>([])
   const [draft, setDraft] = useState('')
+  const [acceptanceText, setAcceptanceText] = useState('')
+  const [constraintText, setConstraintText] = useState('')
+  const [budgetText, setBudgetText] = useState('')
+  const submissionBusy = useRef(false)
+  const historyOperation = useRef<{ readonly source: string; readonly key: string } | null>(null)
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null)
   const [selectedMessageIds, setSelectedMessageIds] = useState<readonly string[]>([])
   const [planningTitle, setPlanningTitle] = useState('')
   const [planningRequest, setPlanningRequest] = useState<ConversationPlanningRequest | null>(null)
+  const planningSelectionRef = useRef<string | null>(null)
+  const selectedMissionRef = useRef(mission?.id)
+  selectedMissionRef.current = mission?.id
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [planningBusy, setPlanningBusy] = useState(false)
@@ -925,6 +735,7 @@ function TeamRoomView({
   const planningRequestStatus = planningRequest?.status
   const planningActive = planningRequest !== null
     && ['queued', 'running', 'model_complete', 'awaiting_approval'].includes(planningRequest.status)
+  const explicitGoal = /^\/goal(?:\s|$)/.test(draft.trim())
   const plannerWorker = runtime?.control.workers.find((worker) =>
     worker.kind === 'agent' && worker.agentId === planner?.id)
   const plannerOnline = overview?.agents.find((agent) => agent.id === planner?.id)?.worker?.state === 'online'
@@ -935,55 +746,43 @@ function TeamRoomView({
   const planningBlockReason = runtime?.control.enabled
     ? plannerWorker?.missing.join('、') || '规划 Agent Worker 不可用'
     : '规划 Agent Worker 未在线，当前部署不允许从 Web 启动'
-  const composerIntent = mission || planningActive
+  const composerIntent = explicitGoal ? 'task' : mission || planningActive
     ? 'message'
     : composerIntentOverride ?? inferComposerIntent(draft)
+  const composingGoal = composerIntent === 'task'
 
-  const acceptPlanningRequest = useCallback((request: ConversationPlanningRequest) => {
+  const acceptPlanningRequest = useCallback(async (request: ConversationPlanningRequest) => {
+    const snapshot = await missionApi.getMission(identity, request.missionId)
+    planningSelectionRef.current = request.id
+    selectedMissionRef.current = snapshot.id
+    onMissionReady(snapshot)
     setPlanningRequest(request)
     setPlannerStartError(null)
     window.localStorage.setItem('runguild:last-planning:' + request.conversationId, request.id)
     setSelectedMessageIds([])
-  }, [])
+  }, [identity, onMissionReady])
 
   const submitPendingSubmission = useCallback(async (pending: PendingConversationSubmission) => {
-    let request: ConversationPlanningRequest | null = null
-    let message: ConversationMessage
-    if (pending.intent === 'task') {
-      const result = await missionApi.submitConversationTask({
-        identity,
-        conversationId: pending.conversationId,
-        body: pending.body,
-        mentions: pending.mentions,
-        title: pending.title!,
-        plannerAgentId: pending.plannerAgentId!,
-        clientRequestId: pending.clientRequestId,
-        ...(pending.replyToMessageId === undefined ? {} : { replyToMessageId: pending.replyToMessageId }),
-      })
-      message = result.message
-      request = result.request
-      acceptPlanningRequest(request)
-    } else {
-      message = await missionApi.postMessage({
-        identity,
-        conversationId: pending.conversationId,
-        body: pending.body,
-        mentions: pending.mentions,
-        clientRequestId: pending.clientRequestId,
-        ...(pending.missionId === undefined ? {} : { missionId: pending.missionId }),
-        ...(pending.replyToMessageId === undefined ? {} : { replyToMessageId: pending.replyToMessageId }),
-      })
+    const result = await submitRoomSubmission(missionApi, restoreRoomSubmission(identity, pending))
+    if (result.planningRequest && result.mission) {
+      planningSelectionRef.current = result.planningRequest.id
+      selectedMissionRef.current = result.mission.id
+      onMissionReady(result.mission)
+      setPlanningRequest(result.planningRequest)
+      setPlannerStartError(null)
+      window.localStorage.setItem('runguild:last-planning:' + pending.conversationId, result.planningRequest.id)
+      setSelectedMessageIds([])
     }
-    setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current, message])
+    setMessages((current) => current.some((item) => item.id === result.message.id) ? current : [...current, result.message])
     const storageKey = pendingSubmissionKey(identity, pending.conversationId)
-    if (readPendingSubmission(identity, pending.conversationId)?.clientRequestId === pending.clientRequestId) {
+    if (readPendingSubmission(window.localStorage, identity, pending.conversationId)?.clientRequestId === pending.clientRequestId) {
       window.localStorage.removeItem(storageKey)
     }
     setDraft((current) => current.trim() === pending.body ? '' : current)
     setReplyTo(null)
     setComposerIntentOverride(null)
-    return request
-  }, [acceptPlanningRequest, identity])
+    return result.planningRequest
+  }, [identity, onMissionReady])
 
   useEffect(() => {
     if (!setup) return
@@ -1021,6 +820,7 @@ function TeamRoomView({
     setSelectedMessageIds([])
     setPlanningTitle('')
     setPlanningRequest(null)
+    planningSelectionRef.current = null
     setComposerIntentOverride(null)
     setSubmissionRecoveryAttempted('')
     setPlannerStartAttempted('')
@@ -1030,13 +830,15 @@ function TeamRoomView({
     const storageKey = 'runguild:last-planning:' + conversationId
     const requestId = window.localStorage.getItem(storageKey)
     if (requestId) {
+      planningSelectionRef.current = requestId
       void missionApi.getPlanningRequest(identity, requestId).then(async (request) => {
-        if (stopped) return
+        if (stopped || planningSelectionRef.current !== requestId) return
+        if (selectedMissionRef.current && selectedMissionRef.current !== request.missionId) return
+        planningSelectionRef.current = request.id
         setPlanningRequest(request)
-        if (request.status === 'awaiting_approval' || request.status === 'approved') {
-          const snapshot = await missionApi.getMission(identity, request.missionId)
-          if (!stopped) onMissionReady(snapshot)
-        }
+        const snapshot = await missionApi.getMission(identity, request.missionId)
+        if (!stopped && planningSelectionRef.current === requestId
+            && (!selectedMissionRef.current || selectedMissionRef.current === request.missionId)) onMissionReady(snapshot)
       }).catch(() => window.localStorage.removeItem(storageKey))
     }
     return () => { stopped = true }
@@ -1048,11 +850,13 @@ function TeamRoomView({
     const sync = async () => {
       try {
         const next = await missionApi.getPlanningRequest(identity, planningRequestId)
-        if (stopped) return
+        if (stopped || planningSelectionRef.current !== planningRequestId) return
+        if (selectedMissionRef.current && selectedMissionRef.current !== next.missionId) return
         setPlanningRequest(next)
         if (next.status === 'awaiting_approval' || next.status === 'approved') {
           const snapshot = await missionApi.getMission(identity, next.missionId)
-          if (!stopped) onMissionReady(snapshot)
+          if (!stopped && planningSelectionRef.current === planningRequestId
+              && (!selectedMissionRef.current || selectedMissionRef.current === next.missionId)) onMissionReady(snapshot)
         }
       } catch (caught) {
         if (!stopped) setRoomError(caught instanceof Error ? caught.message : '规划进度读取失败')
@@ -1083,14 +887,21 @@ function TeamRoomView({
   }
   const persistPlanningRequest = async (sourceMessageIds: readonly string[], title: string) => {
     if (!conversationId || !planner) throw new Error('当前工作区缺少规划 Agent')
+    const source = JSON.stringify([conversationId, sourceMessageIds, title, planner.id])
+    if (historyOperation.current?.source !== source) {
+      historyOperation.current = { source, key: 'web-planning-' + crypto.randomUUID() }
+    }
     const request = await missionApi.createPlanningRequest({
       identity,
       conversationId,
       sourceMessageIds,
       title,
+      goalVerification: true,
       plannerAgentId: planner.id,
+      idempotencyKey: historyOperation.current.key,
     })
-    acceptPlanningRequest(request)
+    await acceptPlanningRequest(request)
+    historyOperation.current = null
     return request
   }
   const wakePlanner = async (request: ConversationPlanningRequest) => {
@@ -1107,7 +918,7 @@ function TeamRoomView({
   }
   useEffect(() => {
     if (!conversationId || sending) return
-    const pending = readPendingSubmission(identity, conversationId)
+    const pending = readPendingSubmission(window.localStorage, identity, conversationId)
     if (!pending || pending.clientRequestId === submissionRecoveryAttempted) return
     setSubmissionRecoveryAttempted(pending.clientRequestId)
     setSending(true)
@@ -1115,7 +926,7 @@ function TeamRoomView({
     void submitPendingSubmission(pending)
       .catch((caught: unknown) => setRoomError(
         (caught instanceof Error ? caught.message : '待确认的发送请求恢复失败')
-        + '；原请求仍保留，点击发送可使用同一请求 ID 安全重试。',
+        + '；原请求仍保留，可重试待确认请求。',
       ))
       .finally(() => setSending(false))
   }, [conversationId, identity, sending, submissionRecoveryAttempted, submitPendingSubmission])
@@ -1133,39 +944,36 @@ function TeamRoomView({
     }
   }
   const sendMessage = async () => {
-    if (!conversationId || !draft.trim() || sending) return
+    if (!conversationId || !draft.trim() || submissionBusy.current) return
+    submissionBusy.current = true
     setSending(true)
     setRoomError(null)
     try {
-      const body = draft.trim()
-      const pending: PendingConversationSubmission = {
-        version: 1,
-        clientRequestId: crypto.randomUUID(),
-        conversationId,
-        intent: composerIntent,
-        body,
-        mentions: selectedAgents,
-        ...(mission?.id || planningRequest?.missionId
-          ? { missionId: mission?.id ?? planningRequest!.missionId }
-          : {}),
-        ...(replyTo ? { replyToMessageId: replyTo.id } : {}),
-        ...(composerIntent === 'task' ? {
-          title: body.slice(0, 80),
-          plannerAgentId: planner?.id,
-        } : {}),
-      }
-      if (pending.intent === 'task' && !pending.plannerAgentId) throw new Error('当前工作区缺少规划 Agent')
-      const existing = readPendingSubmission(identity, conversationId)
+      const existing = readPendingSubmission(window.localStorage, identity, conversationId)
+      const submission = createRoomSubmission({
+        identity, conversationId, draft, acceptanceText, constraintText, budgetText,
+        missionId: existing?.intent === 'task' ? undefined : mission?.id ?? (planningActive ? planningRequest?.missionId : undefined),
+        planningActive: existing?.intent === 'task' ? false : planningActive,
+        intent: composerIntent, plannerAgentId: planner?.id, selectedAgents,
+        replyToMessageId: replyTo?.id,
+      }, crypto.randomUUID())
+      const pending = pendingRoomSubmission(submission)
       if (existing && !sameSubmission(existing, pending)) {
-        throw new Error('上一条发送请求仍待确认，请先用原内容重试，避免重复创建任务')
+        throw new Error('上一条发送请求仍待确认，请先重试待确认请求，避免重复创建目标')
       }
       const resumable = existing ?? pending
       window.localStorage.setItem(pendingSubmissionKey(identity, conversationId), JSON.stringify(resumable))
+      setSubmissionRecoveryAttempted(resumable.clientRequestId)
       const request = await submitPendingSubmission(resumable)
+      setDraft('')
+      setAcceptanceText('')
+      setConstraintText('')
+      setBudgetText('')
       if (request) await wakePlanner(request)
     } catch (caught) {
       setRoomError(caught instanceof Error ? caught.message : '消息或任务提交失败')
     } finally {
+      submissionBusy.current = false
       setSending(false)
     }
   }
@@ -1192,10 +1000,10 @@ function TeamRoomView({
   return (
     <>
       <section className="page-heading room-heading">
-        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>团队协作室</span></div><h1>和 Agent 团队一起工作</h1><p>发送前明确选择“新任务”或“普通消息”；任务会原子创建 Mission 并唤醒 Planner，问候不会误建 DAG。</p></div>
-        <div className="page-actions"><StatusPill tone="live"><span className="pulse-dot" />5 秒同步</StatusPill><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
+        <div><div className="breadcrumb"><span>当前工作区</span><i>/</i><span>目标与协作</span></div><h1>和 Agent 团队一起工作</h1><p>用 /goal 开始新目标，或发送首条任务并补充验收条件与约束。团队先提出计划，经你批准后执行；问候只作为普通消息保存。</p></div>
+        <div className="page-actions"><button className="primary-action" disabled={sending} onClick={() => { setDraft('/goal '); setReplyTo(null); setComposerIntentOverride(null); setRoomError(null) }}><Plus size={15} />新目标</button><button className="secondary-action" onClick={refreshRoom} disabled={loading}><RefreshCw className={loading ? 'is-spinning' : ''} size={15} />刷新消息</button></div>
       </section>
-      {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p></div></div> : null}
+      {roomError ? <div className="test-error"><CircleAlert size={18} /><div><strong>协作请求没有完成</strong><p>{roomError}</p>{conversationId && readPendingSubmission(window.localStorage, identity, conversationId) ? <button className="secondary-action" disabled={sending} onClick={() => setSubmissionRecoveryAttempted('')}>重试待确认请求</button> : null}</div></div> : null}
       <div className="room-workspace">
         <aside className="room-directory">
           <div className="room-directory__heading"><span className="micro-label">工作区会话</span><strong>{conversations.length}</strong></div>
@@ -1223,7 +1031,7 @@ function TeamRoomView({
           <header className="room-thread__header"><div><span className="micro-label">有序持久化消息</span><h2>{activeConversation?.title ?? '正在加载协作室'}</h2></div><div className="thread-selection"><code>{selectedMessageIds.length ? `已选 ${selectedMessageIds.length} 条历史材料` : `${messages.length} 条事实`}</code>{selectedMessageIds.length ? <button onClick={() => setSelectedMessageIds([])}>清除</button> : null}</div></header>
           <div className="message-stream" aria-live="polite">
             {loading && messages.length === 0 ? <div className="room-empty"><LoaderCircle className="is-spinning" size={22} /><strong>正在读取协作记录</strong></div> : null}
-            {!loading && messages.length === 0 ? <div className="room-empty"><MessageCircle size={25} /><strong>直接描述你希望团队完成的任务</strong><span>发送后系统会自动创建 Mission 并交给规划 Agent，无需再勾选消息。</span></div> : null}
+            {!loading && messages.length === 0 ? <div className="room-empty"><MessageCircle size={25} /><strong>从一个可验收的目标开始</strong><span>例如：/goal 为 CSV 导入增加错误行预览。下方可补充完成标准与禁止改动的范围。</span></div> : null}
             {messages.map((message) => {
               const authorAgent = message.author.kind === 'agent'
               return (
@@ -1247,21 +1055,22 @@ function TeamRoomView({
           </div>
           <div className="room-composer">
             {replyTo ? <div className="reply-banner"><span>正在回复 <strong>{replyTo.authorName}</strong> · {replyTo.body.slice(0, 72)}</span><button onClick={() => setReplyTo(null)}>取消</button></div> : null}
-            <div className="recipient-picker"><span><AtSign size={13} />选择消息要路由给的 Agent</span><div>{agents.map((agent) => <button key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div>
-            {!mission && !planningActive ? <div className="composer-intent" aria-label="发送方式"><span>发送方式</span><div><button className={composerIntent === 'task' ? 'is-selected' : ''} aria-pressed={composerIntent === 'task'} onClick={() => setComposerIntentOverride('task')}><Network size={12} />新任务<small>创建 Mission + DAG</small></button><button className={composerIntent === 'message' ? 'is-selected' : ''} aria-pressed={composerIntent === 'message'} onClick={() => setComposerIntentOverride('message')}><MessageCircle size={12} />普通消息<small>仅记录与路由</small></button></div><em>{composerIntentOverride ? '已手动选择' : '已按输入内容判断，可手动切换'}</em></div> : null}
-            <div className="composer-field"><textarea value={draft} onChange={(event) => { setDraft(event.target.value); setComposerIntentOverride(null) }} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '继续补充约束，或 @Agent 调整当前任务方向。' : '任务示例：帮我实现一个贪吃蛇游戏；普通消息示例：你好。'} /><button aria-label={mission ? '发送到当前 Mission' : planningActive ? '补充规划上下文' : composerIntent === 'task' ? '发送并启动规划' : '发送普通消息'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{mission ? '发送' : planningActive ? '补充上下文' : composerIntent === 'task' ? '发送并规划' : '发送消息'}</span></button></div>
-            <div className="composer-scope"><span className={mission || planningActive || composerIntent === 'task' ? 'is-bound' : ''}><Link2 size={12} />{mission ? `已绑定 Mission · ${mission.title}` : planningActive ? '已有任务正在规划；新消息作为补充上下文' : composerIntent === 'task' ? '新任务：消息与 Mission 在同一事务提交' : '普通消息：不会创建 Mission 或任务 DAG'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
+            {!composingGoal ? <div className="recipient-picker"><span><AtSign size={13} />向执行中的 Agent 补充信息</span><div>{agents.map((agent) => <button disabled={sending} key={agent.id} className={selectedAgents.includes(agent.id) ? 'is-selected' : ''} onClick={() => toggleAgent(agent.id)}><Bot size={12} />{agent.name}<small>{roleLabels[agent.role ?? 'custom']}</small></button>)}</div></div> : null}
+            {!mission && !planningActive ? <div className="composer-intent" aria-label="发送方式"><span>发送方式</span><div><button disabled={sending || explicitGoal} className={composerIntent === 'task' ? 'is-selected' : ''} aria-pressed={composerIntent === 'task'} onClick={() => setComposerIntentOverride('task')}><Network size={12} />新任务<small>创建目标并规划</small></button><button disabled={sending || explicitGoal} className={composerIntent === 'message' ? 'is-selected' : ''} aria-pressed={composerIntent === 'message'} onClick={() => setComposerIntentOverride('message')}><MessageCircle size={12} />普通消息<small>仅记录与路由</small></button></div><em>{explicitGoal ? '/goal 明确创建新目标' : composerIntentOverride ? '已手动选择' : '已按输入内容判断，可手动切换'}</em></div> : null}
+            <div className="composer-field"><textarea aria-label="目标或补充消息" disabled={sending} value={draft} onChange={(event) => { setDraft(event.target.value); setComposerIntentOverride(null) }} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendMessage() } }} placeholder={mission ? '补充当前目标，或输入 /goal 开始另一个目标。' : '/goal 为 CSV 导入增加错误行预览'} /><button aria-label={explicitGoal ? '创建目标并规划' : composingGoal ? '发送并启动规划' : mission ? '发送到当前 Mission' : planningActive ? '补充规划上下文' : '发送普通消息'} disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? <LoaderCircle className="is-spinning" size={18} /> : <Send size={17} />}<span>{composingGoal ? '创建目标' : mission || planningActive ? '发送补充' : '发送消息'}</span></button></div>
+            {composingGoal ? <div className="goal-contract-inputs"><label>验收条件（每行一项，可选）<textarea disabled={sending} value={acceptanceText} onChange={(event) => setAcceptanceText(event.target.value)} rows={3} placeholder={'导入前可预览错误行\n重复导入不会产生重复数据\n相关回归测试通过'} /></label><label>约束（每行一项，可选）<textarea disabled={sending} value={constraintText} onChange={(event) => setConstraintText(event.target.value)} rows={2} placeholder={'保持现有接口兼容\n不修改线上数据'} /></label><label>Token 总限额（可选）<input inputMode="numeric" disabled={sending} value={budgetText} onChange={(event) => setBudgetText(event.target.value)} placeholder="留空不限额，例如 200000" /></label><p>限额覆盖规划、执行、审查与终验的模型用量；达到限额后等待你调整，在途调用可能超过限额。目标交付前会核对完整验收清单，最终仍由你确认。</p></div> : null}
+            <div className="composer-scope"><span className={!composingGoal && (mission || planningActive) ? 'is-bound' : ''}><Link2 size={12} />{composingGoal ? '新目标：创建独立 Mission，计划批准后才执行' : mission ? `补充当前目标 · ${mission.title}` : planningActive ? '补充正在规划的目标' : '普通消息：不会创建 Mission 或任务 DAG'}</span><code>Ctrl / ⌘ + Enter 发送</code></div>
           </div>
         </section>
 
         <aside className="routing-rail">
-          <div><span className="micro-label">投递解释器</span><h2>这条消息会去哪？</h2><p>“新任务”会同时保存消息并创建规划请求；“普通消息”只进入会话账本。已有 Mission 时，新消息直接路由到当前任务。</p></div>
+          <div><span className="micro-label">当前目标</span><h2>{mission?.title ?? '等待你的目标'}</h2><p>{mission?.goal ?? '描述希望交付的结果，并补充可以检查的完成标准。'}</p><p>/goal 始终创建独立目标；普通消息补充当前目标。新目标的计划需要你批准。</p></div>
           <section className="planning-launcher">
             <span className="micro-label">发送即规划</span>
-            <h3>{planningRequest ? '任务已接收' : '直接描述任务'}</h3>
+            <h3>{planningRequest ? '目标已接收' : '描述交付目标'}</h3>
             <p>{planningRequest ? '系统正在跟踪这次规划的真实状态。' : '从对话框发送首条任务后，系统会自动生成 Mission，不需要再勾选或点击创建。'}</p>
             {!planningActive && selectedMessageIds.length ? <div className="planning-history-form"><span>从 {selectedMessageIds.length} 条历史消息重新规划</span><label><span>Mission 标题</span><input value={planningTitle} onChange={(event) => setPlanningTitle(event.target.value)} placeholder="例如：完成项目级角色系统" /></label><button className="planning-action" disabled={!planner || !planningTitle.trim() || planningBusy} onClick={() => void createPlanningRequest()}>{planningBusy ? <LoaderCircle className="is-spinning" size={15} /> : <Network size={15} />}用所选历史创建任务</button></div> : null}
-            {planningRequest ? <div className={`planning-progress planning-progress--${planningBlocked ? 'blocked' : planningRequest.status}`}><span>{planningBlocked ? <CircleAlert size={14} /> : ['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningBlocked ? '执行环境未就绪，规划尚未开始' : planningStatusLabels[planningRequest.status]}</strong><small>{planningBlocked ? `原因：${planningBlockReason}` : `第 ${planningRequest.attempt}/${planningRequest.maxAttempts} 次尝试`}</small>{planningRequest.status === 'queued' && !planningBlocked ? <p className="planning-worker-hint">{plannerStartAttempted === planningRequest.id ? '正在自动唤醒 Planner；心跳上线后会立即领取任务。' : '请求已安全保存，正在检查 Planner 运行状态。'}</p> : null}{planningBlocked ? <p className="planning-worker-hint">请求已保存；补齐配置后将自动继续，无需重新发送。</p> : null}{plannerStartError ? <em>{plannerStartError}</em> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningBlocked || plannerStartError ? <button onClick={onOpenRuntime}><Settings size={13} />配置后自动继续</button> : planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('start')}>{planningRequest.status === 'approved' ? '查看 Mission' : '查看并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
+            {planningRequest ? <div className={`planning-progress planning-progress--${planningBlocked ? 'blocked' : planningRequest.status}`}><span>{planningBlocked ? <CircleAlert size={14} /> : ['queued', 'running', 'model_complete'].includes(planningRequest.status) ? <LoaderCircle className="is-spinning" size={14} /> : planningRequest.status === 'failed' ? <CircleAlert size={14} /> : <CircleCheck size={14} />}</span><div><strong>{planningBlocked ? '执行环境未就绪，规划尚未开始' : planningStatusLabels[planningRequest.status]}</strong><small>{planningBlocked ? `原因：${planningBlockReason}` : `第 ${planningRequest.attempt}/${planningRequest.maxAttempts} 次尝试`}</small>{planningRequest.status === 'queued' && !planningBlocked ? <p className="planning-worker-hint">{plannerStartAttempted === planningRequest.id ? '正在自动唤醒 Planner；心跳上线后会立即领取任务。' : '请求已安全保存，正在检查 Planner 运行状态。'}</p> : null}{planningBlocked ? <p className="planning-worker-hint">请求已保存；补齐配置后将自动继续，无需重新发送。</p> : null}{plannerStartError ? <em>{plannerStartError}</em> : null}{planningRequest.error ? <em>{planningRequest.error}</em> : null}</div>{planningBlocked || plannerStartError ? <button onClick={onOpenRuntime}><Settings size={13} />配置后自动继续</button> : planningRequest.status === 'awaiting_approval' || planningRequest.status === 'approved' ? <button onClick={() => onNavigate('mission')}>{planningRequest.status === 'approved' ? '查看目标' : '查看目标并批准计划'}<ArrowRight size={13} /></button> : null}</div> : null}
           </section>
           <ol className="routing-steps"><li className="is-complete"><span>1</span><div><strong>持久化消息</strong><small>发送即写入 Conversation 账本</small></div></li><li className={mission || planningRequest ? 'is-complete' : ''}><span>2</span><div><strong>自动创建 Mission</strong><small>{mission ? mission.title : planningRequest ? '已由这条消息创建' : '等待首条任务消息'}</small></div></li><li className={planningRequest || mission ? 'is-active' : ''}><span>3</span><div><strong>唤醒 Planner</strong><small>{planningBlocked ? '缺少执行环境配置' : '就绪后自动领取规划'}</small></div></li></ol>
           <div className="latest-delivery"><span className="micro-label">最近一次真实投递</span>{latestRoutedMessage ? <><strong>{latestRoutedMessage.body.slice(0, 80)}</strong>{latestRoutedMessage.deliveries.map((delivery) => <div key={delivery.agentId}><span className={`delivery-signal delivery-signal--${delivery.status}`} /><p><strong>{activeConversation?.members.find((member) => member.id === delivery.agentId)?.name ?? 'Agent'}</strong><small>{deliveryLabels[delivery.status]}</small></p><code>{delivery.runId ? '已关联运行' : '当前无 Run，不会立即回复'}</code></div>)}</> : <p className="routing-placeholder">发送第一条 @Agent 消息后，这里会显示实际投递状态。</p>}</div>
@@ -1461,7 +1270,8 @@ export function App() {
   const [runtimeBusy, setRuntimeBusy] = useState<string | null>(null)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const [mission, setMission] = useState<MissionSnapshot | null>(null)
-  const [targetTraceRunId, setTargetTraceRunId] = useState<string | null>(null)
+  const [selectedRunId, setSelectedRunId] = useState<string | undefined>(undefined)
+  const [progressError, setProgressError] = useState<string | null>(null)
   const [missionId, setMissionId] = useState(() =>
     window.localStorage.getItem('runguild:last-mission')
       ?? window.localStorage.getItem('mission-control:last-mission')
@@ -1475,7 +1285,8 @@ export function App() {
     setRuntimeConfiguration(null)
     setRuntimePanelOpen(false)
     setMission(null)
-    setTargetTraceRunId(null)
+    setSelectedRunId(undefined)
+    setProgressError(null)
     setMissionId('')
     window.localStorage.removeItem('runguild:last-mission')
     window.localStorage.removeItem('mission-control:last-mission')
@@ -1492,6 +1303,8 @@ export function App() {
 
   const acceptMission = useCallback((snapshot: MissionSnapshot) => {
     setMissionId(snapshot.id)
+    setError(null)
+    setProgressError(null)
     window.localStorage.setItem('runguild:last-mission', snapshot.id)
     setMission(snapshot)
   }, [])
@@ -1641,6 +1454,23 @@ export function App() {
     return () => window.clearInterval(interval)
   }, [authentication, connection, overview?.project.id, syncRuntimeConfiguration])
   useEffect(() => { if (connection !== 'online' || !authentication || !missionId || mission) return; void missionApi.getMission(identity, missionId).then((snapshot) => { window.localStorage.setItem('runguild:last-mission', missionId); window.localStorage.removeItem('mission-control:last-mission'); setMission(snapshot) }).catch(() => { window.localStorage.removeItem('runguild:last-mission'); window.localStorage.removeItem('mission-control:last-mission') }) }, [authentication, connection, identity, mission, missionId])
+  useEffect(() => {
+    if (view !== 'mission' || !missionId || !authentication || connection !== 'online' || busy) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      try {
+        const snapshot = await missionApi.getMission(identity, missionId)
+        if (active) { setMission(snapshot); setProgressError(null) }
+      } catch (caught) {
+        if (active) setProgressError(caught instanceof Error ? caught.message : '目标进度刷新失败，请手动重试')
+      } finally {
+        if (active) timer = setTimeout(() => void refresh(), 5_000)
+      }
+    }
+    void refresh()
+    return () => { active = false; clearTimeout(timer) }
+  }, [view, missionId, authentication, connection, identity, busy])
   useEffect(() => { const keydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setCommandOpen((open) => !open) } if (event.key === 'Escape') { setCommandOpen(false); setRuntimePanelOpen(false) } }; window.addEventListener('keydown', keydown); return () => window.removeEventListener('keydown', keydown) }, [])
 
   const openRuntimePanel = useCallback(() => {
@@ -1698,12 +1528,29 @@ export function App() {
     }
   }, [identity, syncOverview, syncRuntimeConfiguration])
 
+  const startGoalExecution = async (snapshot: MissionSnapshot) => {
+    const [runtime, currentOverview] = await Promise.all([syncRuntimeConfiguration(), syncOverview()])
+    try {
+      await ensureGoalExecution({ identity, mission: snapshot, runtime, overview: currentOverview })
+    } finally {
+      await Promise.allSettled([syncRuntimeConfiguration(), syncOverview()])
+    }
+  }
+  const approveGoalPlan = () => void run('approve', async () => {
+    if (!mission) return
+    await missionApi.approvePlan(identity, mission.id, mission.planVersion)
+    const snapshot = await missionApi.getMission(identity, mission.id)
+    acceptMission(snapshot)
+    navigate('mission')
+    await startGoalExecution(snapshot)
+  })
+
   const startProps = {
     connection, setup, overview, mission, identity, busy, error, onCheck: checkConnection,
     onBootstrap: () => void run('bootstrap', async () => { setSetup(await missionApi.bootstrap(identity)); await syncOverview(); await syncRuntimeConfiguration() }),
     onCreate: (title: string, goal: string) => void run('create', async () => { const id = await missionApi.createMission(identity, title, goal, setup?.conversationId); setMissionId(id); window.localStorage.setItem('runguild:last-mission', id); setMission(await missionApi.getMission(identity, id)); await syncOverview() }),
     onPropose: () => void run('propose', async () => { if (!mission) return; await missionApi.proposePlan(identity, mission.id, guidedPlan); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() }),
-    onApprove: () => void run('approve', async () => { if (!mission) return; await missionApi.approvePlan(identity, mission.id, mission.planVersion); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() }),
+    onApprove: approveGoalPlan,
     onRefresh: refreshMission, onOpenMission: () => navigate('mission'), onOpenTeam: () => navigate('team'),
     onOpenRuntime: openRuntimePanel,
     onSelectMission: (id: string) => void run('select-mission', async () => { acceptMission(await missionApi.getMission(identity, id)); navigate('mission') }),
@@ -1715,11 +1562,50 @@ export function App() {
     if (view === 'team') return <TeamRoomView identity={identity} setup={setup} mission={mission} runtime={runtimeConfiguration} overview={overview} onNavigate={navigate} onMissionReady={acceptMissionFromPlanning} onOpenRuntime={openRuntimePanel} onEnsurePlanner={ensurePlannerWorker} />
     if (view === 'members') return <MembersView identity={identity} currentUserId={authentication?.user.id ?? identity.userId} currentRole={authentication?.projects.find((project) => project.id === identity.projectId)?.role ?? 'viewer'} />
     if (view === 'artifacts') return <ArtifactView identity={identity} missionId={mission?.id} />
-    if (view === 'trace') return <TraceView identity={identity} initialRunId={targetTraceRunId} />
-    return <MissionView mission={mission} identity={identity} busy={busy} error={error} onNavigate={navigate} onOpenRun={(runId) => { setTargetTraceRunId(runId); navigate('trace') }} onRefresh={refreshMission} onApproveDelivery={() => void run('approve-delivery', async () => { if (!mission?.finalDelivery) return; await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} onRequestDeliveryChanges={(reason) => void run('request-delivery-changes', async () => { if (!mission?.finalDelivery) return; await missionApi.requestDeliveryChanges(identity, mission.id, mission.finalDelivery.artifactVersionId, reason); setMission(await missionApi.getMission(identity, mission.id)); await syncOverview() })} />
+    if (view === 'trace') return <TraceView key={selectedRunId ?? 'latest'} identity={identity} initialRunId={selectedRunId} />
+    return <GoalView identity={identity} mission={mission} busy={busy} error={error ?? progressError}
+      canOperate={['owner', 'operator'].includes(authentication?.projects.find((project) => project.id === identity.projectId)?.role ?? '')}
+      onNavigate={navigate} onRefresh={refreshMission} onApprovePlan={approveGoalPlan}
+      onOpenRuntime={openRuntimePanel}
+      onOpenRun={(id) => { setSelectedRunId(id); navigate('trace') }}
+      onUpdateBudget={(tokenLimit) => void run('update-budget', async () => {
+        if (!mission) return
+        await missionApi.setMissionBudget(identity, mission.id, tokenLimit)
+        const snapshot = await missionApi.getMission(identity, mission.id)
+        acceptMission(snapshot)
+        if (snapshot.status === 'running' && !['exhausted', 'usage_unknown'].includes(snapshot.budget.status)) {
+          await startGoalExecution(snapshot)
+        }
+      })}
+      onStartExecution={() => void run('start-execution', async () => {
+        if (!mission) return
+        const snapshot = await missionApi.getMission(identity, mission.id)
+        acceptMission(snapshot)
+        await startGoalExecution(snapshot)
+      })}
+      onRetryTask={(taskId, reason) => void run('retry-task', async () => {
+        if (!mission) return
+        await missionApi.retryTask(identity, mission.id, taskId, reason)
+        const snapshot = await missionApi.getMission(identity, mission.id)
+        acceptMission(snapshot)
+        await startGoalExecution(snapshot)
+      })}
+      onApproveDelivery={() => void run('approve-delivery', async () => {
+        if (!mission?.finalDelivery) return
+        await missionApi.approveDelivery(identity, mission.id, mission.finalDelivery.artifactVersionId)
+        acceptMission(await missionApi.getMission(identity, mission.id))
+        await syncOverview()
+      })}
+      onRequestDeliveryChanges={(reason) => void run('request-delivery-changes', async () => {
+        if (!mission?.finalDelivery) return
+        await missionApi.requestDeliveryChanges(identity, mission.id, mission.finalDelivery.artifactVersionId, reason)
+        const snapshot = await missionApi.getMission(identity, mission.id)
+        acceptMission(snapshot)
+        await startGoalExecution(snapshot)
+      })} />
   // State is intentionally listed explicitly so API progress is reflected immediately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, connection, setup, overview, runtimeConfiguration, mission, identity, busy, error, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview, openRuntimePanel, ensurePlannerWorker, targetTraceRunId])
+  }, [view, connection, setup, overview, runtimeConfiguration, mission, identity, busy, error, progressError, missionId, authentication, acceptMission, acceptMissionFromPlanning, syncOverview, openRuntimePanel, ensurePlannerWorker, selectedRunId])
 
   if (authentication === undefined || authenticationMode === undefined) return <AuthenticationChecking connection={connection} error={authenticationError} />
   if (authentication === null) return <LoginView connection={connection} onLogin={async (input) => applyAuthentication(await missionApi.login(input))} />

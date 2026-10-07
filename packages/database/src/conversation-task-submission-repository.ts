@@ -24,6 +24,11 @@ export interface SubmitConversationTaskInput {
   readonly mentions?: readonly AgentId[]
   readonly replyToMessageId?: MessageId
   readonly title: string
+  readonly goal?: string
+  readonly constraints?: readonly string[]
+  readonly acceptanceCriteria?: readonly string[]
+  readonly goalVerification?: boolean
+  readonly budgetTokens?: number | null
   readonly plannerAgentId?: AgentId
   readonly clientRequestId: string
   readonly correlationId: CorrelationId
@@ -76,6 +81,11 @@ export class ConversationTaskSubmissionRepository {
         conversationId: input.conversationId,
         sourceMessageIds: [posted.message.id],
         title: input.title,
+        ...(input.goal === undefined ? {} : { goal: input.goal }),
+        ...(input.constraints === undefined ? {} : { constraints: input.constraints }),
+        ...(input.acceptanceCriteria === undefined ? {} : { acceptanceCriteria: input.acceptanceCriteria }),
+        ...(input.goalVerification === undefined ? {} : { goalVerification: input.goalVerification }),
+        ...(input.budgetTokens === undefined ? {} : { budgetTokens: input.budgetTokens }),
         ...(input.plannerAgentId === undefined ? {} : { plannerAgentId: input.plannerAgentId }),
         createdBy: input.createdBy,
         correlationId: input.correlationId,

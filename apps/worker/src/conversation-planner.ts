@@ -7,11 +7,13 @@ import {
   AGENT_ROLES,
   EVIDENCE_KINDS,
   validateMissionPlan,
+  normalizeGoalVerificationPlan,
   type AgentId,
   type AgentRole,
   type ConversationPlanRequestedInboxPayload,
   type CorrelationId,
   type MissionPlanDraft,
+  type RuntimeModelBudget,
   type ModelAdapter,
   type ModelMessage,
   type ModelToolDefinition,
@@ -32,7 +34,10 @@ function taskExecutionRoles(availableRoles: readonly AgentRole[]): readonly Agen
   return roles
 }
 
-export function missionPlanToolDefinition(availableRoles: readonly AgentRole[]): ModelToolDefinition {
+export function missionPlanToolDefinition(
+  availableRoles: readonly AgentRole[],
+  goalVerification = false,
+): ModelToolDefinition {
   const roles = taskExecutionRoles(availableRoles)
   return {
     action: 'mission.propose_plan',
@@ -45,7 +50,7 @@ export function missionPlanToolDefinition(availableRoles: readonly AgentRole[]):
         tasks: {
           type: 'array',
           minItems: 1,
-          maxItems: 100,
+          maxItems: goalVerification ? 99 : 100,
           items: {
             type: 'object',
             required: [
@@ -97,6 +102,7 @@ type Missions = Pick<MissionRepository, 'proposePlan'>
 type Conversations = Pick<ConversationRepository, 'postMessage'>
 
 export interface ConversationPlannerDependencies {
+  readonly budget?: Pick<RuntimeModelBudget, 'settleModelCall' | 'recordUnknownModelCall' | 'cancelModelCall'>
   readonly planning: PlanningStore
   readonly missions: Missions
   readonly conversations: Conversations
@@ -108,6 +114,8 @@ export function planningMessages(input: {
   readonly missionTitle: string
   readonly missionGoal: string
   readonly missionConstraints: readonly unknown[]
+  readonly missionAcceptanceCriteria: readonly unknown[]
+  readonly missionGoalVerification?: boolean
   readonly conversationTitle: string
   readonly sourceMessages: readonly {
     readonly id: string
@@ -125,6 +133,11 @@ export function planningMessages(input: {
         'You are the persistent Planner Agent in a verifiable software-delivery workspace.',
         'Turn the selected conversation into a small but complete executable DAG, not a prose-only answer.',
         'Every Task must have one specialist role, explicit dependencies, and evidence-based acceptance criteria.',
+        'Cover every Mission acceptance criterion with concrete Task acceptance criteria and verifiable evidence.',
+        ...(input.missionGoalVerification ? [
+          'This Mission uses Goal verification. Propose at most 99 original tasks. The system appends a final Builder task after all original tasks to verify the merged result against every original criterion and submit for independent review.',
+          'Do not create the reserved runguild-goal-verification task or depend on that key. The complete plan, including final verification, will be shown for human approval.',
+        ] : []),
         'Use researcher only when uncertainty requires investigation and builder for implementation.',
         'Only assign these active task-execution Agent roles: ' + roles.join(', ') + '.',
         'Planner and reviewer are control-plane roles. Never create DAG Tasks assigned to planner or reviewer.',
@@ -140,6 +153,7 @@ export function planningMessages(input: {
         'Mission title: ' + input.missionTitle,
         'Mission goal: ' + input.missionGoal,
         'Mission constraints: ' + JSON.stringify(input.missionConstraints),
+        'Mission acceptance criteria: ' + JSON.stringify(input.missionAcceptanceCriteria),
         '',
         'Selected source messages:',
         ...input.sourceMessages.map((message) =>
@@ -196,18 +210,33 @@ export class ConversationPlanner {
       plannerAgentId,
       leaseSeconds: this.leaseSeconds,
     })
-    if (claimed.kind === 'terminal') return
+    if (claimed.kind === 'terminal' || claimed.kind === 'budget_blocked') return
     if (claimed.kind === 'busy') {
       throw new Error('Conversation Planning Request is leased; retry after ' + claimed.retryAfterMs + ' ms')
     }
     const work = claimed.work
     let plan = work.storedPlan
+    let modelStarted = false
+    let modelSettled = false
+    let terminalFailure = false
     try {
+      if (plan !== undefined && work.missionGoalVerification) {
+        try {
+          normalizeGoalVerificationPlan(plan, work.missionAcceptanceCriteria as readonly string[])
+        } catch (error) {
+          // Replaying the same frozen invalid plan cannot succeed. Preserve it
+          // for inspection while allowing the inbox to move past this request.
+          terminalFailure = true
+          throw new Error('Stored Goal plan cannot be proposed: ' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
       if (plan === undefined) {
+        if (work.budgetCallId && !this.dependencies.budget) throw new Error('Mission model budget service is not configured')
         const messages = planningMessages(work)
-        const toolDefinition = missionPlanToolDefinition(work.availableRoles)
+        const toolDefinition = missionPlanToolDefinition(work.availableRoles, work.missionGoalVerification)
         const model = this.dependencies.modelFor(work.modelProvider, work.modelName)
         const startedAt = Date.now()
+        modelStarted = true
         const response = await model.complete({
           messages,
           tools: [toolDefinition],
@@ -215,7 +244,13 @@ export class ConversationPlanner {
           parallelToolCalls: false,
           reasoningEffort: 'none',
         })
+        if (work.budgetCallId) await this.dependencies.budget?.settleModelCall(work.budgetCallId, response.usage)
+        modelSettled = true
         plan = planFromResponse(response, work.availableRoles)
+        if (work.missionGoalVerification) {
+          // Validate before completeModel freezes a plan that replay must reuse.
+          normalizeGoalVerificationPlan(plan, work.missionAcceptanceCriteria as readonly string[])
+        }
         await this.dependencies.planning.completeModel({
           requestId: work.request.id,
           plannerAgentId,
@@ -249,7 +284,9 @@ export class ConversationPlanner {
         correlationId: ('conversation_planning_' + work.request.id) as CorrelationId,
       })
       if (!proposed.proposed) {
-        throw new Error('Mission rejected the Planner proposal: ' + proposed.reason)
+        terminalFailure = true
+        throw new Error('Mission rejected the Planner proposal: ' + proposed.reason
+          + (proposed.errors?.length ? ': ' + proposed.errors.map((error) => error.path + ' ' + error.message).join('; ') : ''))
       }
       await this.dependencies.conversations.postMessage({
         workspaceId: work.request.workspaceId,
@@ -258,7 +295,9 @@ export class ConversationPlanner {
         body: [
           '规划已完成，等待人工批准。',
           plan.summary,
-          'DAG 共 ' + plan.tasks.length + ' 个任务：' + plan.tasks.map((task) => task.title).join(' → '),
+          'DAG 共 ' + (plan.tasks.length + (work.missionGoalVerification ? 1 : 0)) + ' 个任务：'
+            + plan.tasks.map((task) => task.title).join(' → ')
+            + (work.missionGoalVerification ? ' → 目标终验（系统追加，独立评审）' : ''),
         ].join('\n\n'),
         entityRefs: { missionId: work.request.missionId },
         idempotencyKey: 'planning-summary:' + work.request.id,
@@ -271,12 +310,17 @@ export class ConversationPlanner {
         planVersion: proposed.version,
       })
     } catch (error) {
+      if (work.budgetCallId && !modelSettled) {
+        if (modelStarted) await this.dependencies.budget?.recordUnknownModelCall(work.budgetCallId)
+        else await this.dependencies.budget?.cancelModelCall(work.budgetCallId)
+      }
       const message = error instanceof Error ? error.message : String(error)
       const failed = await this.dependencies.planning.fail({
         requestId: work.request.id,
         plannerAgentId,
         leaseToken: work.leaseToken,
         message,
+        ...(terminalFailure ? { terminal: true } : {}),
       })
       if (failed.retryable) throw error
       await this.dependencies.conversations.postMessage({

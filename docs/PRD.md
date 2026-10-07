@@ -43,7 +43,8 @@ Initial demo request:
 
 Expected flow:
 
-1. The user discusses the request in a project conversation.
+1. The user discusses the request in a project conversation, or uses `/goal`
+   to explicitly create a new Mission with acceptance criteria and constraints.
 2. Planner creates a Mission proposal and edits the plan artifact.
 3. The user and Planner co-edit the artifact through Yjs.
 4. The user approves the plan.
@@ -56,7 +57,12 @@ Expected flow:
 11. The Mission-room Reviewer Worker leases a separate durable Review execution,
     records its exact model input/output and usage, then passes the task or
     rejects it with actionable findings.
-12. The user approves the final Mission deliverable.
+12. For a Mission with Goal verification enabled, a final Builder task waits
+    for all original tasks to complete and integrate, checks the combined result
+    against the original goal, and repairs remaining gaps within the approved
+    scope. Its output goes through independent Review and Integration too.
+13. The user approves the final Mission deliverable, or requests corrections
+    through a new review-gated repair task.
 
 ## 5. Core entities
 
@@ -118,14 +124,64 @@ Expected flow:
 - One user can create a project and conversation.
 - Persistent agents can receive mentions and post progress summaries.
 - A message or selected message range can create a Mission proposal.
+- `/goal <request>` explicitly creates an independent Mission even when another
+  Mission is selected. Ordinary messages continue the selected Mission; when
+  there is no selected Mission or active planning request, the first ordinary
+  request also starts a new Goal. Selected historical messages remain a planning
+  entry point.
 - Mission, Task, Run, and Artifact references are structured links.
 
 ### Mission planning
 
-- Planner produces goal, constraints, acceptance criteria, and task graph.
+- Planner uses the Mission's goal, constraints, and original acceptance criteria
+  to propose a task graph with per-task criteria.
 - A task may depend on zero or more other tasks.
 - Cycles are rejected before plan approval.
 - Execution cannot start until the user approves the plan.
+
+### Goal verification and feedback
+
+- Goal is an optional verification mode on the existing Mission lifecycle,
+  not a replacement for Mission, Task, or Run. The current Web planning entry
+  points enable it; existing Missions and API requests that omit
+  `goalVerification` retain the ordinary Mission flow.
+- New Goal input may include original acceptance criteria, constraints, and an
+  optional cumulative Token limit. Planner receives the original contract.
+- The system appends one reserved final verification task to 1–99 original
+  tasks. It depends on every original task, requires independent Review, and
+  preserves the original acceptance criteria. An empty criteria list falls back
+  to checking the original goal and constraints.
+- The final Builder inspects the integrated result and records per-criterion
+  Artifact Version, test, and command evidence. It may repair gaps within the
+  approved scope and repeat affected checks; unchanged valid results do not
+  require an invented file change.
+- Review rejection carries the previous review findings into the next frozen
+  Run context. Retries remain bounded by attempt and model/tool limits; exhausted
+  attempts or unresolved blockers require user attention. This does not provide
+  arbitrary automatic replanning or a guarantee that every goal will complete.
+- Final delivery binds the current verification task's approved submission.
+  Human rejection appends a repair task that retains the original Goal criteria
+  and becomes the new verification task. Human approval remains required after
+  that task's Review and Integration.
+- The final Builder performs verification; the independent Reviewer judges
+  frozen materials. This is not a separate platform-owned business acceptance
+  suite that independently reruns checks.
+
+### Mission model budget
+
+- A Mission-wide ledger accounts for planning, execution, review, and final
+  verification calls. A Token limit gates admission of new calls; already
+  admitted calls may settle above the limit, so it is a soft limit rather than
+  an exact provider-side spending cap.
+- Reaching the limit persists a budget wait without discarding work. An
+  authorized user can raise or remove the limit to resume eligible waits.
+  `0` blocks new calls; no limit leaves admission unrestricted by budget.
+- Missing usage remains unknown rather than counted as zero. With a limit,
+  unknown usage blocks further calls; increasing the limit alone cannot resolve
+  missing usage. Removing the limit permits continuation without a known total.
+- Unpriced calls are reported separately and make the aggregate cost estimate
+  unavailable, rather than implying the work was free. Budget edits are audited
+  and do not reset cumulative usage.
 
 ### Execution
 
@@ -195,7 +251,13 @@ Expected flow:
 
 - A run timeline shows LLM calls, tool calls, state transitions, usage, and
   errors.
-- The Mission view shows task dependencies and current ownership.
+- The Mission view (`GoalView` in the Web) shows the original contract, current
+  ownership, dependencies, latest Runs, valid per-criterion evidence, current
+  Review, Integration, budget waits, and the next action. Completed task counts
+  and evidence counts are not presented as proof of full goal coverage.
+- Operators can inspect failed attempts, grant an additional attempt with a
+  recorded reason, inspect final delivery, and request corrections. Read-only
+  viewers see the same facts without mutation controls.
 - Single-agent and multi-agent benchmark runs share the same scenario format.
 - Benchmark Trials start from isolated refs at the same frozen Git commit.
 - Reports show success, wall time, cost, tokens, attempts, Tool failures,
@@ -209,6 +271,10 @@ Expected flow:
 - The Chinese operator Lab lists only the current Project's immutable Scenario
   Versions and Experiments, creates paired runs from an exact Version, and
   exposes queued/running/failed/completed Trial state without sample metrics.
+- Existing Evaluation Trials use frozen orchestration plans and ordinary
+  Mission execution. They do not yet evaluate the entire new Goal planning,
+  budget, terminal-verification, and human-feedback flow as a paired experiment;
+  historical Trial results must not be presented as evidence for that flow.
 
 ## 7. Non-functional requirements
 

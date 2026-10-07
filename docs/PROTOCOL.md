@@ -95,6 +95,88 @@ Inbox fact. The Planner must return exactly one typed `mission.propose_plan`
 call. The DAG is validated and persisted before any Mission transition or room
 summary is attempted.
 
+### Goal creation and final verification
+
+`/goal` is parsed by the Web client; it is not a separate HTTP endpoint or a
+model Tool. New task input uses the Conversation task-submission API to commit
+the source message, Mission, and Planning Request in one transaction. Before
+sending, the browser persists the complete command contract and fixed
+`clientRequestId` in its localStorage recovery queue. A lost response or page
+reload followed by reopening the project retries that same payload and ID without creating another Mission;
+reusing the ID with changed input is rejected. Older queued requests retain
+their original omitted fields so their idempotency hashes remain valid.
+Promotion of existing messages still uses the planning API directly.
+
+| Route | Goal-related contract |
+|---|---|
+| `POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/task-submissions` | Human-only atomic message and planning submission, with a fixed `x-client-request-id` header. The body accepts `body`, `title`, optional message references and recipients, plus optional `goal`, `constraints`, `acceptanceCriteria`, `goalVerification`, `budgetTokens`, and `plannerAgentId`. Retries are bound to the original payload. |
+| `POST /api/v1/workspaces/:workspaceId/conversations/:conversationId/planning-requests` | Human-only. Existing `sourceMessageIds` and `title`, plus optional `goal`, `constraints`, `acceptanceCriteria`, `goalVerification`, `budgetTokens`, and `plannerAgentId`. |
+| `POST /api/v1/workspaces/:workspaceId/projects/:projectId/missions` | Existing Mission creation with optional `goalVerification` and `budgetTokens`; the supplied original `goal`, `constraints`, and `acceptanceCriteria` are retained. |
+| `GET /api/v1/workspaces/:workspaceId/missions/:missionId` | Mission contract, proposed plan, Task progress, `goalVerification`, `verificationTaskId`, `finalDelivery`, and the production server's `budget` snapshot. |
+| `POST /api/v1/workspaces/:workspaceId/missions/:missionId/budget` | Human-only, Project-authorized mutation accepting `{ "tokenLimit": 100000 }` or `{ "tokenLimit": null }`; returns the budget snapshot directly. |
+
+`goalVerification` defaults to false when omitted from the API. The current Web
+sets it to true for `/goal`, promotion of selected messages, and its first
+ordinary request that creates a Mission. Existing Missions retain their stored
+mode. `budgetTokens` accepts a non-negative safe integer or null; omitted/null
+means unlimited. Creation records the original Goal contract before planning.
+
+With Goal verification enabled, the server deterministically appends the
+reserved `runguild-goal-verification` Task to 1–99 original Tasks. This Builder
+Task depends on every original Task, has `reviewRequired=true`, and preserves
+each original Mission criterion as a required `goal-acceptance-*` criterion
+requiring `artifact_version`, `test_run`, and `command_result` Evidence. An empty
+original criterion list receives one criterion tied to the original goal and
+constraints. An altered reserved Task, or an original Task depending on it, is
+rejected. Plan approval repeats validation and sets `verificationTaskId`.
+
+The final Builder can verify and repair within the approved scope; its result
+must pass independent Review and the usual integration gate. Final human
+delivery approval requires the exact Version from the current verification
+Task's current approved attempt. A human change request creates a new Builder
+Task, carries forward the original goal criteria, and updates
+`verificationTaskId`; an older approved Version cannot substitute for it.
+
+Mission Task progress exposes `latestRun`, attempts, criterion-level
+`evidenceStatus`, `latestReview.isCurrentAttempt`, and `integration` alongside
+the DAG. `latestRun.modelSource` distinguishes an observed model from configured
+fallback metadata. `evidenceStatus=complete` means the current evidence gate's
+required kinds are present, not that the work has been independently approved.
+
+### Mission model budget
+
+`MissionBudgetSnapshot` contains:
+
+~~~typescript
+{
+  tokenLimit: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  remainingTokens: number | null;
+  inFlightCalls: number;
+  unknownUsageCalls: number;
+  estimatedCostUsd: number | null;
+  unpricedCalls: number;
+  status: 'unlimited' | 'available' | 'exhausted' | 'usage_unknown';
+}
+~~~
+
+Totals count reported input plus output tokens in `mission_model_calls`, across
+Planner, execution, and Reviewer calls. Cached input is included in input tokens.
+Missing or invalid usage is unknown, never measured zero. `remainingTokens` is
+clamped at zero for a finite limit; an absent price produces a null cost when
+any completed/unknown call is unpriced. In-flight calls are counted separately.
+
+The limit controls admission of new model calls. `0` blocks admission; `null`
+is unlimited even when earlier usage is unknown. Under a finite limit, unknown
+usage takes precedence over exhaustion and blocks new calls. Raising a numeric
+limit alone cannot clear unknown usage. Already admitted calls may finish above
+the limit. This does not cancel in-flight work or replace Run hop/Task attempt
+limits. A budget mutation records `mission.budget_changed` with the actor,
+previous/new limit, measured tokens, and unknown-call count. Available budget
+wakes only recorded budget waiters through durable Inbox/Outbox records.
+
 ## 3. Tool request
 
 A Tool Request includes:
@@ -174,6 +256,17 @@ information to prompt a drain; they are not the payload of record.
 
 Duplicate wakes are coalesced. Reconnection always drains from the durable
 cursor before waiting for new notifications.
+
+Conversation mentions address recipient Agents. For an Agent-authored message,
+Task/Run entity references identify its sender's execution scope and must match
+the author and Run identity; they do not restrict the recipient to the sender's
+Task. An active recipient Run in the same Mission can therefore receive a
+cross-Task Steering control. A human message's explicit Task reference retains
+its narrower target. Self-mentions are marked `context_loaded` for the sending
+Run without waking it. `steered` means a control was queued, not that the Agent
+read or answered it. Without a matching active Run, `context_pending` remains
+eligible for a later bounded Mission-message context; no reply lifecycle or
+delivery guarantee for every older pending message is implied.
 
 ## 7. Artifact operation
 
@@ -328,6 +421,12 @@ schema, not a general Tool Gateway capability. Prompt, response, usage, error,
 and the hashed decision remain in `review_executions`; after the decision is
 stored, retries never repeat the model call.
 
+When a Review requests changes, the next Task attempt receives a bounded frozen
+`previousReview` snapshot with the summary, findings, and evidence references.
+Its context is reused on restart. Goal verification uses this same Review
+protocol; the Reviewer judges the submitted frozen material and does not execute
+an independent repository test loop.
+
 ## 10. Context and Skills
 
 A Skill has mutable Workspace metadata but immutable numbered instruction
@@ -386,6 +485,11 @@ labelled `exploratory`. Three complete pairs are only the minimum for a
 repeatable engineering comparison. The report always carries the limitation
 that statistical significance has not been established; callers must not
 translate this operational gate into a statistical claim.
+
+The current Trial driver uses the frozen plans directly; it does not invoke the
+Conversation Planner or opt into `goalVerification`/`budgetTokens`. Existing
+Evaluation metrics and Mission budget snapshots are distinct projections, so
+this protocol does not claim a complete `/goal` evaluation.
 
 ## 12. Versioning
 

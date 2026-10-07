@@ -1103,7 +1103,12 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
             taskId: context.request.taskId,
             headCommit: commitHash,
           })
+          const unchangedEvidence = await options.evidence.record(context, {
+            kind: 'file_diff', uri: 'git-commit://' + commitHash,
+            contentHash: hash(''), metadata: { commit: commitHash, treeHash: tree.stdout.trim(), unchanged: true },
+          })
           return {
+            evidence: unchangedEvidence,
             output: {
               committed: false,
               commit: commitHash,
@@ -1228,18 +1233,6 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         protectedTestIntegrityError = error instanceof Error ? error.message : 'Protected acceptance tests changed'
       }
       const passed = result.exitCode === 0 && !result.timedOut && stable && protectedTestsIntact
-      const contentHash = hash(JSON.stringify({
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        beforeStateHash: before.stateHash,
-        afterStateHash: after.stateHash,
-        protectedTestManifestHash: protectedTests.manifestHash,
-        protectedTestsIntact,
-        sandboxMode: testSandbox.mode,
-        networkMode: testSandbox.network,
-      }))
       const evidenceMetadata = {
         command: input.command,
         exitCode: result.exitCode,
@@ -1256,6 +1249,13 @@ export async function createWorkspaceToolHandlers(options: WorkspaceToolsOptions
         networkMode: testSandbox.network,
         ...(protectedTestIntegrityError === undefined ? {} : { protectedTestIntegrityError }),
       }
+      // Identical console output on different commits is different evidence.
+      // Include call identity so a later rerun is not deduplicated to an older result.
+      const contentHash = hash(JSON.stringify({
+        toolCallId: context.request.id, ...evidenceMetadata,
+        beforeStateHash: before.stateHash, afterStateHash: after.stateHash,
+        stdout: result.stdout, stderr: result.stderr,
+      }))
       const testEvidence = await options.evidence.record(context, {
         kind: 'test_run',
         uri: 'test-run://' + context.request.id + '#' + contentHash,

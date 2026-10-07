@@ -30,6 +30,10 @@ const MIGRATIONS = [
   '0024_model_protocol_events.sql',
   '0025_agent_run_hop_budget.sql',
   '0026_flash_agent_hop_budget.sql',
+  // Both existing branch histories keep their full filenames and checksums.
+  // Prefixes overlap, but identity is the full name in schema_migrations.
+  '0027_mission_budget.sql',
+  '0028_goal_verification.sql',
   '0027_protected_test_paths.sql',
   '0028_test_sandbox_config.sql',
   '0029_evaluation_unknown_pricing.sql',

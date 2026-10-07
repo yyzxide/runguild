@@ -358,14 +358,18 @@ export class OpenAIResponsesAdapter implements ModelAdapter {
     const toolCalls = protocolError === undefined
       ? parsedToolCalls.flatMap((item) => item.call === undefined ? [] : [item.call])
       : []
+    const usageReported = Number.isSafeInteger(response.usage?.input_tokens)
+      && Number.isSafeInteger(response.usage?.output_tokens)
+      && (response.usage?.input_tokens ?? -1) >= 0 && (response.usage?.output_tokens ?? -1) >= 0
     return {
       content: response.output_text,
       toolCalls,
       finishReason: finishReason(response, rawToolCalls.length > 0),
       usage: {
+        ...(!usageReported ? { usageReported: false } : {}),
         inputTokens: response.usage?.input_tokens ?? 0,
         outputTokens: response.usage?.output_tokens ?? 0,
-        cachedInputTokens: response.usage?.input_tokens_details.cached_tokens ?? 0,
+        cachedInputTokens: response.usage?.input_tokens_details?.cached_tokens ?? 0,
       },
       providerRequestId: response.id,
       returnedModel: returnedModel(response.model),

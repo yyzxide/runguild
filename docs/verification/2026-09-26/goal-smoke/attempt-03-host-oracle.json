@@ -1,0 +1,48 @@
+{
+  "commit": "eb789a00bcc066c0cd6b03e8ee5240c36f79e9b6",
+  "passed": true,
+  "checks": [
+    {
+      "name": "named function export",
+      "passed": true
+    },
+    {
+      "name": "empty array returns a new array",
+      "passed": true
+    },
+    {
+      "name": "trim, lowercase, and discard blanks",
+      "passed": true
+    },
+    {
+      "name": "deduplicate normalized labels in first occurrence order",
+      "passed": true
+    },
+    {
+      "name": "preserve input array and support frozen input",
+      "passed": true
+    },
+    {
+      "name": "reject non-array inputs with TypeError",
+      "passed": true
+    },
+    {
+      "name": "reject non-string elements with TypeError",
+      "passed": true
+    },
+    {
+      "name": "reject sparse arrays with TypeError",
+      "passed": true
+    },
+    {
+      "name": "reject inherited strings masking missing own slots, including frozen arrays",
+      "passed": true
+    }
+  ],
+  "exitCode": 0,
+  "signal": null,
+  "timedOut": false,
+  "outputLimitExceeded": false,
+  "stdout": "",
+  "stderr": ""
+}

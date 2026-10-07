@@ -361,6 +361,17 @@ export class TaskWorktreeRepository {
     })
   }
 
+  async assertIntegrationLease(input: { readonly taskId: TaskId; readonly integrationToken: string }): Promise<void> {
+    const result = await this.pool.query(
+      "SELECT 1 FROM task_worktrees w WHERE w.task_id = $1 AND w.status = 'integrating' " +
+      'AND w.integration_token = $2 AND w.integration_expires_at > NOW() ' +
+      'AND EXISTS (SELECT 1 FROM task_submissions s JOIN reviews r ON r.submission_id = s.id ' +
+      "WHERE s.task_id = w.task_id AND s.status = 'approved' AND r.status = 'approved')",
+      [input.taskId, input.integrationToken],
+    )
+    if (result.rows.length !== 1) throw new Error('Integration lease or approval is no longer valid')
+  }
+
   async markIntegrated(input: {
     readonly taskId: TaskId
     readonly integrationToken: string

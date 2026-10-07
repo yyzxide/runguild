@@ -17,6 +17,7 @@ import {
   type RunId,
   type RunStatus,
   type RuntimeOutcome,
+  type RuntimeModelBudget,
   type RuntimeRunContext,
   type SkillSnapshotRef,
   type ToolAction,
@@ -103,6 +104,7 @@ export interface CompletionVerifier {
 
 export interface AgentRuntimeOptions {
   readonly persistence: RuntimePersistence
+  readonly budget?: RuntimeModelBudget
   readonly model: ModelAdapter
   readonly tools: RuntimeToolExecutor
   readonly completionVerifier: CompletionVerifier
@@ -133,6 +135,7 @@ export interface AgentRuntimeOptions {
 }
 
 export interface RunAgentInput {
+  readonly leaseToken?: string
   readonly runId: RunId
   readonly initialMessages: readonly ModelMessage[]
   readonly skills?: readonly SkillSnapshotRef[]
@@ -314,138 +317,154 @@ export class AgentRuntime {
         context = await this.requireRun(input.runId)
       }
 
-      const hop = await this.options.persistence.beginHop(input.runId)
-      if (hop === null) {
-        return this.finish(input.runId, 'timed_out', 'Maximum model hops reached.', context.currentHop)
-      }
-      context = { ...context, currentHop: hop }
-      await this.ensureImplementationGateMessage(input.runId, hop, messages)
-      await this.ensureHopBudgetGateMessages(context, hop, messages)
-      const continuation = await this.options.persistence.loadModelContinuation(input.runId)
-      const definitions = this.definitionsFor(context, hop, messages)
-      let builtContext
-      try {
-        builtContext = this.options.contextBuilder.build({
-          runId: input.runId,
-          hop,
-          messages,
-          tools: definitions,
-          ...(input.skills === undefined ? {} : { skills: input.skills }),
-        })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        return this.finish(input.runId, 'failed', 'Context build failed: ' + message, hop)
-      }
-      await this.options.persistence.saveContextSnapshot(builtContext.snapshot)
-      const request: ModelRequest = {
-        messages: builtContext.messages,
-        tools: definitions,
-        toolChoice: 'required',
-        reasoningEffort: 'none',
-        context: {
-          snapshotId: builtContext.snapshot.id,
-          contentHash: builtContext.snapshot.contentHash,
-          strategy: builtContext.snapshot.content.strategy,
-          tokenBudget: builtContext.snapshot.content.tokenBudget,
-          estimatedTokens: builtContext.snapshot.content.estimatedTokens,
-          compacted: builtContext.snapshot.content.compacted,
-        },
-        ...(continuation === null ? {} : { continuation }),
-        ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
-      }
       const callId = ('llm_' + randomUUID()) as LlmCallId
-      const startedAt = await this.options.persistence.beginModelCall(
-        callId,
-        input.runId,
-        hop,
-        this.options.model.provider,
-        this.options.model.model,
-        request,
-        this.options.model.endpoint,
-      )
-
-      let response: Awaited<ReturnType<ModelAdapter['complete']>>
+      if (this.options.budget && !await this.options.budget.reserveRunCall(context, callId, input.leaseToken)) {
+        const summary = 'Mission model budget requires attention before another model call.'
+        await this.options.persistence.transitionRun(input.runId, 'waiting_human', summary)
+        return { status: 'waiting_human', summary, hops: context.currentHop }
+      }
+      let requestStarted = false
       try {
-        response = await this.options.model.complete(request)
-        await this.options.persistence.finishModelCall(callId, input.runId, hop, startedAt, response)
-      } catch (error) {
-        await this.options.persistence.failModelCall(callId, startedAt, error)
-        if (input.abortSignal?.aborted) {
-          return this.finish(input.runId, 'cancelled', 'Run cancelled during model call.', hop)
+        const hop = await this.options.persistence.beginHop(input.runId)
+        if (hop === null) {
+          return this.finish(input.runId, 'timed_out', 'Maximum model hops reached.', context.currentHop)
         }
-        const message = error instanceof Error ? error.message : String(error)
-        return this.finish(input.runId, 'failed', 'Model call failed: ' + message, hop)
-      }
-      context = await this.requireRun(input.runId)
-      const externallyTerminated = terminalOutcome(context)
-      if (externallyTerminated) return externallyTerminated
+        context = { ...context, currentHop: hop }
+        await this.ensureImplementationGateMessage(input.runId, hop, messages)
+        await this.ensureHopBudgetGateMessages(context, hop, messages)
+        const continuation = await this.options.persistence.loadModelContinuation(input.runId)
+        const definitions = this.definitionsFor(context, hop, messages)
+        let builtContext
+        try {
+          builtContext = this.options.contextBuilder.build({
+            runId: input.runId,
+            hop,
+            messages,
+            tools: definitions,
+            ...(input.skills === undefined ? {} : { skills: input.skills }),
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return this.finish(input.runId, 'failed', 'Context build failed: ' + message, hop)
+        }
+        await this.options.persistence.saveContextSnapshot(builtContext.snapshot)
+        const request: ModelRequest = {
+          messages: builtContext.messages,
+          tools: definitions,
+          toolChoice: 'required',
+          reasoningEffort: 'none',
+          context: {
+            snapshotId: builtContext.snapshot.id,
+            contentHash: builtContext.snapshot.contentHash,
+            strategy: builtContext.snapshot.content.strategy,
+            tokenBudget: builtContext.snapshot.content.tokenBudget,
+            estimatedTokens: builtContext.snapshot.content.estimatedTokens,
+            compacted: builtContext.snapshot.content.compacted,
+          },
+          ...(continuation === null ? {} : { continuation }),
+          ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
+        }
+        const startedAt = await this.options.persistence.beginModelCall(
+          callId,
+          input.runId,
+          hop,
+          this.options.model.provider,
+          this.options.model.model,
+          request,
+          this.options.model.endpoint,
+        )
 
-      const assistantMessage: ModelMessage = {
-        role: 'assistant',
-        content: response.content,
-        hop,
-        ...(response.toolCalls.length === 0 ? {} : { toolCalls: response.toolCalls }),
-      }
-      await this.options.persistence.appendMessage(input.runId, hop, assistantMessage)
-      messages.push(assistantMessage)
+        let response: Awaited<ReturnType<ModelAdapter['complete']>>
+        let modelSettled = false
+        try {
+          requestStarted = true
+          response = await this.options.model.complete(request)
+          await this.options.budget?.settleModelCall(callId, response.usage)
+          modelSettled = true
+          await this.options.persistence.finishModelCall(callId, input.runId, hop, startedAt, response)
+        } catch (error) {
+          if (!modelSettled) await this.options.budget?.recordUnknownModelCall(callId)
+          await this.options.persistence.failModelCall(callId, startedAt, error)
+          if (input.abortSignal?.aborted) {
+            return this.finish(input.runId, 'cancelled', 'Run cancelled during model call.', hop)
+          }
+          const message = error instanceof Error ? error.message : String(error)
+          return this.finish(input.runId, 'failed', 'Model call failed: ' + message, hop)
+        }
 
-      if (response.protocolError !== undefined && response.finishReason === 'tool_calls') {
-        const repairCount = messages.filter(
-          (message) => message.role === 'user'
-            && message.content.startsWith(MODEL_PROTOCOL_CORRECTION_MARKER),
-        ).length
-        await this.options.persistence.recordEvent(input.runId, hop, 'model_protocol_rejected', {
-          code: response.protocolError.code,
-          toolCallId: response.protocolError.toolCallId,
-          toolName: response.protocolError.toolName,
-          repairCount: repairCount + 1,
-        })
-        if (repairCount >= this.maxModelProtocolRepairs) {
+        context = await this.requireRun(input.runId)
+        const externallyTerminated = terminalOutcome(context)
+        if (externallyTerminated) return externallyTerminated
+
+        const assistantMessage: ModelMessage = {
+          role: 'assistant',
+          content: response.content,
+          hop,
+          ...(response.toolCalls.length === 0 ? {} : { toolCalls: response.toolCalls }),
+        }
+        await this.options.persistence.appendMessage(input.runId, hop, assistantMessage)
+        messages.push(assistantMessage)
+
+        if (response.protocolError !== undefined && response.finishReason === 'tool_calls') {
+          const repairCount = messages.filter(
+            (message) => message.role === 'user'
+              && message.content.startsWith(MODEL_PROTOCOL_CORRECTION_MARKER),
+          ).length
+          await this.options.persistence.recordEvent(input.runId, hop, 'model_protocol_rejected', {
+            code: response.protocolError.code,
+            toolCallId: response.protocolError.toolCallId,
+            toolName: response.protocolError.toolName,
+            repairCount: repairCount + 1,
+          })
+          if (repairCount >= this.maxModelProtocolRepairs) {
+            return this.finish(
+              input.runId,
+              'failed',
+              'Model protocol repair budget exhausted after ' + String(repairCount + 1) +
+                ' invalid responses: ' + response.protocolError.code + '.',
+              hop,
+            )
+          }
+          const correction: ModelMessage = {
+            role: 'user',
+            hop,
+            content: MODEL_PROTOCOL_CORRECTION_MARKER + ' ' + response.protocolError.message +
+              ' No tool from that response was executed. Retry with a currently declared function and one valid JSON object. ' +
+              'Repair ' + String(repairCount + 1) + ' of ' + String(this.maxModelProtocolRepairs) + '.',
+          }
+          await this.options.persistence.appendMessage(input.runId, hop, correction)
+          messages.push(correction)
+          continue
+        }
+
+        if (response.toolCalls.length > 0) {
+          const outcome = await this.processToolCalls(context, hop, response.toolCalls, messages, input.abortSignal)
+          if (outcome) {
+            return outcome
+          }
+          context = await this.requireRun(input.runId)
+          continue
+        }
+
+        if (response.finishReason !== 'stop') {
           return this.finish(
             input.runId,
             'failed',
-            'Model protocol repair budget exhausted after ' + String(repairCount + 1) +
-              ' invalid responses: ' + response.protocolError.code + '.',
+            'Model response ended with ' + response.finishReason + ' before producing an executable tool call.',
             hop,
           )
         }
-        const correction: ModelMessage = {
+
+        const nudge: ModelMessage = {
           role: 'user',
+          content: 'No explicit run status was provided. Continue working or call run.set_status; silence is not completion.',
           hop,
-          content: MODEL_PROTOCOL_CORRECTION_MARKER + ' ' + response.protocolError.message +
-            ' No tool from that response was executed. Retry with a currently declared function and one valid JSON object. ' +
-            'Repair ' + String(repairCount + 1) + ' of ' + String(this.maxModelProtocolRepairs) + '.',
         }
-        await this.options.persistence.appendMessage(input.runId, hop, correction)
-        messages.push(correction)
-        continue
+        await this.options.persistence.appendMessage(input.runId, hop, nudge)
+        messages.push(nudge)
+      } finally {
+        if (!requestStarted) await this.options.budget?.cancelModelCall(callId)
       }
-
-      if (response.toolCalls.length > 0) {
-        const outcome = await this.processToolCalls(context, hop, response.toolCalls, messages, input.abortSignal)
-        if (outcome) {
-          return outcome
-        }
-        context = await this.requireRun(input.runId)
-        continue
-      }
-
-      if (response.finishReason !== 'stop') {
-        return this.finish(
-          input.runId,
-          'failed',
-          'Model response ended with ' + response.finishReason + ' before producing an executable tool call.',
-          hop,
-        )
-      }
-
-      const nudge: ModelMessage = {
-        role: 'user',
-        content: 'No explicit run status was provided. Continue working or call run.set_status; silence is not completion.',
-        hop,
-      }
-      await this.options.persistence.appendMessage(input.runId, hop, nudge)
-      messages.push(nudge)
     }
   }
 

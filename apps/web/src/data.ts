@@ -1,4 +1,4 @@
-export type TaskStatus = 'verified' | 'running' | 'waiting' | 'queued'
+export type TaskStatus = 'verified' | 'running' | 'waiting' | 'queued' | 'failed' | 'cancelled'
 
 export interface MissionTask {
   readonly id: string
@@ -43,4 +43,3 @@ export const evidenceFacts: readonly EvidenceFact[] = [
   { id: 'event-06', taskId: 'implement', sequence: '06', time: '现在', kind: '第 08 次模型调用', title: '正在运行完整回归', detail: '上下文 42,810 / 65,536 tokens', state: 'active' },
   { id: 'event-07', taskId: 'tests', sequence: '07', time: '下一步', kind: '调度', title: '验证 Agent 等待已审查 HEAD', detail: '依赖门禁仍未打开', state: 'pending' },
 ]
-

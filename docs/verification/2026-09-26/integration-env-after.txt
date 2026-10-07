@@ -1,0 +1,17 @@
+✔ local supervisor exposes readiness without exposing API credentials (2.405934ms)
+✔ local supervisor injects persisted Worktree setup argv and credentials into the Agent child environment (0.342171ms)
+✔ local Integration uses project verification and preparation argv without model credentials or unrelated defaults (0.302866ms)
+✔ local supervisor refuses duplicate and non-owned process control (0.441569ms)
+✔ local supervisor checks Integration activity in the exact Project scope (0.329165ms)
+✔ local supervisor checks Agent activity in the exact Project scope (0.214398ms)
+✔ ensureWorkspaceRoots creates missing Worktree root with 0700 permissions (7.803132ms)
+✔ ensureWorkspaceRoots rejects an existing non-directory Worktree root (3.848962ms)
+✔ ensureWorkspaceRoots validates repository path before creating Worktree root (1.548653ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 22.211753

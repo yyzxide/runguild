@@ -2,6 +2,8 @@
 
 本文不是背诵稿，而是帮助项目操作者真正讲清楚 RunGuild 的目标、流程、技术决策、失败处理和现阶段边界。面试时只讲自己能够结合代码、数据库记录和实际运行证明的内容。
 
+准备“印象深刻的 Bug / 开发中遇到的技术难点”时，参阅 [Bug 修复与开发复盘记录](BUGFIX_NOTES_2026-09-26.md)。其中保存了跨任务消息路由、状态恢复、预算统计、PostgreSQL 验证盲区等案例，以及修复前后测试输出。
+
 ## 1. 一句话定义
 
 RunGuild 是一个面向软件工程长任务的、可验证的持久化多 Agent 协作执行平台。它把“多个模型一起回答问题”推进为“有计划审批、依赖调度、隔离代码执行、证据审查、精确集成、崩溃恢复和效果评测的长期工程工作流”。
@@ -26,7 +28,9 @@ RunGuild 的核心回答是：**模型负责提出动作，数据库事务、状
 ```text
 用户在团队协作室讨论真实需求
   │
-  ├─ 选择消息，冻结为 Mission 来源事实
+  ├─ 选择消息，或在没有当前目标/规划时发送首条需求
+  ├─ /goal 显式创建独立 Mission，可补充验收条件、约束和预算
+  └─ 冻结来源消息和原始目标
   ▼
 Planner 生成 Mission proposal 和 Task DAG
   │
@@ -56,12 +60,24 @@ Integration Worker 集成精确已审查 commit
   ├─ 成功：完成 Task，解锁下游依赖
   └─ 冲突：不污染 base，要求基于新 base 重新实现和审查
   ▼
-所有 Task 完成，Workspace 人工批准最终 Artifact Version
+原始 Task 完成
+  │
+  ├─ 普通 Mission：进入最终交付
+  └─ 启用 Goal 终验：Builder 核对整合结果与原始目标
+       ├─ 范围内修复、重新验证，受尝试和预算限制
+       └─ 再经过独立 Review 和 Integration
+  ▼
+人工验收最终 Artifact Version
+  │
+  ├─ 退回：追加修复任务；Goal 模式保留原始验收条件并重新终验
+  └─ 批准：完成 Mission
   ▼
 Mission completed，保留完整可审计账本
 ```
 
 这条链路的重点不是 Agent 数量，而是每一步都有可恢复状态和不可绕过的门禁。
+
+`/goal` 是新增的明确入口和终验能力，沿用原有 Mission 执行模型。当前 Web 的新目标与历史消息规划都会开启 `goalVerification`；旧 Mission 和未传该字段的 API 请求保留普通流程。已有目标时发送普通消息是在补充当前工作，不会自动新建 Mission。
 
 ## 4. 系统组成
 
@@ -161,6 +177,24 @@ Artifact 的 LIVE Yjs 状态可以继续协作编辑，而已冻结 Version 永�
 - Agent HTTP/WebSocket 使用独立、只存在环境变量中的 Bearer Token；
 - 每条路径和 Repository 查询都重新验证 Workspace/Project 作用域。
 
+### 5.9 `/goal` 如何避免“任务都完成了，目标却遗漏了”
+
+把大需求拆成多个 Task 后，任务级审查只能说明这些任务达到了各自的标准。新增 Goal 模式会把原始目标、约束和验收条件保留下来，并在计划末尾追加一个依赖全部原始任务的终验 Task。
+
+终验仍由 Builder 执行：在整合后的仓库上检查原始要求，逐项记录 Artifact Version、测试和命令证据，必要时在批准范围内修复，然后重新提交独立 Review。无需改代码就能通过检查时，也允许记录原提交，不强制制造 diff。人工退回最终交付会追加修复任务，保留原始验收条件，并把这项任务设为新的终验任务。
+
+这里的“持续推进”有明确停止条件：Review 退回后仍受尝试次数、模型循环和 Token 预算限制；失败的前置任务也可能阻塞终验，需要操作者处理。系统尚没有通用的自动重写 DAG 能力。独立 Reviewer 目前审阅冻结材料，不能说成由平台另一套独立测试自动证明业务正确。
+
+阅读实现可从 [计划终验规范化](../packages/protocol/src/plans.ts)、[交付与反馈事务](../packages/database/src/mission-repository.ts)、[目标进度页面](../apps/web/src/GoalView.tsx) 开始。重点回答：原始验收标准存在哪里、何时允许终验、退回后谁决定新的交付候选。
+
+### 5.10 目标预算为什么是软限额
+
+Mission 的模型调用账本汇总规划、执行、审查和终验用量，每次新调用前检查是否还能继续。已经发出的调用仍会结算，因此不能保证最终 Token 数绝不超过限额。
+
+达到限额时保留成果和等待记录；操作者增加或移除限额后，符合条件的预算等待会被唤醒。`0` 表示不再放行新调用，移除限额不清零历史用量。若模型没有返回 usage，则记录为 unknown：有限额时暂停后续调用，提高额度不能消除未知用量；移除限额可继续，但总用量仍不确定。没有价格的调用单独显示，不能把空缺价格当作免费。
+
+目标页同时显示已知用量、在途调用、未知用量和预算状态。它还按真实状态展示下一步、任务证据、评审意见、集成结果及交付反馈；“任务完成数”和“证据齐备数”不等于目标已经通过验收。
+
 ## 6. 状态机与恢复怎么讲
 
 常见恢复窗口：
@@ -174,6 +208,8 @@ Artifact 的 LIVE Yjs 状态可以继续协作编辑，而已冻结 Version 永�
 | Git commit 已创建、Evidence 未写入 | 对账 Worktree HEAD，补建 Evidence，不重复 commit |
 | Reviewer 模型已决定、进程崩溃 | 从持久化 decision/model ledger 恢复，不重复调用模型 |
 | Integration 内容冲突 | base 不变，保留可诊断 Worktree，重新实现和审查 |
+| 新模型调用被预算阻止 | 持久化等待，Run/Task 暂停与释放租约同事务提交；调整限额后唤醒符合条件的预算等待 |
+| Goal 终验未通过 | 在尝试限制内携带前次 Review 修复；耗尽或被前置失败阻塞时等待人工处理 |
 | Yjs/Redis 通知丢失 | 从 PostgreSQL seq/hash 和 State Vector 重建真实状态 |
 
 面试时不要只说“可以重试”。正确说法是：每个重试点都要回答副作用是否已经发生、谁仍拥有租约、重复执行是否安全。
@@ -194,14 +230,18 @@ RunGuild 使用同一个冻结 Git baseline、同一个 Scenario Version 和配�
 
 这个结果反而体现了 Evaluation 的价值：它不是为了做一张好看的成功率图，而是用真实执行暴露系统缺口。
 
+这些历史 Trial 没有覆盖后来新增的完整 `/goal` 流程。当前 Evaluation 直接使用冻结计划创建普通 Mission，没有把新 Goal 规划、预算、终验及人工反馈作为完整配对实验；不能用历史成功率证明新功能的效果。新的 Mission 预算账本也不能与历史 Evaluation 中缺失价格记为零的口径混用。
+
 ## 8. 一分钟讲解模板
 
 > RunGuild 是一个用于软件工程长任务的持久化多 Agent 平台。用户先在协作室形成需求，Planner 从选中消息生成 Task DAG，人工批准后 Scheduler 按依赖把任务送入持久化 Inbox。每个 Agent 在独立 Git Worktree 中运行，只能调用受限、幂等的工具。模型不能自己宣布完成，结果必须形成测试 Evidence、精确 commit 和不可变 Artifact Version，再由独立 Reviewer 审查，最后 Integration Worker 只集成已审查提交。PostgreSQL 是事实源，Redis 只做唤醒；租约和 fencing token 处理并发与崩溃恢复。平台还用相同 Git 基线运行单 Agent/多 Agent 对照实验，真实运行确实暴露并推动修复了多个可靠性问题。
 
+被问到新增功能时可以补充：通过 `/goal` 创建目标后，系统保留原始验收条件，在各任务完成后检查整合结果，允许范围内修复，再经过独立审查和人工交付；Token 预算控制后续模型调用。它扩展的是既有 Mission 流程。
+
 ## 9. 三分钟讲解顺序
 
 1. **问题**：普通多 Agent Demo 缺少持久化、隔离、证据和恢复。
-2. **流程**：Conversation → Planner DAG → approval → Scheduler → Worktree → Evidence → Review → Integration → final delivery。
+2. **流程**：Conversation → Planner DAG → approval → Scheduler → Worktree → Evidence → Review → Integration → final delivery；启用 Goal 的任务在交付前增加完整目标终验。
 3. **正确性**：PostgreSQL 事实源、事务、租约、fencing、Inbox/Outbox、幂等 Tool。
 4. **安全**：没有任意 Shell、精确 argv、路径边界、独立 Reviewer、精确 commit 集成、认证和项目作用域。
 5. **验证**：PGlite/PostgreSQL 测试加真实模型 Evaluation，不靠 Mock 宣称成功。
@@ -229,6 +269,10 @@ Shell 字符串同时包含解析、管道、重定向、变量展开和命令�
 
 不一定。多 Agent 增加协调、上下文和 Review 成本，只在分工、独立审查或并行收益大于开销时有价值。RunGuild 的 Evaluation 就是为了测量，而不是预设答案。
 
+### `/goal` 是不是让 Agent 一直工作到成功？
+
+它表示明确创建一个新目标，并保留从计划到终验、反馈修复和人工交付的状态。自动推进受批准范围、依赖、尝试次数、模型循环和预算限制；遇到无法自行解决的阻塞会停下来。它不承诺无限重试或必然成功，也没有替代原有 Mission 模型。
+
 ### 如何保证 exactly-once？
 
 分布式系统通常无法对任意外部副作用给出绝对 exactly-once。RunGuild 使用 at-least-once 投递、事务状态机、唯一幂等键和副作用对账，在受控边界实现 effectively-once；不确定时进入可见状态让人处理。
@@ -246,13 +290,13 @@ Shell 字符串同时包含解析、管道、重定向、变量展开和命令�
 不要直接用一个昂贵、开放式的五十分钟任务开场。准备一个可在几分钟内验证的小任务：
 
 1. 展示协作室的真实消息；
-2. 从选中消息发起 Planner；
+2. 从选中消息发起 Planner，或用 `/goal` 创建独立目标并填写验收条件；
 3. 展示 DAG 和人工批准；
 4. 在工作台展示 Worker 真实心跳；
 5. 展示 Task Worktree、模型调用和 Tool Evidence；
 6. 展示不可变 Artifact Version 和独立 Review；
 7. 展示 Integration 的精确 commit；
-8. 批准最终交付；
+8. 若启用 Goal，展示终验任务对整合结果的检查，再批准最终交付或填写具体退回意见；
 9. 在 Trace 中回看整条账本；
 10. 最后打开 Evaluation，解释为什么单次结果不能代表统计结论。
 
@@ -276,11 +320,12 @@ Shell 字符串同时包含解析、管道、重定向、变量展开和命令�
 
 ## 13. 当前边界和下一步
 
-已经形成实战闭环的部分包括 Conversation、Planner、DAG、Scheduler、持久化 Agent Runtime、隔离 Worktree、Evidence、Artifact Version、独立 Review、Integration、最终批准、Trace 和 Evaluation。
+已有实现与历史运行记录的核心链路包括 Conversation、Planner、DAG、Scheduler、持久化 Agent Runtime、隔离 Worktree、Evidence、Artifact Version、独立 Review、Integration、最终批准、Trace 和 Evaluation。截至 2026-09-26，新增的 `/goal` 入口、终验与反馈、预算控制和目标进度页面已有实现与回归测试，但尚没有完整真实模型端到端运行证据，不能把测试覆盖说成实际交付效果。
 
 仍应继续通过使用验证的部分：
 
 - 在个人电脑上重复运行不同类型的真实 Mission；
+- 用真实模型验证包含 Goal 终验、退回修复和预算等待恢复的完整流程；
 - 增加足够 repetitions 的单 Agent/多 Agent 对照实验；
 - 继续改善成本、恢复提示和操作体验；
 - 清理不再使用的前端样例常量；

@@ -370,6 +370,7 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
       { command: setup.command, timeoutMs: 10_000 },
       { request: request('test.run', { command: setup.command, timeoutMs: 10_000 }, 'call_dirty_tests') },
     )
+    assert.notEqual(setup.evidence[0].draft.contentHash, setup.evidence[2].draft.contentHash)
     assert.equal(setup.evidence[2].draft.metadata.clean, false)
     assert.equal(setup.evidence[2].draft.metadata.stable, true)
 
@@ -380,6 +381,27 @@ test('test tool executes only an exact allowlisted argv and records test evidenc
       ),
       /not in the workspace allowlist/,
     )
+  } finally {
+    await rm(setup.root, { recursive: true, force: true })
+  }
+})
+
+test('protected-test reruns retain distinct evidence even when output and Git state are identical', async () => {
+  const setup = await fixture({ protectedTestPaths: ['sample.txt'] })
+  try {
+    const run = setup.handlers.get('test.run')
+    for (const callId of ['call_first_verification', 'call_final_verification']) {
+      const result = await run.execute(
+        { command: setup.command, timeoutMs: 10_000 },
+        { request: request('test.run', { command: setup.command, timeoutMs: 10_000 }, callId) },
+      )
+      assert.equal(result.output.passed, true)
+    }
+    const [first, second] = [setup.evidence[0].draft, setup.evidence[2].draft]
+    assert.equal(first.metadata.stateHash, second.metadata.stateHash)
+    assert.equal(first.metadata.protectedTestManifestHash, second.metadata.protectedTestManifestHash)
+    assert.equal(second.metadata.protectedTestsIntact, true)
+    assert.notEqual(first.contentHash, second.contentHash)
   } finally {
     await rm(setup.root, { recursive: true, force: true })
   }

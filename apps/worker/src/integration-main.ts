@@ -35,13 +35,26 @@ const projectId = requiredSetting('PROJECT_ID') as ProjectId
 const repositoryPath = requiredSetting('REPOSITORY_ROOT')
 const worktreeRoot = requiredSetting('WORKTREE_ROOT')
 const pollMs = integerSetting('INTEGRATION_POLL_MS', 2_000, 100, 60_000)
-const leaseSeconds = integerSetting('INTEGRATION_LEASE_SECONDS', 120, 5, 3_600)
+const leaseSeconds = integerSetting('INTEGRATION_LEASE_SECONDS', 900, 5, 3_600)
 const limit = integerSetting('INTEGRATION_BATCH_SIZE', 10, 1, 1_000)
 
 const pool = createDatabasePool(databaseUrl)
 if (process.env.AUTO_MIGRATE === 'true') await runMigrations(pool)
 const worktrees = new TaskWorktreeRepository(pool)
-const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store: worktrees })
+function commandsSetting(name: string, fallback: string): readonly (readonly string[])[] {
+  const parsed: unknown = JSON.parse(process.env[name] ?? fallback)
+  if (!Array.isArray(parsed) || parsed.length > 20 || parsed.some(command =>
+    !Array.isArray(command) || command.length === 0 || command.some(part => typeof part !== 'string' || !part.trim()))) {
+    throw new Error(name + ' must contain exact argument arrays')
+  }
+  return parsed as readonly (readonly string[])[]
+}
+const manager = await GitWorktreeManager.create({
+  repositoryPath, worktreeRoot, store: worktrees,
+  verificationCommands: commandsSetting('AGENT_TEST_COMMANDS_JSON', '[["npm","test"],["npm","run","typecheck"]]'),
+  preparationCommands: commandsSetting('AGENT_WORKTREE_SETUP_COMMANDS_JSON', '[]'),
+  verificationTimeoutMs: integerSetting('INTEGRATION_TEST_TIMEOUT_MS', 120_000, 1_000, 900_000),
+})
 const coordinator = new IntegrationCoordinator({
   worktrees,
   tasks: new TaskRepository(pool),

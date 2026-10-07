@@ -49,8 +49,9 @@ workarounds.
   PostgreSQL. Paths such as `/home/sid/runguild` and
   `/home/sid/runguild-worktrees` must be updated after moving the checkout.
 - PostgreSQL contains Missions, Runs, Evidence, Artifact Versions, Reviews,
-  Worker history, and Trace records. Moving only the Git repository starts with
-  a new ledger. Use `pg_dump`/`pg_restore` if the existing execution history
+  Mission token limits, model-usage ledgers, budget waits, verification-task
+  references, Worker history, and Trace records. Moving only the Git repository
+  starts with a new ledger. Use `pg_dump`/`pg_restore` if the existing execution history
   must move too.
 - Redis is not a fact source and does not need to be migrated. The Scheduler
   publishes durable Outbox coordinates, and each API uses `REDIS_URL` for
@@ -63,8 +64,8 @@ workarounds.
 
 ## Personal-machine checklist
 
-1. Clone the repository and install the Node version declared in
-   `package.json` plus conventional Docker Compose.
+1. Clone the repository and install Node.js 22.12.0 or newer, as declared in
+   `package.json`, plus conventional Docker Compose.
 2. Copy `.env.example` to `.env`; set a fresh API key, the chosen compatible
    endpoint/model, and free host ports. For the local Vite Web keep the exact
    `http://127.0.0.1:4173,http://localhost:4173` origins and insecure local
@@ -75,18 +76,26 @@ workarounds.
 4. Run `npm ci`, `npm run build`, and the Migration CLI with the `.env`
    database URL. The root `db:migrate` script intentionally does not load
    `.env` by itself; `node --env-file=.env packages/database/dist/cli.js` is an
-   explicit local invocation.
-5. Bootstrap or restore PostgreSQL. For a new User, run the development
-   bootstrap once and then `npm run auth:set-password -- --workspace <id>
-   --user <id> --role owner`; for a restored database, rotate the password when
-   the old credential should not remain valid. Then set the new absolute
-   repository and Worktree paths in the Web project configuration.
+   explicit local invocation. Apply all registered migrations, including
+   `0027_mission_budget.sql` and `0028_goal_verification.sql`, before running
+   the updated API and Workers. A successful test run only migrates test
+   databases; it does not upgrade the database configured in `.env`.
+5. Bootstrap or restore PostgreSQL. With the default `AUTH_MODE=local`, start
+   `npm run api:local` and the Web; the first visit automatically creates the
+   local Session and, when `ENABLE_DEV_BOOTSTRAP=true`, missing demo records.
+   Local mode requires no password. For `AUTH_MODE=team`, initialize or restore
+   the User first, then run `npm run auth:set-password -- --workspace <id>
+   --user <id> --role owner`. Rotate restored team credentials when the old
+   password should no longer be valid. Set the new absolute repository and
+   Worktree paths in the Web project configuration.
 6. For the recommended personal-machine workflow, set
    `ENABLE_LOCAL_RUNTIME_CONTROL=true` and let the Web/API own local Worker
    child processes. Do not also launch the same Agent externally. Keep it false
    when Workers are managed in separate terminals or by a process manager.
-7. Run `npm test`; the external PostgreSQL suite additionally requires a
-   dedicated database whose name ends in `_test`.
+7. Run `npm test`; it starts and removes a disposable PostgreSQL 17 Docker
+   container for the real integration suite. Docker must be available, or set
+   `TEST_DATABASE_URL` explicitly to a dedicated database ending in `_test`.
+   Database setup failure fails the tests rather than skipping them.
 
 The complete first-install, daily-start, Mission, troubleshooting, backup, and
 cost checklist is maintained in [USER_GUIDE_ZH.md](USER_GUIDE_ZH.md).

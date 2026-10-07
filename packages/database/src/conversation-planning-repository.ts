@@ -24,6 +24,7 @@ import { appendDomainEvent } from './events.js'
 import { canonicalJson } from './json.js'
 import { ensurePrimaryMissionArtifact } from './mission-artifact.js'
 import { withTransaction } from './transaction.js'
+import { reserveMissionModelCall } from './mission-budget-repository.js'
 
 const MAX_SOURCE_MESSAGES = 50
 const MAX_GOAL_BYTES = 20_000
@@ -58,6 +59,8 @@ interface PlanningScopeRow extends PlanningRow {
   readonly mission_title: string
   readonly mission_goal: string
   readonly mission_constraints: readonly unknown[]
+  readonly mission_acceptance_criteria: readonly unknown[]
+  readonly mission_goal_verification: boolean
   readonly conversation_title: string
   readonly model_provider: string
   readonly model_name: string
@@ -83,6 +86,8 @@ export interface CreateConversationPlanningRequestInput {
   readonly goal?: string
   readonly constraints?: readonly string[]
   readonly acceptanceCriteria?: readonly string[]
+  readonly goalVerification?: boolean
+  readonly budgetTokens?: number | null
   readonly plannerAgentId?: AgentId
   readonly createdBy: UserId
   readonly correlationId: CorrelationId
@@ -95,15 +100,19 @@ export interface ConversationPlanningWork {
   readonly missionTitle: string
   readonly missionGoal: string
   readonly missionConstraints: readonly unknown[]
+  readonly missionAcceptanceCriteria: readonly unknown[]
+  readonly missionGoalVerification: boolean
   readonly conversationTitle: string
   readonly sourceMessages: readonly PlanningSourceMessage[]
   readonly availableRoles: readonly AgentRole[]
   readonly modelProvider: string
   readonly modelName: string
   readonly storedPlan?: MissionPlanDraft
+  readonly budgetCallId?: string
 }
 
 export type ClaimConversationPlanningResult =
+  | { readonly kind: 'budget_blocked' }
   | { readonly kind: 'work'; readonly work: ConversationPlanningWork }
   | { readonly kind: 'busy'; readonly retryAfterMs: number }
   | { readonly kind: 'terminal'; readonly request: ConversationPlanningRequestSnapshot }
@@ -155,12 +164,20 @@ function requestHash(input: {
   readonly sourceMessageIds: readonly MessageId[]
   readonly title: string
   readonly goal?: string
+  readonly constraints?: readonly string[]
+  readonly acceptanceCriteria?: readonly string[]
+  readonly goalVerification?: boolean
+  readonly budgetTokens?: number | null
   readonly plannerAgentId?: AgentId
 }): string {
   return createHash('sha256').update(canonicalJson(input)).digest('hex')
 }
 
 function validateCreateInput(input: CreateConversationPlanningRequestInput): void {
+  if (input.budgetTokens !== undefined && input.budgetTokens !== null
+      && (!Number.isSafeInteger(input.budgetTokens) || input.budgetTokens < 0)) {
+    throw new ConversationPlanningError('Token budget must be a nonnegative safe integer or null')
+  }
   if (!input.title.trim() || input.title.length > 200) {
     throw new ConversationPlanningError('Planning Mission title must be between 1 and 200 characters')
   }
@@ -177,6 +194,12 @@ function validateCreateInput(input: CreateConversationPlanningRequestInput): voi
   if (input.idempotencyKey !== undefined
       && (!input.idempotencyKey.trim() || input.idempotencyKey.length > 200)) {
     throw new ConversationPlanningError('Planning idempotency key must be between 1 and 200 characters')
+  }
+  for (const items of [input.constraints, input.acceptanceCriteria]) {
+    if (items !== undefined && (items.length > 100
+        || items.some((item) => !item.trim() || item.length > 2_000))) {
+      throw new ConversationPlanningError('Planning constraints and acceptance criteria require at most 100 nonempty items of at most 2000 characters')
+    }
   }
 }
 
@@ -216,6 +239,10 @@ export class ConversationPlanningRepository {
       sourceMessageIds: input.sourceMessageIds,
       title,
       ...(input.goal === undefined ? {} : { goal: input.goal.trim() }),
+      ...(input.constraints === undefined ? {} : { constraints: input.constraints }),
+      ...(input.acceptanceCriteria === undefined ? {} : { acceptanceCriteria: input.acceptanceCriteria }),
+      ...(input.goalVerification === undefined ? {} : { goalVerification: input.goalVerification }),
+      ...(input.budgetTokens === undefined ? {} : { budgetTokens: input.budgetTokens }),
       ...(input.plannerAgentId === undefined ? {} : { plannerAgentId: input.plannerAgentId }),
     })
 
@@ -270,7 +297,8 @@ export class ConversationPlanningRepository {
     await client.query(
       'INSERT INTO missions ' +
       '(id, workspace_id, project_id, conversation_id, source_message_ids, title, goal, constraints, ' +
-      "acceptance_criteria, status, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'planning', $10)",
+      'acceptance_criteria, status, created_by, goal_verification, budget_tokens) ' +
+      "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'planning', $10, $11, $12)",
       [
         missionId,
         input.workspaceId,
@@ -280,8 +308,10 @@ export class ConversationPlanningRepository {
         title,
         goal,
         canonicalJson(input.constraints ?? ['保留可审计的执行与验收证据']),
-        canonicalJson(input.acceptanceCriteria ?? ['计划形成有效 DAG', '所有必需验收项均有持久化证据']),
+        canonicalJson(input.acceptanceCriteria ?? (input.goalVerification ? [] : ['计划形成有效 DAG', '所有必需验收项均有持久化证据'])),
         input.createdBy,
+        input.goalVerification ?? false,
+        input.budgetTokens ?? null,
       ],
     )
     await ensurePrimaryMissionArtifact(client, {
@@ -422,7 +452,9 @@ export class ConversationPlanningRepository {
     return withTransaction(this.pool, async (client) => {
       const result = await client.query<PlanningScopeRow>(
         'SELECT request.*, mission.title AS mission_title, mission.goal AS mission_goal, ' +
-        'mission.constraints AS mission_constraints, conversation.title AS conversation_title ' +
+        'mission.constraints AS mission_constraints, mission.acceptance_criteria AS mission_acceptance_criteria, ' +
+        'mission.goal_verification AS mission_goal_verification, ' +
+        'conversation.title AS conversation_title ' +
         'FROM conversation_planning_requests request ' +
         'JOIN missions mission ON mission.id = request.mission_id ' +
         'JOIN conversations conversation ON conversation.id = request.conversation_id ' +
@@ -448,6 +480,13 @@ export class ConversationPlanningRepository {
         return { kind: 'terminal', request: snapshot(failed.rows[0]!) }
       }
       const leaseToken = 'planning_lease_' + randomUUID()
+      const budgetCallId = row.plan === null ? 'budget_planner_' + randomUUID() : undefined
+      if (budgetCallId && !await reserveMissionModelCall(client, {
+        callId: budgetCallId, workspaceId: row.workspace_id as WorkspaceId, missionId: row.mission_id as MissionId,
+        role: 'planner', operationId: row.id, leaseToken, agentId: input.plannerAgentId,
+        kind: 'conversation.plan_requested', payload: { schemaVersion: 1, type: 'conversation.plan_requested',
+          requestId: row.id, conversationId: row.conversation_id, missionId: row.mission_id },
+      })) return { kind: 'budget_blocked' }
       const claimed = await client.query<PlanningScopeRow>(
         "UPDATE conversation_planning_requests SET status = CASE WHEN plan IS NULL THEN 'running' ELSE 'model_complete' END, " +
         'attempt = CASE WHEN plan IS NULL THEN attempt + 1 ELSE attempt END, lease_token = $2, ' +
@@ -477,12 +516,15 @@ export class ConversationPlanningRepository {
           missionTitle: row.mission_title,
           missionGoal: row.mission_goal,
           missionConstraints: row.mission_constraints,
+          missionAcceptanceCriteria: row.mission_acceptance_criteria,
+          missionGoalVerification: row.mission_goal_verification,
           conversationTitle: row.conversation_title,
           sourceMessages: sources,
           availableRoles: roles.rows.map((agent) => agent.role),
           modelProvider: row.model_provider,
           modelName: row.model_name,
           ...(row.plan === null ? {} : { storedPlan: row.plan }),
+          ...(budgetCallId === undefined ? {} : { budgetCallId }),
         },
       }
     })
@@ -546,6 +588,8 @@ export class ConversationPlanningRepository {
     readonly plannerAgentId: AgentId
     readonly leaseToken: string
     readonly message: string
+    /** A frozen proposal rejected deterministically must not replay forever. */
+    readonly terminal?: boolean
   }): Promise<{ readonly retryable: boolean; readonly request: ConversationPlanningRequestSnapshot }> {
     return withTransaction(this.pool, async (client) => {
       const current = await client.query<PlanningRow>(
@@ -557,7 +601,7 @@ export class ConversationPlanningRepository {
       if (!['running', 'model_complete'].includes(row.status) || row.lease_token !== input.leaseToken) {
         return { retryable: false, request: snapshot(row) }
       }
-      const retryable = row.plan !== null || row.attempt < row.max_attempts
+      const retryable = input.terminal !== true && (row.plan !== null || row.attempt < row.max_attempts)
       const nextStatus = retryable ? (row.plan === null ? 'queued' : 'model_complete') : 'failed'
       const updated = await client.query<PlanningRow>(
         'UPDATE conversation_planning_requests SET status = $2, lease_token = NULL, lease_expires_at = NULL, ' +

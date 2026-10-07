@@ -12,16 +12,18 @@ import {
   type MissionStatus,
   type ProjectId,
   type TaskId,
-  type TaskStatus,
   type UserId,
   type WorkspaceId,
   validateMissionPlan,
+  GOAL_VERIFICATION_TASK_KEY,
+  normalizeGoalVerificationPlan,
 } from '@runguild/protocol'
 import type { Pool, PoolClient } from 'pg'
 
 import { appendDomainEvent } from './events.js'
 import { canonicalJson } from './json.js'
 import { ensurePrimaryMissionArtifact } from './mission-artifact.js'
+import { readMissionTaskProgress, type MissionTaskProgress } from './mission-progress.js'
 import { withTransaction } from './transaction.js'
 
 function actorId(actor: ActorRef): string {
@@ -41,6 +43,8 @@ export interface CreateMissionInput {
   readonly goal: string
   readonly constraints?: readonly string[]
   readonly acceptanceCriteria?: readonly string[]
+  readonly goalVerification?: boolean
+  readonly budgetTokens?: number | null
   readonly actor: ActorRef
   readonly correlationId: CorrelationId
 }
@@ -150,10 +154,14 @@ export interface MissionSnapshot {
   readonly projectId: ProjectId
   readonly title: string
   readonly goal: string
+  readonly constraints: readonly string[]
+  readonly acceptanceCriteria: readonly string[]
   readonly status: MissionStatus
   readonly planVersion: number
   readonly updatedAt: string
   readonly finalDelivery: MissionDeliverySnapshot | null
+  readonly goalVerification: boolean
+  readonly verificationTaskId: TaskId | null
   readonly proposedPlan: {
     readonly version: number
     readonly status: string
@@ -161,14 +169,7 @@ export interface MissionSnapshot {
     readonly hash: string
     readonly plan: MissionPlanDraft
   } | null
-  readonly tasks: readonly {
-    readonly id: TaskId
-    readonly title: string
-    readonly status: TaskStatus
-    readonly role: AgentRole | null
-    readonly priority: number
-    readonly dependsOn: readonly TaskId[]
-  }[]
+  readonly tasks: readonly MissionTaskProgress[]
 }
 
 export class MissionRepository {
@@ -181,6 +182,10 @@ export class MissionRepository {
     if (!input.goal.trim() || input.goal.length > 20_000) {
       throw new Error('Mission goal must be between 1 and 20000 characters')
     }
+    if (input.budgetTokens !== undefined && input.budgetTokens !== null
+      && (!Number.isSafeInteger(input.budgetTokens) || input.budgetTokens < 0)) {
+      throw new Error('Mission token budget must be a non-negative safe integer or null')
+    }
     const missionId = input.missionId ?? ('mission_' + randomUUID()) as MissionId
 
     await withTransaction(this.pool, async (client) => {
@@ -192,8 +197,8 @@ export class MissionRepository {
       if (!project.rows[0]) throw new Error('Project was not found or is archived')
       await client.query(
         'INSERT INTO missions ' +
-        '(id, workspace_id, project_id, conversation_id, title, goal, constraints, acceptance_criteria, status, created_by) ' +
-        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'planning', $9)",
+        '(id, workspace_id, project_id, conversation_id, title, goal, constraints, acceptance_criteria, status, created_by, goal_verification, budget_tokens) ' +
+        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'planning', $9, $10, $11)",
         [
           missionId,
           input.workspaceId,
@@ -204,6 +209,8 @@ export class MissionRepository {
           canonicalJson(input.constraints ?? []),
           canonicalJson(input.acceptanceCriteria ?? []),
           actorId(input.actor),
+          input.goalVerification ?? false,
+          input.budgetTokens ?? null,
         ],
       )
       await ensurePrimaryMissionArtifact(client, {
@@ -248,16 +255,15 @@ export class MissionRepository {
         errors: validation.errors.map((error) => ({ path: error.path, message: error.message })),
       }
     }
-    const planJson = canonicalJson(input.plan)
-    const hash = planHash(planJson)
-
     return withTransaction(this.pool, async (client) => {
       const mission = await client.query<{
         readonly project_id: string
         readonly status: MissionStatus
         readonly plan_version: number
+        readonly goal_verification: boolean
+        readonly acceptance_criteria: readonly string[]
       }>(
-        'SELECT project_id, status, plan_version FROM missions ' +
+        'SELECT project_id, status, plan_version, goal_verification, acceptance_criteria FROM missions ' +
         'WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
         [input.missionId, input.workspaceId],
       )
@@ -265,6 +271,23 @@ export class MissionRepository {
       if (!row || !['planning', 'awaiting_approval'].includes(row.status)) {
         return { proposed: false, reason: 'mission_not_plannable' }
       }
+
+      let plan = input.plan
+      if (row.goal_verification) {
+        try {
+          plan = normalizeGoalVerificationPlan(plan, row.acceptance_criteria)
+        } catch (error) {
+          return { proposed: false, reason: 'invalid_plan', errors: [{
+            path: 'tasks', message: error instanceof Error ? error.message : String(error),
+          }] }
+        }
+      }
+      const normalized = validateMissionPlan(plan)
+      if (!normalized.valid) {
+        return { proposed: false, reason: 'invalid_plan', errors: normalized.errors }
+      }
+      const planJson = canonicalJson(plan)
+      const hash = planHash(planJson)
 
       const existing = await client.query<{ version: number }>(
         "SELECT version FROM mission_plan_revisions WHERE mission_id = $1 AND plan_hash = $2 AND status = 'proposed'",
@@ -294,7 +317,7 @@ export class MissionRepository {
           input.workspaceId,
           input.missionId,
           version,
-          input.plan.summary,
+          plan.summary,
           planJson,
           hash,
           actorId(input.actor),
@@ -350,7 +373,7 @@ export class MissionRepository {
         payload: {
           version,
           planHash: hash,
-          taskCount: input.plan.tasks.length,
+          taskCount: plan.tasks.length,
         },
       })
       return { proposed: true, version, hash, reused: false }
@@ -363,8 +386,10 @@ export class MissionRepository {
         readonly project_id: string
         readonly status: MissionStatus
         readonly plan_version: number
+        readonly goal_verification: boolean
+        readonly acceptance_criteria: readonly string[]
       }>(
-        'SELECT project_id, status, plan_version FROM missions ' +
+        'SELECT project_id, status, plan_version, goal_verification, acceptance_criteria FROM missions ' +
         'WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
         [input.missionId, input.workspaceId],
       )
@@ -388,6 +413,16 @@ export class MissionRepository {
       const validation = validateMissionPlan(revisionRow.plan)
       if (!validation.valid) {
         return { approved: false, reason: 'invalid_stored_plan' }
+      }
+      if (missionRow.goal_verification) {
+        try {
+          const normalized = normalizeGoalVerificationPlan(revisionRow.plan, missionRow.acceptance_criteria)
+          if (canonicalJson(normalized) !== canonicalJson(revisionRow.plan)) {
+            return { approved: false, reason: 'invalid_stored_plan' }
+          }
+        } catch {
+          return { approved: false, reason: 'invalid_stored_plan' }
+        }
       }
 
       const existingTasks = await client.query('SELECT 1 FROM tasks WHERE mission_id = $1 LIMIT 1', [input.missionId])
@@ -455,6 +490,11 @@ export class MissionRepository {
             [input.missionId, taskId, parentId],
           )
         }
+      }
+
+      if (missionRow.goal_verification) {
+        await client.query('UPDATE missions SET verification_task_id = $2 WHERE id = $1',
+          [input.missionId, taskIdsByKey[GOAL_VERIFICATION_TASK_KEY]])
       }
 
       await client.query(
@@ -621,8 +661,11 @@ export class MissionRepository {
       const mission = await client.query<{
         readonly project_id: string
         readonly status: MissionStatus
+        readonly goal_verification: boolean
+        readonly verification_task_id: string | null
       }>(
-        'SELECT project_id, status FROM missions WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
+        'SELECT project_id, status, goal_verification, verification_task_id FROM missions ' +
+        'WHERE id = $1 AND workspace_id = $2 FOR UPDATE',
         [input.missionId, input.workspaceId],
       )
       const row = mission.rows[0]
@@ -655,7 +698,10 @@ export class MissionRepository {
         [
           taskId,
           input.missionId,
-          'Human rejected Artifact Version ' + candidate.artifactVersionId + '.\n\nRequired corrections:\n' + reason,
+          'Human rejected Artifact Version ' + candidate.artifactVersionId + '.\n\nRequired corrections:\n' + reason
+            + (row.goal_verification
+              ? '\n\nPreserve the original goal and constraints. Verify every original acceptance criterion on the complete merged result after addressing the feedback. Record per-criterion results and evidence in the final Mission Artifact Version. Do not invent changes when verification alone resolves the feedback.'
+              : ''),
         ],
       )
       await client.query(
@@ -666,7 +712,7 @@ export class MissionRepository {
       await client.query(
         'INSERT INTO task_acceptance_criteria ' +
         '(id, task_id, criterion_key, description, required, required_evidence_kinds) VALUES ' +
-        "($1, $2, 'delivery-feedback-addressed', $3, TRUE, ARRAY['file_diff']), " +
+        "($1, $2, 'delivery-feedback-addressed', $3, TRUE, $5::text[]), " +
         "($4, $2, 'delivery-verification', 'Configured tests and runnable smoke command pass after the correction.', " +
         "TRUE, ARRAY['test_run', 'command_result'])",
         [
@@ -674,8 +720,28 @@ export class MissionRepository {
           taskId,
           reason,
           'criterion_' + randomUUID(),
+          row.goal_verification ? ['artifact_version'] : ['file_diff'],
         ],
       )
+      if (row.goal_verification) {
+        const criteria = await client.query<{
+          readonly criterion_key: string
+          readonly description: string
+          readonly required_evidence_kinds: readonly string[]
+        }>(
+          'SELECT criterion_key, description, required_evidence_kinds FROM task_acceptance_criteria ' +
+          "WHERE task_id = $1 AND criterion_key LIKE 'goal-acceptance-%' ORDER BY criterion_key",
+          [row.verification_task_id],
+        )
+        for (const criterion of criteria.rows) {
+          await client.query(
+            'INSERT INTO task_acceptance_criteria ' +
+            '(id, task_id, criterion_key, description, required, required_evidence_kinds) VALUES ($1, $2, $3, $4, TRUE, $5)',
+            ['criterion_' + randomUUID(), taskId, criterion.criterion_key, criterion.description, criterion.required_evidence_kinds],
+          )
+        }
+        await client.query('UPDATE missions SET verification_task_id = $2 WHERE id = $1', [input.missionId, taskId])
+      }
       await client.query(
         'INSERT INTO approvals ' +
         '(id, workspace_id, mission_id, artifact_version_id, subject_type, subject_id, kind, status, ' +
@@ -738,11 +804,16 @@ export class MissionRepository {
         readonly project_id: string
         readonly title: string
         readonly goal: string
+        readonly constraints: string[]
+        readonly acceptance_criteria: string[]
         readonly status: MissionStatus
         readonly plan_version: number
         readonly updated_at: Date
+        readonly goal_verification: boolean
+        readonly verification_task_id: string | null
       }>(
-        'SELECT id, workspace_id, project_id, title, goal, status, plan_version, updated_at ' +
+        'SELECT id, workspace_id, project_id, title, goal, constraints, acceptance_criteria, status, plan_version, updated_at, ' +
+        'goal_verification, verification_task_id ' +
         'FROM missions WHERE id = $1 AND workspace_id = $2',
         [missionId, workspaceId],
       )
@@ -760,21 +831,7 @@ export class MissionRepository {
           'WHERE mission_id = $1 ORDER BY version DESC LIMIT 1',
           [missionId],
         )
-      const tasks = await client.query<{
-          readonly id: string
-          readonly title: string
-          readonly status: TaskStatus
-          readonly required_role: AgentRole | null
-          readonly priority: number
-          readonly depends_on: string[]
-        }>(
-          'SELECT t.id, t.title, t.status, t.required_role, t.priority, ' +
-          "COALESCE(array_agg(d.depends_on_task_id ORDER BY d.depends_on_task_id) " +
-          "FILTER (WHERE d.depends_on_task_id IS NOT NULL), ARRAY[]::TEXT[]) AS depends_on " +
-          'FROM tasks t LEFT JOIN task_dependencies d ON d.task_id = t.id ' +
-          'WHERE t.mission_id = $1 GROUP BY t.id ORDER BY t.position, t.created_at',
-          [missionId],
-        )
+      const tasks = await readMissionTaskProgress(client, missionId)
       const approvedDelivery = await client.query<{
           readonly artifact_version_id: string
           readonly artifact_id: string
@@ -809,10 +866,14 @@ export class MissionRepository {
         projectId: row.project_id as ProjectId,
         title: row.title,
         goal: row.goal,
+        constraints: row.constraints,
+        acceptanceCriteria: row.acceptance_criteria,
         status: row.status,
         planVersion: row.plan_version,
         updatedAt: row.updated_at.toISOString(),
         finalDelivery,
+        goalVerification: row.goal_verification,
+        verificationTaskId: row.verification_task_id as TaskId | null,
         proposedPlan: planRow
           ? {
               version: planRow.version,
@@ -822,14 +883,7 @@ export class MissionRepository {
               plan: planRow.plan,
             }
           : null,
-        tasks: tasks.rows.map((task) => ({
-          id: task.id as TaskId,
-          title: task.title,
-          status: task.status,
-          role: task.required_role,
-          priority: task.priority,
-          dependsOn: task.depends_on.map((id) => id as TaskId),
-        })),
+        tasks,
       }
     }, 'repeatable read')
   }
@@ -846,7 +900,14 @@ export class MissionRepository {
     }>(
       'SELECT version.id, version.artifact_id, version.version, version.content_hash ' +
       'FROM artifact_versions version JOIN artifacts artifact ON artifact.id = version.artifact_id ' +
-      'WHERE artifact.mission_id = $1 ' +
+      'JOIN missions mission ON mission.id = artifact.mission_id ' +
+      'WHERE artifact.mission_id = $1 AND (NOT mission.goal_verification OR EXISTS (' +
+      '  SELECT 1 FROM task_submissions submission JOIN reviews review ON review.submission_id = submission.id ' +
+      '  JOIN tasks task ON task.id = submission.task_id JOIN agent_runs producer ON producer.id = submission.run_id ' +
+      '  WHERE task.id = mission.verification_task_id AND task.mission_id = mission.id ' +
+      "  AND task.status = 'completed' AND submission.artifact_version_id = version.id " +
+      "  AND submission.status = 'approved' AND review.status = 'approved' AND producer.attempt = task.attempt_count" +
+      ')) ' +
       'ORDER BY EXISTS (' +
       '  SELECT 1 FROM task_submissions submission JOIN reviews review ON review.submission_id = submission.id ' +
       "  WHERE submission.artifact_version_id = version.id AND submission.status = 'approved' " +

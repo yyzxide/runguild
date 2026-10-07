@@ -27,6 +27,74 @@ export interface MissionPlanDraft {
   readonly tasks: readonly PlannedTask[]
 }
 
+/** Reserved for the system-generated final task of an explicitly enabled Goal. */
+export const GOAL_VERIFICATION_TASK_KEY = 'runguild-goal-verification'
+
+/**
+ * Preserve the proposed work and deterministically append a final acceptance gate.
+ * A supplied reserved task must already be our exact generated task: silently
+ * replacing arbitrary user work under that key could discard part of the plan.
+ */
+export function normalizeGoalVerificationPlan(
+  plan: MissionPlanDraft,
+  acceptanceCriteria: readonly string[],
+): MissionPlanDraft {
+  const originals = plan.tasks.filter((task) => task.key !== GOAL_VERIFICATION_TASK_KEY)
+  const reserved = plan.tasks.filter((task) => task.key === GOAL_VERIFICATION_TASK_KEY)
+  if (originals.length === 0 || originals.length > 99) {
+    throw new Error('A Goal plan requires 1–99 original tasks plus its final verification task')
+  }
+  if (acceptanceCriteria.length > 100 || acceptanceCriteria.some((criterion) =>
+    !criterion.trim() || criterion.length > 2_000)) {
+    throw new Error('Goal acceptance criteria must contain at most 100 non-empty criteria of at most 2000 characters')
+  }
+  if (reserved.length > 1 || originals.some((task) => task.dependsOn.includes(GOAL_VERIFICATION_TASK_KEY))) {
+    throw new Error('Original tasks cannot depend on the reserved final Goal verification task')
+  }
+  const verification: PlannedTask = {
+    key: GOAL_VERIFICATION_TASK_KEY,
+    title: 'Verify the complete Goal and repair remaining gaps',
+    description: [
+      'After every original task has completed and integrated, verify the complete merged result against the original Mission goal, constraints, and every acceptance criterion below.',
+      'Inspect the actual repository and Mission Artifact; do not infer success from completed task statuses or previous claims.',
+      'Run configured verification on the exact clean commit. For each criterion, record what was checked, the actual result, and the supporting evidence in the final Mission Artifact Version.',
+      'Repair remaining gaps only within the approved goal and constraints, then commit and repeat the affected checks. Do not relax acceptance criteria or expand scope.',
+      'If no code change is needed, call repo.commit to record the unchanged result; do not invent a file change merely to create evidence.',
+      'If verification is impossible or a decision outside the approved scope is needed, report the blocker rather than claiming success.',
+      'Submit the final Artifact Version for independent review. Requested changes return this task for a bounded retry; exhausted attempts require user attention. Final delivery still requires human approval.',
+    ].join('\n\n'),
+    role: 'builder',
+    priority: 0,
+    dependsOn: originals.map((task) => task.key),
+    reviewRequired: true,
+    acceptanceCriteria: (acceptanceCriteria.length > 0
+      ? acceptanceCriteria
+      : ['Verify that the complete merged result satisfies the original Mission goal and constraints; record the checks and their actual results.'])
+      .map((description, index) => ({
+        key: 'goal-acceptance-' + (index + 1),
+        description,
+        required: true,
+        evidenceKinds: ['artifact_version', 'test_run', 'command_result'] as const,
+      })),
+  }
+  if (reserved[0]) {
+    const task = reserved[0]
+    const equal = task.title === verification.title && task.description === verification.description
+      && task.role === verification.role && task.priority === verification.priority
+      && task.reviewRequired === verification.reviewRequired
+      && JSON.stringify(task.dependsOn) === JSON.stringify(verification.dependsOn)
+      && task.acceptanceCriteria.length === verification.acceptanceCriteria.length
+      && task.acceptanceCriteria.every((criterion, index) => {
+        const expected = verification.acceptanceCriteria[index]!
+        return criterion.key === expected.key && criterion.description === expected.description
+          && criterion.required === expected.required
+          && JSON.stringify(criterion.evidenceKinds) === JSON.stringify(expected.evidenceKinds)
+      })
+    if (!equal) throw new Error('The reserved final Goal verification task cannot be supplied or modified by a proposal')
+  }
+  return { ...plan, tasks: [...originals, verification] }
+}
+
 export interface MissionPlanError {
   readonly code:
     | 'empty_plan'

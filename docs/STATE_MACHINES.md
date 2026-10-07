@@ -15,6 +15,7 @@ draft
   -> completed
 
 running or reviewing -> paused -> running
+reviewing -> running              human requests changes to the exact delivery Version
 planning or awaiting_approval -> draft
 non-terminal -> failed or cancelled
 ~~~
@@ -28,6 +29,28 @@ Guards:
   Version, approved Task reviews where required, and final human approval of
   that exact Version id;
 - failed and cancelled are terminal.
+
+`goalVerification` selects an additional completion policy, not a new Mission
+status. It defaults to false for API callers and stored legacy Missions; the
+current Web enables it for new Missions from `/goal`, selected messages, or a
+first ordinary request. Before plan approval, normalization appends the
+reserved final Builder Task to 1–99 original Tasks. It depends on every original
+Task and requires independent Review. Approval validates that generated Task
+and records its id in `verificationTaskId`.
+
+The final Task checks the merged result against the original goal, constraints,
+and criteria, with configured test and command Evidence; it may repair gaps
+within that scope. A clean no-change verification does not require a fabricated
+diff. Failed prerequisites keep this Task blocked, and exhausted Task attempts
+require explicit intervention rather than automatic plan rewriting.
+
+For a Goal, the final delivery Version must belong to the current verification
+Task's current attempt and an approved Submission/Review. Human delivery
+feedback preserves completed Tasks, creates a new review-gated Builder Task,
+copies the original goal criteria into it, advances `verificationTaskId`, and
+returns the Mission to `running`. The former approved Version cannot satisfy
+the new final-delivery gate. Completion still requires human approval of the
+new exact Version.
 
 ## Conversation planning request
 
@@ -45,11 +68,20 @@ Guards:
   and an active Planner member;
 - `running` requires the current Planner lease token and unexpired lease;
 - `model_complete` requires a validated DAG plus durable prompt, response, and
-  usage snapshots;
+  usage snapshots; a Goal plan must also pass final-Task normalization before
+  it is frozen;
 - retries after `model_complete` reuse the stored DAG and never call the model
-  again;
+  again; an invalid stored Goal plan or deterministic proposal refusal moves
+  the Planning Request to `failed` instead of replaying indefinitely;
 - `awaiting_approval` requires an idempotently proposed Mission plan;
 - only a Workspace human can move the associated Mission through approval.
+
+Fresh model failures consume the bounded Planning Request attempt budget.
+Recovery after a valid result is stored does not consume another model attempt;
+transient persistence failures can retry that stored result. Budget admission
+occurs before a new model attempt is consumed. A refusal records a Mission
+budget waiter and leaves the Planning Request for a later wake; it is not a
+new Planning Request status.
 
 ## Task
 
@@ -78,6 +110,10 @@ Guards:
 - a human retry preserves every terminal Run, increments `max_attempts` by
   exactly one, requires a running Mission with completed dependencies, and
   records the intervention as a durable domain event.
+
+When Review requests changes, the next attempt freezes the previous summary,
+findings, and evidence references into its Run context. This preserves the
+repair instructions across restart without reopening the prior terminal Run.
 
 ## Run
 
@@ -144,6 +180,50 @@ at six. The final calls are dedicated to verification, commit, Artifact update,
 immutable Version creation, Review submission, and explicit status. A stale
 hidden call is rejected before side effects. Failed verification ends the Run
 so another bounded attempt can resume its existing Worktree.
+
+### Mission budget admission and waiting
+
+The Mission token budget is separate from `max_hops` and Task attempt counts.
+Its status is derived from the current limit and model-call ledger:
+
+~~~text
+tokenLimit = null                         -> unlimited
+finite limit + any unknown usage          -> usage_unknown
+finite limit + measured tokens >= limit   -> exhausted
+otherwise                                -> available
+
+model call: admitted/running -> completed (reported usage)
+                            -> unknown   (usage missing or call abandoned)
+                            -> cancelled (request did not start)
+unknown -> completed                     late trustworthy usage
+
+Run + Task: running -> waiting_human      budget admission refused
+            waiting_human -> running     resume under a new Task lease
+~~~
+
+`0` prevents new calls and `null` removes the cap. Model admission locks the
+Mission; execution admission additionally validates the exact active Worker
+lease token. An exhausted or unknown finite budget records a waiter, changes
+both Run and Task to `waiting_human`, and deletes that exact lease in one
+transaction. No model hop is spent, and a lease-reaper crash recovery must not
+turn this pause into a failed attempt. Planner and Reviewer use the same
+admission ledger before consuming a new model attempt. A stored plan or Review
+decision can still finish its persistence path without another model call.
+
+Increasing/removing the limit, or receiving late usage that restores available
+budget, converts recorded budget waiters into durable Inbox/Outbox wakes.
+Raising a finite limit does not clear unknown usage. Resume atomically acquires
+a new lease and sets both Run and Task to `running`; it preserves the Run and
+its current hop. A pending Cancel may resume a budget-waiting Run to apply the
+control even without available budget. Other human approval gates are not
+resolved by changing a token limit.
+
+Already admitted calls may finish above the limit. Reported input/output usage
+is charged even for a malformed response; absent usage is unknown rather than
+zero. Historical migration backfill also preserves unknown attempts. Therefore
+the cap is a soft admission limit, not a guarantee about the final provider
+bill. The Mission itself keeps its existing status while these budget waits
+block work.
 
 ## Human authentication session
 
@@ -231,6 +311,12 @@ Each model invocation that returns usage also appends one immutable
 `reviewer_model_calls` row keyed by `(review_id, attempt)`, whether the response
 was structurally valid or invalid. Retrying or resuming the execution cannot
 overwrite that usage history or create a second call row for the same attempt.
+
+Reviewer model admission also records the call in the shared Mission budget
+ledger. A budget wait does not consume an attempt or alter a Review decision;
+the durable decision already stored at `model_complete` can be finalized
+without a new model call. Goal verification uses this same independent Review
+state machine and final human delivery gate.
 
 ## Task Worktree
 

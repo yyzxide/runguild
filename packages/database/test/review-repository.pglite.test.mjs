@@ -27,6 +27,8 @@ const migrationUrls = [
   new URL('../migrations/0016_submission_evidence.sql', import.meta.url),
   new URL('../migrations/0017_integration_conflict_recovery.sql', import.meta.url),
   new URL('../migrations/0018_reviewer_model_calls.sql', import.meta.url),
+  new URL('../migrations/0027_mission_budget.sql', import.meta.url),
+  new URL('../migrations/0028_goal_verification.sql', import.meta.url),
   new URL('../migrations/0030_model_provider_provenance.sql', import.meta.url),
 ]
 
@@ -376,11 +378,11 @@ test('evidence-only retry freezes exact commit and clean tested-HEAD evidence fr
       "'{\"commit\":\"" + headCommit + "\",\"treeHash\":\"" + treeHash + "\",\"toolCallId\":\"call_commit\"}'::jsonb), " +
       "('evidence_test_retry', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
       "'test_run', 'test-run://retry', 'test_retry', " +
-      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"headCommit\":\"" + headCommit +
+      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"protectedTestsIntact\":true,\"headCommit\":\"" + headCommit +
       "\",\"treeHash\":\"" + treeHash + "\",\"command\":[\"npm\",\"test\"],\"toolCallId\":\"call_test\"}'::jsonb), " +
       "('evidence_test_stale', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
       "'test_run', 'test-run://stale', 'test_stale', " +
-      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"headCommit\":\"" + baseCommit +
+      "'{\"passed\":true,\"clean\":true,\"stable\":true,\"protectedTestsIntact\":true,\"headCommit\":\"" + baseCommit +
       "\",\"treeHash\":\"" + 'd'.repeat(40) + "\",\"command\":[\"npm\",\"test\"]}'::jsonb), " +
       "('evidence_test_dirty', 'ws_review', 'mission_review', 'task_review', 'run_tests', " +
       "'test_run', 'test-run://dirty', 'test_dirty', " +
@@ -710,3 +712,29 @@ test('Mission-room Reviewer receives durable work after Task review and resumes 
     await database.close()
   }
 })
+
+for (const scenario of ['old-head', 'dirty', 'protected-tests-changed', 'protected-tests-unknown', 'newer-failure', 'exact-pass']) {
+  test('Review completion checks final code evidence: ' + scenario, async () => {
+    const database = new PGlite()
+    try {
+      await setup(database)
+      const pool = poolAdapter(database)
+      const repository = new ReviewRepository(pool)
+      const head = 'b'.repeat(40), base = 'a'.repeat(40), tree = 'c'.repeat(40)
+      await database.exec("INSERT INTO task_acceptance_criteria (id,task_id,criterion_key,description,required,required_evidence_kinds) VALUES ('criterion_final','task_review','test','final tests',true,ARRAY['test_run']);")
+      await database.query("INSERT INTO task_worktrees (task_id,workspace_id,mission_id,project_id,repository_path,worktree_path,branch_name,base_ref,base_commit,head_commit,status) VALUES ('task_review','ws_review','mission_review','project_review','/repo','/trees/task','agent/task','main',$1,$2,'committed')", [base, head])
+      await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,kind,uri,content_hash,metadata) VALUES ('commit_final','ws_review','mission_review','task_review','run_builder','file_diff','git://final','diff_final',$1::jsonb)", [JSON.stringify({commit: head, treeHash:tree})])
+      const metadata = {passed:true,clean:scenario !== 'dirty',stable:true,protectedTestsIntact:scenario === 'protected-tests-unknown' ? undefined : scenario !== 'protected-tests-changed',headCommit:scenario === 'old-head' ? base : head,treeHash:tree,command:['npm','test']}
+      await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,acceptance_criterion_id,kind,uri,content_hash,metadata,created_at) VALUES ('test_final','ws_review','mission_review','task_review','run_builder','criterion_final','test_run','test://final','test_final',$1::jsonb,NOW()-INTERVAL '1 minute')", [JSON.stringify(metadata)])
+      if (scenario === 'newer-failure') {
+        await database.query("INSERT INTO evidence (id,workspace_id,mission_id,task_id,run_id,kind,uri,content_hash,metadata) VALUES ('test_failed','ws_review','mission_review','task_review','run_builder','test_run','test://failed','failed_final',$1::jsonb)", [JSON.stringify({...metadata,passed:false})])
+      }
+      const submission = await submit(repository)
+      const selected = (await database.query('SELECT evidence_id FROM task_submission_evidence WHERE submission_id=$1',[submission.id])).rows.map(x=>x.evidence_id)
+      assert.equal(selected.includes('test_final'), ['newer-failure', 'exact-pass'].includes(scenario))
+      const result = await repository.reviewSubmission({ reviewId:'review_final',workspaceId:'ws_review',submissionId:submission.id,
+        reviewer:{kind:'user',id:'user_reviewer'},decision:'approved',summary:'audit',findings:[],correlationId:'final_audit' })
+      assert.deepEqual(result.taskCompletion, {completed:false,reason:scenario === 'exact-pass' ? 'missing_integration' : 'missing_evidence'})
+    } finally { await database.close() }
+  })
+}

@@ -1,0 +1,437 @@
+diff --git a/docs/analysis.md b/docs/analysis.md
+new file mode 100644
+index 0000000..561fa63
+--- /dev/null
++++ b/docs/analysis.md
+@@ -0,0 +1,232 @@
++# Research notes: normalizeLabels
++
++Prepared for the builder task that implements `normalizeLabels` in
++`src/labels.mjs`. These notes are repo-specific and are the contract the
++implementation and its regression tests should follow.
++
++## 1. Repo facts
++
++- Package: `runguild-goal-smoke`, private, `"type": "module"` -> all `.js`/`.mjs`
++  files are ESM; `import`/`export` are the only module syntax. No `exports` map,
++  no bundler, no dependencies in `package.json`.
++- Test command: `npm test`, which runs exactly `node --test`. `npm test` is the
++  only allowlisted verification command. There is no `--watch`, no coverage
++  tooling, and no install step required (`engines.node >= 22`).
++- Test file placement/style: tests live in `test/` and are named `*.test.mjs`
++  (currently only `test/labels.test.mjs`). They use Node's built-in runner and
++  strict assertions:
++
++  ```js
++  import assert from 'node:assert/strict'
++  import test from 'node:test'
++  import { normalizeLabels } from '../src/labels.mjs'
++
++  test('normalizes an empty array', () => {
++    assert.deepEqual(normalizeLabels([]), [])
++  })
++  ```
++
++  New regression cases should follow the same shape: a plain
++  `test('...', () => {})` callback, `node:assert/strict`, and a relative import
++  with an explicit `.mjs` extension. Throw checks use `assert.throws(fn, TypeError)`;
++  input-preservation checks compare against a pre-captured copy and also assert
++  reference identity.
++- `src/labels.mjs` already exists and currently exports a stub:
++
++  ```js
++  export function normalizeLabels(values) {
++    return []
++  }
++  ```
++
++  The module must keep the exact path `src/labels.mjs` and the named export
++  `normalizeLabels`; it must stay dependency-free (no new `package.json`
++  entries, no new imports). Only `src/labels.mjs` and files under `test/` should
++  change in the builder task; the research task must not touch production code.
++- `README.md` restates the acceptance criteria, including the rule that every
++  numeric index `0..length-1` must be an own property.
++
++## 2. Implementation recommendation
++
++Single pass over numeric indices, validating first so that no partially built
++result can ever be returned for invalid input:
++
++```js
++export function normalizeLabels(values) {
++  if (!Array.isArray(values)) {
++    throw new TypeError('normalizeLabels expects an array of strings')
++  }
++
++  const result = []
++  const seen = new Set()
++
++  for (let i = 0; i < values.length; i += 1) {
++    // Own-property check, not `i in values` and not `values[i] !== undefined`.
++    if (!Object.prototype.hasOwnProperty.call(values, i)) {
++      throw new TypeError(`normalizeLabels: index ${i} is not an own property`)
++    }
++
++    const element = values[i]
++    if (typeof element !== 'string') {
++      throw new TypeError(`normalizeLabels: index ${i} is not a string`)
++    }
++
++    const label = element.trim().toLowerCase()
++    if (label === '') continue
++    if (seen.has(label)) continue
++
++    seen.add(label)
++    result.push(label)
++  }
++
++  return result
++}
++```
++
++Key decisions and why:
++
++- `Array.isArray(values)` is checked before any indexing, so `null`,
++  `undefined`, numbers, strings, plain objects, `Set`s, and `arguments`-like
++  objects all throw `TypeError` rather than some incidental error (a bare string
++  is iterable and indexable, so without this check it could be silently
++  accepted).
++- `Object.prototype.hasOwnProperty.call(values, i)` is the correct own-index
++  test. It is prototype-safe (the input could shadow `hasOwnProperty`), it does
++  not accept inherited indices, and it treats a hole as invalid even when a
++  string is inherited for that index. `i in values` is wrong because it accepts
++  inherited indices; `values[i] !== undefined` is wrong because it both accepts
++  inherited values and rejects a legitimate string `'undefined'`.
++- The loop reads `values[i]` only after the own-property check succeeds, so the
++  element type check always operates on a real own slot.
++- `typeof element !== 'string'` covers every non-string: numbers (including
++  `NaN`), `null`, `undefined`, booleans, objects, arrays, symbols, and
++  functions.
++- Normalize with `trim()` then `toLowerCase()`; the empty check runs after
++  normalization, so `''`, `'   '`, and `'\t\n'` are all dropped. Case folding
++  after trimming means `' A '` yields `'a'`.
++- Dedupe with a `Set` of already-emitted normalized labels and `continue` on a
++  hit: first-occurrence order is preserved and the pass stays O(n). Pushing then
++  filtering would also work but allocates a second array.
++- The function only reads `values` and returns a freshly allocated `result`
++  array, so frozen inputs are fully supported and the input is never mutated.
++- Non-index own properties (`values.extra = 'x'`) and other extra keys are
++  ignored automatically by the numeric-index loop.
++
++## 3. Array-hole semantics (precise)
++
++Two distinct situations that must not be conflated.
++
++### 3a. Ordinary holes with no inherited indexed property
++
++A hole is an index between `0` and `length - 1` that is not an own property of
++the array (for example `const a = ['a', , 'c']`, `new Array(2)`, or setting
++`a.length` larger after creating it).
++
++- Reading `a[1]` yields `undefined`. This is a plain lookup miss, not a stored
++  `undefined` value.
++- `for...of` and array spread (`[...a]`) both use the array iterator, which
++  walks `0..length-1` and yields `undefined` for the hole. So a spread-based or
++  index-based implementation can surface `undefined` and must handle it,
++  typically by rejecting it or by treating it as absent.
++- `map`, `forEach`, and `filter` skip absent indices and never invoke their
++  callbacks for them. Their callbacks cannot detect a hole by being called with
++  `undefined`; a hole simply produces no callback invocation, and `map`/`filter`
++  preserve the hole in their output. These methods must not be used as the
++  validation loop for this function.
++- Other operations behave differently again: `join` renders a hole as `''`,
++  `JSON.stringify` renders it as `null`, and `Object.keys` omits it. None of
++  these are substitutes for the own-property check.
++
++Rule for this function: `hasOwnProperty` fails for an ordinary hole, so
++`normalizeLabels` throws `TypeError`. That matches the acceptance criterion "a
++missing own slot causes `TypeError`", and it means a sparse array must be
++densified by the caller if an absent slot is meant to be ignored.
++
++### 3b. Inherited indexed properties (separate case)
++
++If a prototype supplies an indexed property, for example:
++
++```js
++const proto = []
++proto[0] = 'from-proto'
++const child = []
++Object.setPrototypeOf(child, proto)
++child.length = 1
++```
++
++then index `0` is still not an own property of `child`, but `child[0]` reads
++through the prototype chain and yields `'from-proto'`.
++
++- Syntax and methods that read values (`child[0]`, spread, `for...of`) see the
++  inherited string, because lookup walks the prototype chain.
++- Own-property checks (`hasOwnProperty`, `Object.hasOwn`) still fail for that
++  index, and `Object.keys`/`Object.entries` do not list it.
++
++This case is therefore neither "hole skipping" nor "the index is missing": the
++value is readable but not owned. The acceptance criteria require the own check
++to win, so `normalizeLabels` throws `TypeError` for such an index even though a
++string is observable there. Do not describe all iteration methods as
++hole-skipping; only `map`/`forEach`/`filter` (and friends such as `some`/`every`)
++skip absent indices, and the inherited case is about prototype lookup, not
++skipping.
++
++### 3c. Frozen arrays
++
++`Object.freeze` only forbids mutation; it neither adds nor removes own slots. A
++dense frozen array validates and normalizes normally because the implementation
++never writes to the input. A frozen sparse array (for example
++`Object.freeze(['a', , 'c'])`) has a hole and therefore throws `TypeError` under
++the own-property rule. Deleting an own slot also creates a hole, and the array
++can be frozen before or after the delete; either way `hasOwnProperty` fails
++afterward.
++
++## 4. Edge-case matrix for the builder's tests
++
++Valid inputs:
++
++- `[]` -> `[]` (the existing test must keep passing).
++- `['a', 'b']` -> `['a', 'b']`.
++- `[' A ', 'a', 'A']` -> `['a']` (trim, lowercase, dedupe, first-occurrence
++  order).
++- `['B', ' a ', 'b ', 'C']` -> `['b', 'a', 'c']`.
++- `['  ', '\t', '\n', 'x ']` -> `['x']` (whitespace-only entries dropped).
++- `['Ünïcode', 'STRASSE']` -> `['ünïcode', 'strasse']` (plain `toLowerCase`
++  semantics; no locale folding).
++- Non-index own properties: `const a = ['x']; a.extra = 'y'` -> `['x']`
++  (`Object.keys` would include `extra`; the numeric loop ignores it).
++- Frozen dense array: `Object.freeze([' A ', 'b'])` -> `['a', 'b']`, and the
++  input is still frozen and unchanged afterwards.
++
++Invalid inputs that must throw `TypeError`:
++
++- Non-arrays: `'ab'`, `42`, `NaN`, `null`, `undefined`, `{}`,
++  `new Set(['a'])`, and an `arguments` object (array-like but not an array).
++- Non-string elements: `[1]`, `[null]`, `[undefined]`, `[true]`, `[{}]`, `[[]]`,
++  `[Symbol('s')]`, `[() => {}]`, `[NaN]`, and `['a', 2]` (valid prefix then
++  failure).
++- Sparse arrays: `['a', , 'c']`, `new Array(2)`, and an array given a trailing
++  hole; assert with `assert.throws(() => normalizeLabels(input), TypeError)`.
++- Inherited index: `const p = []; p[0] = 'from-proto'; const c = []; Object.setPrototypeOf(c, p); c.length = 1;`
++  -> `TypeError` even though `c[0]` is `'from-proto'`.
++- Frozen sparse array: `Object.freeze(['a', , 'c'])` -> `TypeError`.
++- Alternative hole construction: `const a = ['a', 'b']; delete a[1]` ->
++  `TypeError`.
++
++Invariants on valid input (assert explicitly):
++
++- Input is not mutated: capture `const before = structuredClone(input)` and
++  `const ref = input[0]`, call the function, then assert
++  `assert.deepEqual(input, before)`, `assert.equal(input.length, n)`, and
++  `assert.equal(input[0], ref)`.
++- Return value is a fresh array: `assert.ok(Array.isArray(out))`,
++  `assert.notEqual(out, input)` (identity), and mutating `out` does not affect
++  `input` (for example `out.push('z')` leaves `input` unchanged).
++- Duplicate inputs with the same normalized form map to exactly one output
++  entry, and that entry's position follows the first occurrence.
++
++## 5. Scope reminders
++
++The builder task changes `src/labels.mjs` and adds tests under `test/`; it
++should keep the existing empty-array case, run `npm test`, and add no
++dependencies. This research task intentionally leaves `src/labels.mjs`
++untouched.
+diff --git a/src/labels.mjs b/src/labels.mjs
+index 55890fa..cb84537 100644
+--- a/src/labels.mjs
++++ b/src/labels.mjs
+@@ -1,3 +1,29 @@
+ export function normalizeLabels(values) {
+-  return []
++  if (!Array.isArray(values)) {
++    throw new TypeError('normalizeLabels expects an array of strings')
++  }
++
++  const result = []
++  const seen = new Set()
++
++  for (let i = 0; i < values.length; i += 1) {
++    // Own-property check, not `i in values` and not `values[i] !== undefined`.
++    if (!Object.prototype.hasOwnProperty.call(values, i)) {
++      throw new TypeError(`normalizeLabels: index ${i} is not an own property`)
++    }
++
++    const element = values[i]
++    if (typeof element !== 'string') {
++      throw new TypeError(`normalizeLabels: index ${i} is not a string`)
++    }
++
++    const label = element.trim().toLowerCase()
++    if (label === '') continue
++    if (seen.has(label)) continue
++
++    seen.add(label)
++    result.push(label)
++  }
++
++  return result
+ }
+diff --git a/test/labels.test.mjs b/test/labels.test.mjs
+index 7300066..a018225 100644
+--- a/test/labels.test.mjs
++++ b/test/labels.test.mjs
+@@ -5,3 +5,159 @@ import { normalizeLabels } from '../src/labels.mjs'
+ test('normalizes an empty array', () => {
+   assert.deepEqual(normalizeLabels([]), [])
+ })
++
++test('keeps the named export and returns a fresh array', () => {
++  const input = ['a', 'b']
++  const out = normalizeLabels(input)
++
++  assert.equal(typeof normalizeLabels, 'function')
++  assert.ok(Array.isArray(out))
++  assert.deepEqual(out, ['a', 'b'])
++  assert.notEqual(out, input)
++
++  out.push('c')
++  assert.deepEqual(input, ['a', 'b'])
++})
++
++test('trims and lowercases each string', () => {
++  assert.deepEqual(normalizeLabels([' A ', 'b']), ['a', 'b'])
++  assert.deepEqual(normalizeLabels(['Ünïcode', 'STRASSE']), ['ünïcode', 'strasse'])
++})
++
++test('discards empty and whitespace-only results', () => {
++  assert.deepEqual(normalizeLabels(['  ', '\t', '\n', 'x ']), ['x'])
++  assert.deepEqual(normalizeLabels(['', '', '']), [])
++})
++
++test('removes duplicates after normalization preserving first-occurrence order', () => {
++  assert.deepEqual(normalizeLabels([' A ', 'a', 'A']), ['a'])
++  assert.deepEqual(normalizeLabels(['B', ' a ', 'b ', 'C']), ['b', 'a', 'c'])
++})
++
++test('ignores non-index own properties', () => {
++  const input = ['x']
++  input.extra = 'y'
++
++  assert.deepEqual(normalizeLabels(input), ['x'])
++})
++
++test('does not mutate the input array', () => {
++  const input = [' A ', 'b', 'A']
++  const before = structuredClone(input)
++  const firstRef = input[0]
++
++  normalizeLabels(input)
++
++  assert.deepEqual(input, before)
++  assert.equal(input.length, 3)
++  assert.equal(input[0], firstRef)
++})
++
++test('supports frozen dense arrays without mutation', () => {
++  const input = Object.freeze([' A ', 'b'])
++
++  const out = normalizeLabels(input)
++
++  assert.deepEqual(out, ['a', 'b'])
++  assert.ok(Array.isArray(out))
++  assert.notEqual(out, input)
++  assert.ok(Object.isFrozen(input))
++  assert.deepEqual([...input], [' A ', 'b'])
++})
++
++test('throws TypeError for non-array inputs', () => {
++  const nonArrays = [
++    'ab',
++    42,
++    NaN,
++    null,
++    undefined,
++    {},
++    new Set(['a']),
++    (function () {
++      return arguments
++    })('a'),
++  ]
++
++  for (const value of nonArrays) {
++    assert.throws(() => normalizeLabels(value), TypeError)
++  }
++})
++
++test('throws TypeError for arrays containing non-string elements', () => {
++  const invalid = [
++    [1],
++    [null],
++    [undefined],
++    [true],
++    [{}],
++    [[]],
++    [Symbol('s')],
++    [() => {}],
++    [NaN],
++    ['a', 2],
++  ]
++
++  for (const value of invalid) {
++    assert.throws(() => normalizeLabels(value), TypeError)
++  }
++})
++
++test('throws TypeError for sparse arrays with ordinary holes', () => {
++  const fromLiteral = ['a', , 'c'] // eslint-disable-line no-sparse-arrays
++  const fromConstructor = new Array(2)
++  const fromTrailingHole = ['a', 'b']
++  fromTrailingHole.length = 3
++
++  assert.throws(() => normalizeLabels(fromLiteral), TypeError)
++  assert.throws(() => normalizeLabels(fromConstructor), TypeError)
++  assert.throws(() => normalizeLabels(fromTrailingHole), TypeError)
++
++  // The hole semantic being tested: for...of / spread yield undefined for the
++  // absent index, while map/forEach/filter skip it without invoking callbacks.
++  assert.deepEqual([...fromLiteral], ['a', undefined, 'c'])
++  let visited = 0
++  fromLiteral.forEach(() => {
++    visited += 1
++  })
++  assert.equal(visited, 2)
++})
++
++test('throws TypeError when a hole is created by delete', () => {
++  const input = ['a', 'b']
++  delete input[1]
++
++  assert.equal(Object.prototype.hasOwnProperty.call(input, 1), false)
++  assert.throws(() => normalizeLabels(input), TypeError)
++})
++
++test('throws TypeError for a hole whose prototype provides a string', () => {
++  const proto = []
++  proto[0] = 'from-proto'
++  const child = []
++  Object.setPrototypeOf(child, proto)
++  child.length = 1
++
++  // The value is readable through the prototype chain, but it is not owned.
++  assert.equal(child[0], 'from-proto')
++  assert.equal(Object.prototype.hasOwnProperty.call(child, 0), false)
++  assert.throws(() => normalizeLabels(child), TypeError)
++})
++
++test('throws TypeError for frozen sparse arrays', () => {
++  const input = Object.freeze(['a', , 'c']) // eslint-disable-line no-sparse-arrays
++
++  assert.throws(() => normalizeLabels(input), TypeError)
++})
++
++test('throws TypeError even when a valid prefix precedes a bad index', () => {
++  assert.throws(() => normalizeLabels(['ok', 2]), TypeError)
++  assert.throws(() => normalizeLabels(['ok', , 'c']), TypeError) // eslint-disable-line no-sparse-arrays
++})
++
++test('validates before producing any output for invalid later indices', () => {
++  const input = ['a', 'b', 'a']
++  delete input[2]
++
++  assert.throws(() => normalizeLabels(input), TypeError)
++})

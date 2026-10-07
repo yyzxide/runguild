@@ -24,12 +24,13 @@
     "web:start": "npm run dev --workspace @runguild/web",
     "web:preview": "npm run preview --workspace @runguild/web",
     "typecheck": "tsc -b --pretty false",
-    "test": "npm run build && node --test --test-concurrency=1 packages/*/test/*.test.mjs apps/*/test/*.test.mjs",
-    "test:integration": "npm run build && REQUIRE_POSTGRES=1 node --test packages/database/test/postgres.integration.test.mjs",
+    "test": "npm run build && node scripts/test.mjs",
+    "test:integration": "npm run build && node scripts/test.mjs --postgres",
+    "test:without-postgres": "npm run build && node scripts/test.mjs --without-postgres",
     "test:e2e": "npm run build && playwright test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.0",

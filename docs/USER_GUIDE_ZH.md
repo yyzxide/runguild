@@ -21,7 +21,7 @@
 
 ## 2. 前置软件
 
-- Node.js 22 或更新版本；
+- Node.js 22.12.0 或更新版本（与锁定的 Vite 工具链要求一致）；
 - npm；
 - 普通 Docker Engine 和 Docker Compose；
 - Git；
@@ -220,7 +220,7 @@ Worktree 根目录、准备命令、测试白名单和受保护验收路径。�
 打开工作台的“配置与启停”，逐项保存：
 
 1. **代码仓库路径**：RunGuild 要操作的真实 Git 仓库绝对路径；测试 RunGuild 自身时可填写当前 RunGuild 仓库。
-2. **Worktree 根目录**：必须与仓库目录不同，例如 `~/runguild-worktrees`。
+2. **Worktree 根目录**：必须与仓库目录不同，并填写当前机器的绝对路径，例如 `/home/your-user/runguild-worktrees`；将 `your-user` 换成实际用户名，界面不会展开 `~`。
 3. **默认分支**：通常是 `main`。
 4. **Worktree 准备命令**：新 Worktree 没有 `node_modules`，Node 项目通常需要一个经过审查的精确 argv，例如 `npm ci --ignore-scripts --no-audit --no-fund`。
 5. **测试白名单**：每项都是精确 argv，不是 Shell 文本，例如 `npm run typecheck`、`npm test`。
@@ -228,7 +228,14 @@ Worktree 根目录、准备命令、测试白名单和受保护验收路径。�
 7. **测试隔离**：Linux 本地作品演示优先选择 `Bubblewrap + 禁用网络`。需要连接外部测试数据库时可显式选择主机网络。`Trusted process` 只用于兼容，它与 Worker 共用主机权限域，系统不会把它标成 OS 沙箱。
 8. **资源限制**：为测试配置最大进程数、文件描述符和单文件大小；墙钟超时仍由“单次测试超时”控制。Bubblewrap 或 `prlimit` 缺失时 Agent Worker 会拒绝启动，不会静默降级。
 9. **模型配置**：逐个确认 Planner、Researcher、Builder、Reviewer 的提供商和模型名称。
-10. **Token 和超时**：先保留默认值，真实运行暴露问题后再调整。
+10. **Token 和超时**：单次测试默认上限为 120000 毫秒（120 秒），小项目可先保留。如果让 Agent 修改 RunGuild 本仓库，已归档的完整测试阶段耗时超过 200 秒，应在项目配置把单次测试上限调至 600000 毫秒，并让测试调用申请足够的超时；提高配置上限不会覆盖调用自身较短的超时。
+
+RunGuild 本仓库的 `npm test` 会启动临时 PostgreSQL 容器。`test.run` 不会继承自定义
+`TEST_DATABASE_URL` 或 `DOCKER_HOST`；Bubblewrap 也不开放主机 Docker socket，
+仅切换为主机网络不会授予 Docker 访问。若用 `Trusted process` 在专用环境执行本仓库
+完整测试，需确认 Worker 用户能访问默认 Docker，并理解该模式共用主机权限域。
+终端使用自定义测试数据库或 Docker 地址跑通，不等于 Agent 的测试环境也已可用。
+耗时证据见 [2026-09-26 测试归档](verification/2026-09-26/README.md)。
 
 API Key 只来自 API 进程环境，不进入 PostgreSQL，也不会返回浏览器。
 
@@ -280,9 +287,9 @@ docker compose down -v
 ## 6. 一次真实 Mission 的完整操作流程
 
 ```text
-协作室提出需求
-  → 选择真实消息并交给 Planner
-  → Planner 生成 Mission 和任务 DAG
+协作室提出需求（首条需求、所选历史消息或 /goal）
+  → 创建 Mission 并交给 Planner
+  → Planner 提出任务 DAG
   → 人工审查并批准计划
   → Scheduler 按依赖分派 Task
   → Agent 在独立 Worktree 中执行
@@ -290,6 +297,7 @@ docker compose down -v
   → 形成 Evidence 与不可变 Artifact Version
   → 独立 Reviewer 审查精确版本和提交
   → Integration Worker 集成精确已审查提交
+  → 启用终验时，检查完整结果、修复原范围内缺口，再经评审与集成
   → 所有 Task 完成后等待最终交付批准
   → 人工批准精确 Artifact Version
   → Mission completed
@@ -297,19 +305,37 @@ docker compose down -v
 
 ### 6.1 在协作室形成需求
 
-不要只写一句模糊目标。消息至少说明：
+当前既没有选中的 Mission，也没有进行中的规划时，直接发送首条需求会自动创建 Mission 并交给 Planner，不需要再勾选消息。有当前 Mission 时，普通消息是补充信息，可选择接收的 Agent；消息不会自动改写已批准的计划。
+
+首条任务和 `/goal` 会通过一次原子提交共同保存消息与规划请求。浏览器发送前会把完整目标材料和请求 ID 存入本地恢复队列；响应丢失时可重试，刷新后重新进入项目也会沿用同一请求恢复，避免重复创建 Mission。问候默认作为普通消息保存；没有当前 Mission 时也可手动切换“新任务”与“普通消息”。
+
+也可以选择一到五十条历史消息，填写 Mission 标题，点击“用所选历史创建任务”发起新的规划。当前已有进行中的规划时，这个入口暂不可用。
+
+若要在讨论中明确另起一个 Mission，点击“新目标”，或直接输入：
+
+```text
+/goal 为 CSV 导入增加错误行预览与重复数据检查
+```
+
+`/goal` 始终创建独立 Mission，不会把新需求投递给旧任务。仅输入 `/goal` 不会创建空目标。首次需求和 `/goal` 的输入区都可填写“验收条件”“约束”和可选 Token 限额；选择历史消息时，应在所选消息中写清这些要求，Token 限额可在创建后单独设置。
+
+“验收条件”和“约束”每行填写一项，例如验收条件为“导入前可以预览错误行”“重复导入不产生重复数据”“相关回归测试通过”，约束为“保持现有接口兼容”。
+
+目标材料应说明：
 
 - 要修改的真实仓库和业务目标；
 - 不允许改变的边界；
 - 可验证的验收条件；
 - 应运行的测试；
-- 成本或时间限制。
+- Token 限额（可选，留空表示不限，0 表示暂停新的模型调用）；金额或时间限制目前仍作为文字约束记录。
 
-选择一到五十条真实消息，发起 Planning Request。Planner 的输出仍然只是“待批准计划”，不会自动开工。
+Planner 的输出仍是“待批准计划”，不会自动开工。验收条件会保存到目标并提供给 Planner，但仍需你核对生成计划是否完整覆盖它们。
+
+通过当前 Web 的这三种入口新建 Mission，待批准计划都会包含系统生成的“目标终验”任务，它依赖所有原始任务。Builder 在完整集成结果上检查最初的目标、约束与每条验收条件，允许修复原范围内的缺口，再提交新 Artifact Version 给独立 Reviewer。没有单独填写验收条件时，终验根据原始目标与约束核对；选取历史消息时，原始目标来自这些消息。旧 Mission 不会被自动追加终验，直接调用 API 时也需显式启用 `goalVerification`。
 
 ### 6.2 审查并批准 DAG
 
-检查：
+点击“查看目标并批准计划”进入“目标”页，检查：
 
 - Task 是否能映射到真实角色；
 - 依赖方向是否正确；
@@ -317,11 +343,11 @@ docker compose down -v
 - Reviewer 是否与 Builder 独立；
 - 每个 Task 是否有具体 acceptance criteria 和 Evidence 要求。
 
-计划获批后，Scheduler 才能调度。
+点击“批准计划并开始执行”后，Scheduler 才能调度。在允许 Web 管理 Worker 的本地环境中，页面会检查并启动所需进程；其他部署仍需预先启动 Worker。
 
 ### 6.3 观察 Agent 执行
 
-在工作台检查 Worker 心跳，在 Mission 页面检查依赖和 Task 状态，在运行记录中检查模型调用、工具调用、失败和恢复。
+在“目标”页查看分工、依赖交接、实际执行者、尝试次数、任务验收证据、独立评审和集成结果。任务完成数不等于用户目标验收覆盖率；目标验收清单仍需逐项核对。点击某次运行可进入对应记录检查模型调用、工具调用与错误；Worker 心跳仍可在工作台查看。
 
 模型调用摘要会分别显示配置的请求模型、供应商实际返回的模型标识和精确 `/responses` 端点。三者一致是正常情况；别名被解析为具体模型时，请求模型和返回模型可能不同。旧记录缺少这些字段时会明确显示“未知”，系统不会根据当前配置倒推历史事实。
 
@@ -340,6 +366,18 @@ docker compose down -v
 
 即使所有 Task 已集成，Mission 仍可能停在 `reviewing`。这通常是在等待 Workspace 人工批准最终 Artifact Version，不是 Integration 失败。
 
+目标页可预览交付内容；发现未满足的验收项时，填写具体要求并“退回并追加修复任务”。启用目标终验的 Mission 会将原始验收条件继续带入这次修复，最终交付绑定当前终验任务获批的精确版本。Reviewer 请求修改后，下一次执行会收到冻结的上一轮评审摘要与问题；重试仍受任务最大尝试次数限制。符合重试条件的失败任务可填写原因，再批准额外一次尝试。
+
+目前支持目标拆解、完整结果终验、范围内修复、独立评审和人工交付确认。运行中通用重规划（替换或重新组织已批准 DAG）尚未实现，普通补充消息不会自动重写已批准计划。终验通过也不等于业务目标绝对正确，仍需人工核对交付与证据。
+
+### 6.5 Token 预算与恢复
+
+目标页显示规划、执行和评审的累计输入/输出 Token、剩余额度、进行中的调用及未知用量。限额耗尽后，系统停止发起后续模型调用；已发出的调用和待完成工具工作可能继续，所以这是软限额，不能保证总用量绝不超额。预算等待不会单独消耗一次任务尝试或模型 hop。
+
+已知用量达到限额时，提高总限额至高于累计用量，或点击“移除限额”，系统会唤醒因预算等待的工作；原执行 Run 保留上下文继续。修改总限额不会清零已有用量；0 阻止新调用，移除限额对应 API 的 `tokenLimit: null`。它不会替你批准计划、工具操作或最终交付。预算不是余额充值，不触发付款。
+
+如果服务商没有返回有效 usage，页面会显示用量未知，有限预算下暂停新调用。单纯提高限额不能消除未知用量，确认后可取消限额继续。没有可用价格时费用显示未知。迁移会回填历史调用的可用记录，但旧版本覆盖掉的 Planner 尝试、旧适配器缺失的 usage 无法准确重建，因此历史统计不等于完整账单。
+
 ## 7. 状态判断与人工处理
 
 | 现象 | 先检查 | 常见处理 |
@@ -348,6 +386,7 @@ docker compose down -v
 | Worker 未启动 | 配置与启停中的缺失项 | 保存仓库、Worktree、模型和命令配置后启动 |
 | Worker 心跳失联 | Worker 终端或 API 子进程日志 | 等租约过期后重启；不要并行启动同一 Agent |
 | Planner 一直等待 | Planner Worker、Planning Request 状态、模型配置 | 启动 Planner，检查 Key、端点和模型名称 |
+| 模型调用因预算等待 | 目标页的限额、已知用量和未知用量 | 用量已知时提高或移除限额；用量未知时提高限额无效，需核对后决定是否移除限额 |
 | 请求模型与返回模型不同 | Run Trace 中的端点和返回模型 | 先确认是否为供应商别名解析；若端点异常，停止 Worker 并检查 `OPENAI_BASE_URL` |
 | Task 等待依赖 | Mission DAG 上游状态 | 先解决失败或未完成的上游 Task |
 | Builder 无法测试 | Worktree setup、测试 argv、超时 | 修正精确 argv；不要开放任意 Shell |
@@ -363,8 +402,8 @@ docker compose down -v
 - 新 Run 会冻结当时的模型配置，修改项目模型不会改变已经开始的 Run；
 - 先用边界清楚的小 Mission 验证配置，再运行长任务；
 - 避免为了观察 UI 重复创建真实模型 Mission；
-- 在 Run Trace 和 Evaluation 中查看真实模型调用数、Token 和失败重试；
-- Provider 没有配置价格时，成本字段可以为空，调用数和 Token 账本仍然有效。
+- 在目标页设置 Mission 的 Token 总限额并查看规划、执行、评审和终验用量，在运行记录中排查具体调用与失败重试；
+- Provider 没有提供可用价格时，费用可能未知或仅包含已计价部分；缺少 usage 的调用另列为未知用量，不能按零消耗理解。
 
 ## 9. 备份与迁移
 
@@ -383,8 +422,9 @@ docker compose exec -T postgres \
 ```bash
 cd ~/runguild
 npm ci
+npm run build
 node --env-file=.env packages/database/dist/cli.js
 npm test
 ```
 
-`npm test` 已包含构建。外部 PostgreSQL 集成测试需要独立、名称以 `_test` 结尾的数据库，不能指向日常使用的 `mission_control`。
+先构建再执行迁移，确保 CLI 使用更新后的 Migration 清单。`npm test` 自身也包含构建；默认自动启动临时 PostgreSQL 17 Docker 容器，测试结束后清理，不需要预先创建测试库。Docker 不可用且未指定独立测试库时，测试会失败，不会静默跳过。若显式设置 `TEST_DATABASE_URL`，数据库名必须以 `_test` 结尾，不能指向日常使用的 `mission_control`。测试只迁移测试库，不能代替对日常数据库执行上面的迁移命令。

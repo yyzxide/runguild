@@ -26,6 +26,13 @@
 
 * { box-sizing: border-box; }
 
+.goal-contract-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+.goal-contract-inputs label { display: grid; gap: 8px; font-size: 13px; }
+.goal-contract-inputs textarea { min-height: 82px; width: 100%; padding: 10px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); color: var(--ink); resize: vertical; }
+.goal-contract-inputs input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); color: var(--ink); }
+.goal-contract-inputs > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
+@media (max-width: 640px) { .goal-contract-inputs { grid-template-columns: 1fr; } }
+
 html { min-width: 320px; background: var(--paper); }
 body { margin: 0; min-width: 320px; min-height: 100vh; overflow-x: hidden; }
 button, input, textarea { font: inherit; }

@@ -63,8 +63,8 @@ class MemoryPersistence {
   async saveContextSnapshot(snapshot) { this.contextSnapshots.push(structuredClone(snapshot)) }
   async appendMessage(_runId, _hop, message) { this.messages.push(structuredClone(message)) }
   async recordEvent(_runId, hop, kind, data) { this.events.push({ hop, kind, data }) }
-  async beginModelCall(callId, _runId, hop, provider, model, request) {
-    this.modelCalls.push({ callId, hop, provider, model, request })
+  async beginModelCall(callId, _runId, hop, provider, model, request, endpoint) {
+    this.modelCalls.push({ callId, hop, provider, model, request, endpoint })
     return Date.now()
   }
   async finishModelCall() {}
@@ -96,6 +96,7 @@ class MemoryTools {
 
 function runtime({
   persistence,
+  budget,
   responses,
   tools = new MemoryTools(),
   verify = async () => ({ accepted: true }),
@@ -111,6 +112,7 @@ function runtime({
     tools,
     runtime: new AgentRuntime({
       persistence,
+      ...(budget ? { budget } : {}),
       model,
       tools,
       completionVerifier: { verify },
@@ -122,6 +124,30 @@ function runtime({
     }),
   }
 }
+
+test('Mission budget pause preserves the model hop and resumes the same conversation', async () => {
+  const persistence = new MemoryPersistence()
+  let available = false
+  const calls = []
+  const setup = runtime({ persistence, responses: [response({ toolCalls: [statusCall('done', 'done', 'Finished')] })],
+    budget: {
+      async reserveRunCall(context, _callId, leaseToken) { calls.push(['reserve', context.currentHop, leaseToken]); return available },
+      async settleModelCall(_id, usage) { calls.push(['settled', usage.inputTokens + usage.outputTokens]) },
+      async recordUnknownModelCall() { throw new Error('No provider failure expected') },
+      async cancelModelCall() { throw new Error('No cancelled reservation expected') },
+    },
+  })
+  const paused = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [{ role: 'user', content: 'Do it' }], leaseToken: 'lease' })
+  assert.equal(paused.status, 'waiting_human')
+  assert.equal(persistence.run.currentHop, 0)
+  assert.equal(persistence.modelCalls.length, 0)
+  available = true
+  const resumed = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [], resumeWaiting: true, leaseToken: 'new-lease' })
+  assert.equal(resumed.status, 'succeeded')
+  assert.equal(persistence.run.currentHop, 1)
+  assert.deepEqual(calls, [['reserve', 0, 'lease'], ['reserve', 0, 'new-lease'], ['settled', 15]])
+  assert.equal(persistence.messages.filter((message) => message.content === 'Do it').length, 1)
+})
 
 test('model silence is nudged and only explicit verified completion succeeds', async () => {
   const persistence = new MemoryPersistence()
@@ -248,23 +274,36 @@ test('durable cancellation wins before a model call', async () => {
   assert.equal(setup.model.requests.length, 0)
 })
 
-test('external lease recovery after a model response prevents stale tool side effects', async () => {
+test('external lease recovery settles Mission usage and preserves provenance without stale tool side effects', async () => {
   const persistence = new MemoryPersistence()
   persistence.finishModelCall = async () => {
     persistence.run.status = 'timed_out'
   }
   const tools = new MemoryTools()
+  const budgetCalls = []
   const setup = runtime({
     persistence,
     tools,
+    budget: {
+      async reserveRunCall(_context, callId, leaseToken) { budgetCalls.push(['reserved', callId, leaseToken]); return true },
+      async settleModelCall(callId, usage) { budgetCalls.push(['settled', callId, usage.inputTokens + usage.outputTokens]) },
+      async recordUnknownModelCall() { throw new Error('Completed call must retain known usage') },
+      async cancelModelCall() { throw new Error('Completed call must not cancel its reservation') },
+    },
     responses: [response({
       toolCalls: [{ id: 'call_stale', action: 'repo.search', input: { query: 'must-not-run' } }],
     })],
   })
 
-  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [] })
+  setup.model.endpoint = 'https://model.example/v1/responses'
+  const outcome = await setup.runtime.run({ runId: 'run_runtime', initialMessages: [], leaseToken: 'current-lease' })
 
   assert.deepEqual(outcome, { status: 'timed_out', summary: 'Run is already timed_out.', hops: 1 })
+  assert.deepEqual(budgetCalls, [
+    ['reserved', persistence.modelCalls[0].callId, 'current-lease'],
+    ['settled', persistence.modelCalls[0].callId, 15],
+  ])
+  assert.equal(persistence.modelCalls[0].endpoint, 'https://model.example/v1/responses')
   assert.equal(tools.calls.length, 0)
   assert.equal(persistence.messages.some((message) => message.toolCallId === 'call_stale'), false)
 })

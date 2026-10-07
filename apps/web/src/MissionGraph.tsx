@@ -7,7 +7,7 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react'
-import { Bot, Check, Clock3, LockKeyhole } from 'lucide-react'
+import { Bot, Check, CircleAlert, Clock3, LockKeyhole, X } from 'lucide-react'
 
 import type { MissionTask } from './data'
 
@@ -22,6 +22,8 @@ const statusIcon = {
   running: Bot,
   waiting: Clock3,
   queued: LockKeyhole,
+  failed: CircleAlert,
+  cancelled: X,
 }
 
 function TaskNodeCard({ data, selected }: NodeProps<TaskNode>) {

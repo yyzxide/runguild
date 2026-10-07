@@ -251,8 +251,18 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
       PROJECT_ID: configuration.project.id,
       REPOSITORY_ROOT: configuration.project.repositoryPath ?? undefined,
       WORKTREE_ROOT: configuration.runtime.worktreeRoot ?? undefined,
+      AGENT_TEST_COMMANDS_JSON: JSON.stringify(configuration.runtime.testCommands),
+      AGENT_WORKTREE_SETUP_COMMANDS_JSON: JSON.stringify(configuration.runtime.worktreeSetupCommands),
     }
-    if (command.kind === 'integration') return safeProcessEnvironment(workspace)
+    if (command.kind === 'integration') {
+      // Integration currently uses one timeout for both preparation and tests.
+      // Preserve enough time for either configured phase when setup is needed.
+      const timeoutMs = Math.max(
+        configuration.runtime.agentMaxTestTimeoutMs,
+        configuration.runtime.worktreeSetupCommands.length > 0 ? configuration.runtime.worktreeSetupTimeoutMs : 0,
+      )
+      return safeProcessEnvironment({ ...workspace, INTEGRATION_TEST_TIMEOUT_MS: String(timeoutMs) })
+    }
     return safeProcessEnvironment({
       ...workspace,
       AGENT_ID: command.agentId,
@@ -262,10 +272,8 @@ export class LocalWorkerSupervisor implements LocalRuntimeControl {
       OPENAI_MAX_OUTPUT_TOKENS: this.options.openaiMaxOutputTokens,
       AGENT_CONTEXT_INPUT_TOKENS: String(configuration.runtime.agentContextInputTokens),
       AGENT_MAX_TEST_TIMEOUT_MS: String(configuration.runtime.agentMaxTestTimeoutMs),
-      AGENT_TEST_COMMANDS_JSON: JSON.stringify(configuration.runtime.testCommands),
       AGENT_PROTECTED_TEST_PATHS_JSON: JSON.stringify(configuration.runtime.protectedTestPaths),
       AGENT_TEST_SANDBOX_JSON: JSON.stringify(configuration.runtime.testSandbox),
-      AGENT_WORKTREE_SETUP_COMMANDS_JSON: JSON.stringify(configuration.runtime.worktreeSetupCommands),
       AGENT_WORKTREE_SETUP_TIMEOUT_MS: String(configuration.runtime.worktreeSetupTimeoutMs),
     })
   }

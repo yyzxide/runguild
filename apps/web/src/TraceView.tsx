@@ -181,7 +181,11 @@ export function TraceView({ identity, initialRunId = null }: TraceViewProps) {
     setLoading(true)
     setError(null)
     try {
-      const next = await missionApi.listRunTraces(identity)
+      let next = await missionApi.listRunTraces(identity)
+      if (initialRunId && !next.some((run) => run.runId === initialRunId)) {
+        const requested = await missionApi.getRunTrace(identity, initialRunId)
+        next = [requested, ...next]
+      }
       setRuns(next)
       setSelectedId((current) => {
         if (current && next.some((run) => run.runId === current)) return current

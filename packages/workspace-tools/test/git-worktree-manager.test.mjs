@@ -70,6 +70,7 @@ function fakeStore() {
     setCommitted(headCommit) {
       record = { ...record, status: 'committed', headCommit }
     },
+    async assertIntegrationLease() {},
     async reserveIntegration() {
       if (record.status === 'integrated') return { kind: 'integrated', worktree: record }
       record = { ...record, status: 'integrating' }
@@ -133,7 +134,7 @@ test('Git Worktree manager provisions, reconciles a post-create crash, and verif
       'commit', '-m', 'baseline',
     )
     const store = fakeStore()
-    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store })
+    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store, verificationCommands: [[process.execPath, "-e", "process.exit(0)"]] })
     const input = {
       workspaceId: 'ws_git',
       missionId: 'mission_git',
@@ -215,7 +216,7 @@ test('Git integration retains the reviewed HEAD across a conflict-free merge and
       'commit', '-m', 'baseline',
     )
     const store = fakeStore()
-    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store })
+    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store, verificationCommands: [[process.execPath, "-e", "process.exit(0)"]] })
     const input = {
       workspaceId: 'ws_git',
       missionId: 'mission_git',
@@ -290,7 +291,7 @@ test('Git integration rejects conflicts without changing the current base branch
       'commit', '-m', 'baseline',
     )
     const store = fakeStore()
-    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store })
+    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store, verificationCommands: [[process.execPath, "-e", "process.exit(0)"]] })
     const input = {
       workspaceId: 'ws_conflict',
       missionId: 'mission_conflict',
@@ -358,7 +359,7 @@ test('Evaluation Trials advance isolated refs without mutating the checked-out p
     const baselineCommit = await git(repositoryPath, 'rev-parse', 'HEAD')
     const evaluationRef = 'evaluation/trial-evaluation_trial_abc123'
     const store = fakeStore()
-    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store })
+    const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store, verificationCommands: [[process.execPath, "-e", "process.exit(0)"]] })
     const input = {
       workspaceId: 'ws_eval',
       missionId: 'mission_eval',
@@ -413,6 +414,7 @@ test('Evaluation Trials advance isolated refs without mutating the checked-out p
       repositoryPath,
       worktreeRoot,
       store: nextStore,
+      verificationCommands: [[process.execPath, '-e', 'process.exit(0)']],
     })
     await assert.rejects(nextManager.ensure({
       ...input,
@@ -430,3 +432,52 @@ test('Evaluation Trials advance isolated refs without mutating the checked-out p
     await rm(temporary, { recursive: true, force: true })
   }
 })
+
+for (const fault of ['combined-regression', 'dirty-candidate', 'advanced-base', 'lost-lease', 'missing-verifier']) {
+  test('Integration rejects ' + fault + ' before publishing a candidate', async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'runguild-validation-'))
+    const repositoryPath = join(temporary, 'repository')
+    const worktreeRoot = join(temporary, 'worktrees')
+    await mkdir(repositoryPath)
+    try {
+      await execute('git', ['init', '-b', 'main', repositoryPath])
+      await git(repositoryPath, 'config', 'user.name', 'Audit')
+      await git(repositoryPath, 'config', 'user.email', 'audit@example.invalid')
+      await writeFile(join(repositoryPath, 'rate.txt'), '10')
+      await writeFile(join(repositoryPath, 'limit.txt'), '100')
+      await git(repositoryPath, 'add', '.')
+      await git(repositoryPath, 'commit', '-m', 'baseline')
+      const store = fakeStore()
+      const normalTest = "const fs=require('node:fs');if(8*Number(fs.readFileSync('rate.txt'))>Number(fs.readFileSync('limit.txt')))process.exit(1)"
+      let command = normalTest
+      if (fault === 'dirty-candidate') command = "require('node:fs').writeFileSync('rate.txt','99')"
+      if (fault === 'advanced-base') command = "const {execFileSync}=require('node:child_process');execFileSync('git',['-C'," + JSON.stringify(repositoryPath) + ",'commit','--allow-empty','-m','concurrent base advance'])"
+      if (fault === 'lost-lease') store.assertIntegrationLease = async () => { throw new Error('Integration lease or approval is no longer valid') }
+      const manager = await GitWorktreeManager.create({ repositoryPath, worktreeRoot, store,
+        verificationCommands: fault === 'missing-verifier' ? [] : [[process.execPath, '-e', command]] })
+      const input = {workspaceId:'ws_validation', missionId:'mission_validation', projectId:'project_validation', taskId:'task_validation', baseRef:'main'}
+      await assert.rejects(manager.ensure(input), /token is stale/)
+      const assigned = await manager.ensure(input)
+      await writeFile(join(assigned.worktree.worktreePath, 'rate.txt'), '12')
+      await git(assigned.worktree.worktreePath, 'commit', '-am', 'rate change')
+      const taskHead = await git(assigned.worktree.worktreePath, 'rev-parse', 'HEAD')
+      await execute(process.execPath, ['-e', normalTest], {cwd: assigned.worktree.worktreePath})
+      if (fault === 'combined-regression') {
+        await writeFile(join(repositoryPath, 'limit.txt'), '90')
+        await git(repositoryPath, 'commit', '-am', 'limit change')
+        await execute(process.execPath, ['-e', normalTest], {cwd: repositoryPath})
+      }
+      const sourceHead = await git(repositoryPath, 'rev-parse', 'HEAD')
+      store.setCommitted(taskHead)
+      const expected = { 'combined-regression': /verification failed/, 'dirty-candidate': /modified the candidate/,
+        'advanced-base': /base advanced during verification/, 'lost-lease': /lease or approval/, 'missing-verifier': /explicit verification/ }
+      await assert.rejects(manager.integrate({ taskId: input.taskId }), expected[fault])
+      assert.equal(store.record.status, 'committed')
+      assert.equal(await readFile(join(repositoryPath, 'rate.txt'), 'utf8'), '10')
+      assert.equal(await git(repositoryPath, 'status', '--porcelain'), '')
+      if (fault !== 'advanced-base') assert.equal(await git(repositoryPath, 'rev-parse', 'HEAD'), sourceHead)
+      else assert.notEqual(await git(repositoryPath, 'rev-parse', 'HEAD'), sourceHead)
+      assert.equal((await git(repositoryPath, 'worktree', 'list', '--porcelain')).includes('.integration-'), false)
+    } finally { await rm(temporary, {recursive:true, force:true}) }
+  })
+}

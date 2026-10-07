@@ -1,0 +1,36 @@
+✖ conversation.reply steers an Agent in another Task and preserves sender provenance on retry (3134.674417ms)
+✔ conversation.reply leaves unavailable recipients pending, stays in its Mission, and never wakes its sender (1797.607738ms)
+✔ a user message with an explicit Task reference only steers Runs in that Task (1695.796575ms)
+✔ Conversation Repository persists messages and routes mentions into active Runs (2138.355324ms)
+✔ Conversation Repository enforces membership, idempotency, and entity scope (1789.182907ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 4
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10598.71497
+
+✖ failing tests:
+
+test at packages/database/test/conversation-repository.pglite.test.mjs:94:1
+✖ conversation.reply steers an Agent in another Task and preserves sender provenance on retry (3134.674417ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+  + []
+  - [
+  -   'builder'
+  - ]
+  
+      at TestContext.<anonymous> (file:///home/sid/runguild/packages/database/test/conversation-repository.pglite.test.mjs:101:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [],
+    expected: [Array],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

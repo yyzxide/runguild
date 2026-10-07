@@ -1,6 +1,6 @@
 # Database Migrations
 
-RunGuild 的 PostgreSQL Migration 位于 `packages/database/migrations/`，按文件名前缀顺序执行。Migration 是追加式数据库历史：已经在某个数据库应用的旧文件不得修改；新的结构变化应新增下一个编号文件。
+RunGuild 的 PostgreSQL Migration 位于 `packages/database/migrations/`，按 `packages/database/src/migrate.ts` 登记的顺序执行。Migration 是追加式数据库历史：已经在某个数据库应用的旧文件不得修改或重命名；新的结构变化应新增下一个编号文件。
 
 ## 执行方式
 
@@ -9,7 +9,13 @@ npm run build
 npm run db:migrate
 ```
 
-`DATABASE_URL` 必须指向目标数据库。`.env` 由 `npm run api:local` 自动读取，但 `npm run db:migrate` 不会隐式读取 `.env`；在普通交互终端中，应先导出变量，或确认当前环境已经提供 `DATABASE_URL`。项目当前本地 `.env` 与 Compose 默认值一致时，也可以显式执行：
+`DATABASE_URL` 必须指向目标数据库。`.env` 由 `npm run api:local` 自动读取，但 `npm run db:migrate` 不会隐式读取 `.env`；在普通交互终端中，应先导出变量，或确认当前环境已经提供 `DATABASE_URL`。也可以在构建后显式加载本地 `.env`：
+
+```bash
+node --env-file=.env packages/database/dist/cli.js
+```
+
+若使用 Compose 默认连接，也可显式执行：
 
 ```bash
 DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
@@ -21,7 +27,9 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 事务中执行。已应用文件被修改时会因 checksum 不一致而拒绝启动。不要通过
 删除 Migration 记录来强制重跑，也不要在有真实数据的数据库上手工回退结构。
 
-## 0001–0023 清单
+## 0001–0030 清单
+
+Goal 分支与主分支各自使用过 0027、0028 前缀，合并后保留全部 32 个迁移文件及其原始 checksum。迁移身份是完整文件名，而非数字前缀；已经应用任一分支的数据库只补齐缺失文件。不要为了重排编号重命名旧迁移，否则会被识别为新文件再次执行。
 
 | 编号 | 文件 | 主要作用 |
 |---|---|---|
@@ -48,13 +56,19 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 | 0021 | `0021_authentication.sql` | 增加用户角色、密码凭据、可撤销 Session、CSRF、登录节流和认证审计事件。 |
 | 0022 | `0022_project_memberships.sql` | 增加 Project 级人类成员与 Owner/Operator/Viewer 角色、成员变更审计，并把已有租户用户回填到原先可访问的 Project。 |
 | 0023 | `0023_project_lifecycle.sql` | 增加 Project 可恢复归档状态、归档操作者、活动 Project 索引，以及重命名/归档/恢复审计账本。 |
-| 0024 | `0024_model_protocol_events.sql` | 增加模型协议修复失败事件，使结构化输出错误进入持久化 Run Trace。 |
-| 0025 | `0025_agent_run_hop_budget.sql` | 调整 Agent Run hop 预算并为验收收尾保留有界空间。 |
-| 0026 | `0026_flash_agent_hop_budget.sql` | 为 Flash 类模型增加可配置的默认执行 hop 预算。 |
+| 0024 | `0024_model_protocol_events.sql` | 允许记录 `model_protocol_rejected` 事件，用于追踪无效模型协议响应及修正。 |
+| 0025 | `0025_agent_run_hop_budget.sql` | 把新 Run 的默认最大 hop 数设为 40，不修改已有 Run。 |
+| 0026 | `0026_flash_agent_hop_budget.sql` | 把新 Run 的默认最大 hop 数进一步设为 60，不修改已有 Run。 |
+| 0027 | `0027_mission_budget.sql` | 增加 Mission 模型调用账本与持久化预算等待，回填可用历史用量；Token 限额允许 0，`NULL` 表示不限额。 |
+| 0028 | `0028_goal_verification.sql` | 增加 Mission 的终验开关与当前终验 Task 引用。默认关闭，旧 Mission 不会自动追加终验任务。 |
 | 0027 | `0027_protected_test_paths.sql` | 持久化项目级受保护验收路径，供 Agent Worker 冻结测试内容清单并拒绝篡改。 |
 | 0028 | `0028_test_sandbox_config.sql` | 持久化显式测试执行模式、网络策略和进程/文件资源限制；兼容模式不能伪称网络隔离。 |
 | 0029 | `0029_evaluation_unknown_pricing.sql` | 把底层调用价格缺失的历史 Evaluation Trial 成本修正为 `null`，避免未知价格被解释为零成本。 |
 | 0030 | `0030_model_provider_provenance.sql` | 为 Agent、Reviewer 与 Planner 调用分别记录无凭据的精确端点和供应商返回模型；历史未知值保留为 `null`。 |
+
+`0027_mission_budget.sql` 会将仍能识别的缺失调用或空用量记为未知；旧适配器已把缺失 usage 写成 0 的记录无法还原，因此不能把回填值当作完整账单。`0028_goal_verification.sql` 只增加数据库字段；新建 Mission 是否启用终验、追加终验任务与交付校验由应用代码处理。当前 Web 的新建入口会启用终验，直接 API 创建未显式启用时仍走原流程。
+
+代码中已登记 Migration、测试库迁移通过，都不代表日常数据库已升级。更新时须对实际 `DATABASE_URL` 运行迁移，再使用依赖这些表和字段的新 API/Worker。
 
 ## 为什么不能跳过 Migration
 
@@ -62,7 +76,9 @@ DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control \
 
 ## 测试数据库安全边界
 
-外部 PostgreSQL 集成测试会清理自己的 fixtures，因此强制要求数据库名称以 `_test` 结尾：
+`npm test` 默认包含真实 PostgreSQL 集成测试；`npm run test:integration` 只运行这一组。未提供 `TEST_DATABASE_URL` 时，测试入口会自动启动独立的 PostgreSQL 17 Docker 容器：随机本机端口、专用 `runguild_test` 数据库、临时内存数据目录，结束后自动清理。测试会自动应用全部 Migration，不需要先迁移开发库。Docker 或测试数据库不可用时命令失败，不会静默跳过。
+
+已有独立测试数据库时，可显式提供 `TEST_DATABASE_URL`。测试入口不会读取 `.env`，也不会从开发环境的 `DATABASE_URL` 推导测试连接。下面仅是使用现有 Compose PostgreSQL 服务的可选方式：
 
 ```bash
 docker compose exec postgres createdb -U mission mission_control_test
@@ -70,4 +86,6 @@ TEST_DATABASE_URL=postgresql://mission:mission@localhost:5432/mission_control_te
   npm run test:integration
 ```
 
-绝不能把 `TEST_DATABASE_URL` 指向个人日常使用的 `mission_control`。
+外部 PostgreSQL 集成测试会清理自己的 fixtures，因此在迁移和清理之前，先验证连接 URL 中的数据库名，再验证服务器返回的 `current_database()`，两者均须以 `_test` 结尾。显式测试库须由当前测试进程独占；并行运行时应使用不同数据库。绝不能把 `TEST_DATABASE_URL` 指向个人日常使用的 `mission_control`。
+
+如明确只运行不依赖独立 PostgreSQL 的用例，可使用 `npm run test:without-postgres`；这是缩减测试范围的显式命令，不能作为完整回归通过的依据。

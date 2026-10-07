@@ -1,3 +1,4 @@
+import { hasMissingTaskEvidence } from './evidence-gate.js'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -258,6 +259,7 @@ export class TaskRepository {
         'AND d.attempt = t.attempt_count + 1 ' +
         'WHERE t.id = $1 AND t.mission_id = $2 AND m.workspace_id = $3 AND m.project_id = $7 ' +
         "AND t.status = 'ready' AND m.status = 'running' AND a.status = 'active' " +
+        'AND runguild_mission_budget_available(m.id) ' +
         'AND t.attempt_count < t.max_attempts ' +
         'AND (t.required_role IS NULL OR t.required_role = a.role) ' +
         'AND NOT EXISTS (' +
@@ -463,6 +465,9 @@ export class TaskRepository {
         'WHERE r.id = $1 AND r.agent_id = $2 ' +
         'AND r.workspace_id = $3 AND m.project_id = $4 ' +
         "AND r.status = 'waiting_human' AND t.status = 'waiting_human' AND a.status = 'active' " +
+        'AND (NOT EXISTS (SELECT 1 FROM mission_budget_waits w WHERE w.run_id = r.id) ' +
+        'OR runguild_mission_budget_available(m.id) ' +
+        "OR EXISTS (SELECT 1 FROM run_control_requests c WHERE c.run_id = r.id AND c.kind = 'cancel' AND c.status = 'pending')) " +
         'AND NOT EXISTS (SELECT 1 FROM task_leases l WHERE l.task_id = r.task_id) ' +
         'FOR UPDATE OF r, t',
         [input.runId, input.agentId, input.workspaceId, input.projectId],
@@ -478,6 +483,8 @@ export class TaskRepository {
       )
       const expiresAt = lease.rows[0]?.expires_at
       if (!expiresAt) throw new Error('Resumed lease did not return expires_at')
+      await client.query("UPDATE agent_runs SET status = 'running', updated_at = NOW() WHERE id = $1", [input.runId])
+      await client.query("UPDATE tasks SET status = 'running', updated_at = NOW() WHERE id = $1", [row.task_id])
       return {
         resumed: true,
         workspaceId: row.workspace_id as WorkspaceId,
@@ -624,30 +631,7 @@ export class TaskRepository {
         return { completed: false, reason: 'not_completable' }
       }
 
-      const missingEvidence = await client.query<{ missing: boolean }>(
-        'SELECT EXISTS (' +
-        '  SELECT 1 FROM task_acceptance_criteria c ' +
-        '  WHERE c.task_id = $1 AND c.required ' +
-        '  AND (' +
-        '    (cardinality(c.required_evidence_kinds) = 0 AND NOT EXISTS (' +
-        '      SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
-        "      AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
-        '      AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        '    )) ' +
-        '    OR EXISTS (' +
-        '      SELECT 1 FROM unnest(c.required_evidence_kinds) required_kind ' +
-        '      WHERE NOT EXISTS (' +
-        '        SELECT 1 FROM evidence e WHERE e.acceptance_criterion_id = c.id ' +
-        '        AND e.kind = required_kind ' +
-        "        AND (e.kind NOT IN ('test_run', 'command_result') OR e.metadata->>'passed' = 'true') " +
-        '        AND (e.expires_at IS NULL OR e.expires_at > NOW())' +
-        '      )' +
-        '    )' +
-        '  )' +
-        ') AS missing',
-        [input.taskId],
-      )
-      if (missingEvidence.rows[0]?.missing) {
+      if (await hasMissingTaskEvidence(client, input.taskId)) {
         return { completed: false, reason: 'missing_evidence' }
       }
 

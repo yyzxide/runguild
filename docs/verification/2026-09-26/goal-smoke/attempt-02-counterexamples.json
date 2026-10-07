@@ -1,0 +1,16 @@
+{
+  "isArray": true,
+  "length": 1,
+  "ownSlot": false,
+  "inheritedSlotVisibleToIn": true,
+  "returned": [
+    "inherited"
+  ],
+  "expected": "TypeError for the absent own slot under the explicit sparse-slot criterion",
+  "forOfSparseValues": [
+    "undefined"
+  ],
+  "spreadSparseValues": [
+    "undefined"
+  ]
+}

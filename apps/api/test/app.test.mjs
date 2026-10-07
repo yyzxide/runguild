@@ -658,8 +658,19 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   const conversationPlanning = fakeConversationPlanning()
   const conversationTaskSubmissions = fakeConversationTaskSubmissions()
   const runTraces = fakeRunTraces()
+  const budgetCalls = []
+  const budgetSnapshot = { tokenLimit: 10000, inputTokens: 100, outputTokens: 50, totalTokens: 150,
+    remainingTokens: 9850, inFlightCalls: 0, unknownUsageCalls: 0, estimatedCostUsd: null,
+    unpricedCalls: 1, status: 'available' }
   const app = createApiApp({
     missions: fake.service,
+    missionBudgets: {
+      async getSnapshot(input) { budgetCalls.push(['get', input]); return budgetSnapshot },
+      async setTokenLimit(input) {
+        budgetCalls.push(['set', input])
+        return input.missionId === 'missing' ? null : { ...budgetSnapshot, tokenLimit: input.tokenLimit }
+      },
+    },
     projectOperator: projectOperator.service,
     projectRuntimeConfigs: projectRuntimeConfigs.service,
     runTraces: runTraces.service,
@@ -832,6 +843,33 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     assert.equal(submittedTaskBody.request.id, 'planning_task')
     assert.equal(conversationTaskSubmissions.calls[0].clientRequestId, 'browser-task-request-1')
 
+    const goalContract = {
+      body: '/goal 增加 CSV 预览', title: 'CSV 预览', goal: '增加 CSV 预览',
+      constraints: ['保持接口兼容'], acceptanceCriteria: ['错误行可预览'],
+      goalVerification: true, budgetTokens: 0,
+    }
+    const goalSubmission = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/task-submissions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api',
+        'x-client-request-id': 'browser-goal-request-1' },
+      body: JSON.stringify(goalContract),
+    })
+    assert.equal(goalSubmission.status, 201)
+    const submittedGoalInput = conversationTaskSubmissions.calls[1]
+    for (const key of ['goal', 'constraints', 'acceptanceCriteria', 'goalVerification', 'budgetTokens']) {
+      assert.deepEqual(submittedGoalInput[key], goalContract[key])
+    }
+    for (const invalid of [{ budgetTokens: -1 }, { acceptanceCriteria: ['   '] }]) {
+      const rejectedGoal = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/task-submissions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api',
+          'x-client-request-id': 'browser-goal-invalid' },
+        body: JSON.stringify({ ...goalContract, ...invalid }),
+      })
+      assert.equal(rejectedGoal.status, 400)
+    }
+    assert.equal(conversationTaskSubmissions.calls.length, 2)
+
     const planningRequest = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/planning-requests', {
       method: 'POST',
       headers: {
@@ -839,10 +877,25 @@ test('mission API enforces actor identity and exposes command flow', async () =>
         'x-actor-id': 'user_api',
         'x-idempotency-key': 'planning-api-1',
       },
-      body: JSON.stringify({ sourceMessageIds: ['message_api'], title: '从会话生成 Mission' }),
+      body: JSON.stringify({ sourceMessageIds: ['message_api'], title: '从会话生成 Mission',
+        goal: '增加 CSV 预览', constraints: ['保持接口兼容'], acceptanceCriteria: ['错误行可预览'],
+        goalVerification: true, budgetTokens: 10000 }),
     })
     assert.equal(planningRequest.status, 201)
     assert.equal((await planningRequest.json()).request.status, 'queued')
+    const planningInput = conversationPlanning.calls.find(([kind]) => kind === 'planning.create')[1]
+    assert.equal(planningInput.goal, '增加 CSV 预览')
+    assert.deepEqual(planningInput.constraints, ['保持接口兼容'])
+    assert.deepEqual(planningInput.acceptanceCriteria, ['错误行可预览'])
+    assert.equal(planningInput.idempotencyKey, 'planning-api-1')
+    assert.equal(planningInput.goalVerification, true)
+    assert.equal(planningInput.budgetTokens, 10000)
+
+    const invalidPlanning = await fetch(baseUrl + '/api/v1/workspaces/ws/conversations/conversation_api/planning-requests', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-actor-id': 'user_api' },
+      body: JSON.stringify({ sourceMessageIds: ['message_api'], title: '无效目标', acceptanceCriteria: ['   '] }),
+    })
+    assert.equal(invalidPlanning.status, 400)
 
     const planningStatus = await fetch(baseUrl + '/api/v1/workspaces/ws/conversation-planning-requests/planning_api', {
       headers: { 'x-actor-id': 'user_api' },
@@ -867,6 +920,30 @@ test('mission API enforces actor identity and exposes command flow', async () =>
     })
     assert.equal(created.status, 201)
     assert.deepEqual(await created.json(), { missionId: 'mission_created' })
+
+    const budgetUrl = baseUrl + '/api/v1/workspaces/ws/missions/mission_created/budget'
+    const budgetHeaders = { 'content-type': 'application/json', 'x-actor-id': 'user_api' }
+    for (const tokenLimit of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '100']) {
+      const response = await fetch(budgetUrl, { method: 'POST', headers: budgetHeaders, body: JSON.stringify({ tokenLimit }) })
+      assert.equal(response.status, 400)
+    }
+    const agentBudget = await fetch(budgetUrl, { method: 'POST',
+      headers: { ...budgetHeaders, 'x-actor-id': 'builder_api', 'x-actor-kind': 'agent' },
+      body: JSON.stringify({ tokenLimit: null }) })
+    assert.equal(agentBudget.status, 403)
+    assert.equal(budgetCalls.filter(([kind]) => kind === 'set').length, 0)
+    for (const tokenLimit of [0, 20000, null]) {
+      const response = await fetch(budgetUrl, { method: 'POST', headers: budgetHeaders,
+        body: JSON.stringify({ tokenLimit, actorId: 'forged' }) })
+      assert.equal(response.status, 200)
+      assert.equal((await response.json()).tokenLimit, tokenLimit)
+      assert.deepEqual(budgetCalls.at(-1)[1], { workspaceId: 'ws', missionId: 'mission_created', tokenLimit, actorId: 'user_api' })
+    }
+    const missingBudget = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/missing/budget', {
+      method: 'POST', headers: budgetHeaders, body: JSON.stringify({ tokenLimit: 100 }) })
+    assert.equal(missingBudget.status, 404)
+    const goalSnapshot = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/mission_created', { headers: budgetHeaders })
+    assert.deepEqual((await goalSnapshot.json()).budget, budgetSnapshot)
 
     const proposed = await fetch(baseUrl + '/api/v1/workspaces/ws/missions/mission_created/plan', {
       method: 'POST',
@@ -1288,9 +1365,9 @@ test('mission API enforces actor identity and exposes command flow', async () =>
   })
 
   assert.deepEqual(fake.calls.map(([kind]) => kind), [
-    'create', 'plan', 'approve', 'approve-delivery', 'request-delivery-changes', 'get',
+    'create', 'get', 'plan', 'approve', 'approve-delivery', 'request-delivery-changes', 'get',
   ])
-  assert.equal(fake.calls[1][1].actor.kind, 'agent')
+  assert.equal(fake.calls.find(([kind]) => kind === 'plan')[1].actor.kind, 'agent')
   assert.deepEqual(runtime.calls.map(([kind]) => kind), ['control', 'tool_approval'])
   assert.equal(reviewerExecutions.calls[0].reviewId, 'review_api')
   assert.equal(runtime.calls[0][1].dedupeKey, 'steer_once')

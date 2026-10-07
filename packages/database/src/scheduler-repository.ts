@@ -71,6 +71,7 @@ export class SchedulerRepository {
         't.required_role, t.attempt_count + 1 AS attempt ' +
         'FROM tasks t JOIN missions m ON m.id = t.mission_id ' +
         "WHERE t.status = 'ready' AND m.status = 'running' " +
+        'AND runguild_mission_budget_available(m.id) ' +
         'AND t.required_role IS NOT NULL AND t.attempt_count < t.max_attempts ' +
         'AND NOT EXISTS (' +
         '  SELECT 1 FROM task_dependencies d ' +
